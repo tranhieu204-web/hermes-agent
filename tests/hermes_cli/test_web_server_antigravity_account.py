@@ -83,6 +83,17 @@ def test_qualified_antigravity_inventory_row_is_a_draft_only_fleet_parent(monkey
     }
 
 
+def test_qualified_antigravity_inventory_omits_row_without_a_recognized_model(monkeypatch):
+    from hermes_cli import inventory
+
+    _doctor_for(
+        monkeypatch,
+        _qualification(models=("gemini-future-unrecognized",)),
+    )
+
+    assert inventory._antigravity_parent_provider_row() is None
+
+
 def test_antigravity_account_connects_only_from_live_consumer_subscription_proof(monkeypatch, server):
     _doctor_for(monkeypatch, _qualification())
 

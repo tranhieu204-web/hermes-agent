@@ -62,6 +62,7 @@ def admit_parent_session(
     session_id: str,
     cwd: str,
     preferred_lane_id: str | None = None,
+    preferred_provider_id: str | None = None,
     preferred_model_id: str | None = None,
 ) -> ParentAdmission:
     """Commit one parent route before the gateway builds an agent."""
@@ -79,6 +80,7 @@ def admit_parent_session(
         session_id=session_id,
         task=task,
         preferred_lane_id=preferred_lane_id,
+        preferred_provider_id=preferred_provider_id,
         preferred_model_id=preferred_model_id,
     )
 

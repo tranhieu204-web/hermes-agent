@@ -96,6 +96,6 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
 
             chain = rank_fallback_chain(chain, config)
         except Exception:
-            pass
+            return []
 
     return chain

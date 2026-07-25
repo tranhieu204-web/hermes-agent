@@ -154,8 +154,10 @@ describe('ModelMenuPanel external Fleet parents', () => {
     fireEvent.click(row)
 
     expect(onSelectModel).toHaveBeenCalledWith({
+      fleetLaneId: 'antigravity',
       model: 'gemini-3.1-pro-high',
       provider: 'antigravity-subscription',
+      selectionKind: 'fleet_parent',
       sessionId: null
     })
   })

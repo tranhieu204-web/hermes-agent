@@ -160,12 +160,18 @@ def _admit(
     *,
     lineage: str = "lineage-1",
     session_id: str = "stored-session-1",
+    preferred_lane_id: str | None = None,
+    preferred_provider_id: str | None = None,
+    preferred_model_id: str | None = None,
 ):
     return service.admit_parent(
         profile_id="default",
         lineage_root_id=lineage,
         session_id=session_id,
         task=_task(session_id),
+        preferred_lane_id=preferred_lane_id,
+        preferred_provider_id=preferred_provider_id,
+        preferred_model_id=preferred_model_id,
     )
 
 
@@ -188,6 +194,58 @@ def test_parent_admission_atomically_persists_pin_advances_cursor_and_audits(
     events = service.store.audit(task_id="parent:default:lineage-1")
     assert [event["event_type"] for event in events] == ["PARENT_ROUTE_SELECTED"]
     assert events[0]["reason_code"] == ReasonCode.ROTATION.value
+
+
+def test_exact_parent_preference_is_authoritative_and_pinned(tmp_path):
+    service = _service(tmp_path)
+
+    result = _admit(
+        service,
+        preferred_lane_id="grok",
+        preferred_provider_id="xai-oauth",
+        preferred_model_id="grok-parent",
+    )
+
+    assert result.reason is ReasonCode.MET
+    assert result.pin is not None
+    assert result.pin.lane_id == "grok"
+    assert result.pin.provider_id == "xai-oauth"
+    assert result.pin.model_id == "grok-parent"
+    assert result.pin.selection_reason is ReasonCode.MANUAL_OVERRIDE
+
+
+@pytest.mark.parametrize(
+    ("lane_id", "provider_id", "model_id"),
+    [
+        ("antigravity", "antigravity-subscription", "gemini-3.1-pro-high"),
+        ("grok", "wrong-provider", "grok-parent"),
+        ("grok", "xai-oauth", "unqualified-model"),
+    ],
+)
+def test_unavailable_or_mismatched_parent_preference_fails_closed(
+    tmp_path,
+    lane_id,
+    provider_id,
+    model_id,
+):
+    service = _service(tmp_path)
+
+    result = _admit(
+        service,
+        preferred_lane_id=lane_id,
+        preferred_provider_id=provider_id,
+        preferred_model_id=model_id,
+    )
+
+    assert result.reason is ReasonCode.NO_ELIGIBLE_LANE
+    assert result.pin is None
+    assert service.resolve_parent_pin(
+        profile_id="default",
+        lineage_root_id="lineage-1",
+    ) is None
+    assert service.store.rotation_cursor(
+        purpose=RoutePurpose.DESKTOP_PARENT
+    ) == 0
 
 
 def test_repeated_admission_returns_original_without_selector_invocation(

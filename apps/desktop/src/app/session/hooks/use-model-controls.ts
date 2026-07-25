@@ -9,11 +9,14 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
+  $currentFleetLaneId,
   $currentModel,
   $currentProvider,
   getComposerSelectionGeneration,
   getCurrentModelSource,
+  markComposerSelectionFleet,
   markComposerSelectionManual,
+  setCurrentFleetLaneId,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -80,8 +83,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         // 404 every new chat — fall through to reseed from the profile default.
         // Reads the model-options cache the composer already populated; an
         // unknown/not-yet-loaded catalog conservatively preserves the pick.
-        const keepManualPick = () => {
-          if (force || !$currentModel.get() || getCurrentModelSource() !== 'manual') {
+        const keepDraftPick = () => {
+          if (force || !$currentModel.get()) {
+            return false
+          }
+
+          const source = getCurrentModelSource()
+
+          if (source === 'fleet_auto') {
+            return Boolean($currentFleetLaneId.get().trim() && $currentProvider.get().trim())
+          }
+
+          if (source !== 'manual') {
             return false
           }
 
@@ -92,7 +105,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
         }
 
-        if (keepManualPick()) {
+        if (keepDraftPick()) {
           return
         }
 
@@ -106,7 +119,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           profileRefreshEpochRef.current !== profileRefreshEpoch ||
           $activeSessionId.get() ||
           getComposerSelectionGeneration() !== selectionGeneration ||
-          keepManualPick()
+          keepDraftPick()
         ) {
           return
         }
@@ -120,6 +133,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         }
 
         if (typeof result.model === 'string' || typeof result.provider === 'string') {
+          setCurrentFleetLaneId('')
           setCurrentModelSource('default')
         }
       } catch {
@@ -145,15 +159,25 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       const primaryRuntimeId = $activeSessionId.get()
       const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
+      const draftFleetSelection = !liveSessionId && selection.selectionKind === 'fleet_parent'
 
       const liveModelSource = touchesPrimary
         ? getCurrentModelSource()
         : ($sessionStates.get()[liveSessionId!]?.modelSource ?? '')
 
-      if (liveSessionId && liveModelSource === 'fleet_auto') {
+      if (
+        (liveSessionId && liveModelSource === 'fleet_auto') ||
+        (liveSessionId && selection.selectionKind === 'fleet_parent')
+      ) {
         const message = copy.fleetPinnedModelSwitchBlocked
 
         notifyError(new Error(message), message)
+
+        return false
+      }
+
+      if (draftFleetSelection && !selection.fleetLaneId?.trim()) {
+        notifyError(new Error(copy.modelSwitchFailed), copy.modelSwitchFailed)
 
         return false
       }
@@ -170,7 +194,12 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       if (touchesPrimary) {
         setCurrentModel(selection.model)
         setCurrentProvider(selection.provider)
-        markComposerSelectionManual()
+
+        if (draftFleetSelection) {
+          markComposerSelectionFleet(selection.fleetLaneId!)
+        } else {
+          markComposerSelectionManual()
+        }
       } else if (liveSessionId) {
         // Optimistic tile paint — session.info will confirm; rollback on error.
         sessionTileDelegate()?.updateSession(liveSessionId, state => ({

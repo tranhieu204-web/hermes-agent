@@ -4224,6 +4224,9 @@ def _admit_fleet_parent_session(
     lineage_root_id: str,
     session_id: str,
     cwd: str,
+    preferred_lane_id: str | None = None,
+    preferred_provider_id: str | None = None,
+    preferred_model_id: str | None = None,
 ):
     """Profile-scoped gateway boundary for committed parent admission."""
 
@@ -4240,6 +4243,9 @@ def _admit_fleet_parent_session(
             lineage_root_id=lineage_root_id,
             session_id=session_id,
             cwd=cwd,
+            preferred_lane_id=preferred_lane_id,
+            preferred_provider_id=preferred_provider_id,
+            preferred_model_id=preferred_model_id,
         )
     finally:
         if home_token is not None:
@@ -4296,7 +4302,8 @@ def _restore_fleet_parent_route(
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
-DESKTOP_BACKEND_CONTRACT = 4
+# v5: session.create carries exact draft Fleet parent lane/provider/model intent.
+DESKTOP_BACKEND_CONTRACT = 5
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -6866,8 +6873,9 @@ def _(rid, params: dict) -> dict:
     # for a new chat can't mutate the profile default. provider is optional
     # (resolved at build).
     create_model = str(params.get("model") or "").strip()
+    create_provider = str(params.get("provider") or "").strip()
     session_model_override = (
-        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        {"model": create_model, "provider": create_provider or None}
         if create_model
         else None
     )
@@ -6891,6 +6899,27 @@ def _(rid, params: dict) -> dict:
     model_source = str(params.get("model_source") or "default").strip().lower()
     if model_source not in {"default", "manual", "fleet_auto"}:
         return _err(rid, 4004, "model_source must be default, manual, or fleet_auto")
+    preferred_lane_id = str(params.get("fleet_lane_id") or "").strip()
+    preference_parts = (preferred_lane_id, create_provider, create_model)
+    has_fleet_preference = (
+        model_source == "fleet_auto" and all(preference_parts)
+    )
+    if model_source == "fleet_auto" and any(preference_parts) and not all(
+        preference_parts
+    ):
+        return _err(
+            rid,
+            4004,
+            "Fleet preference requires exact lane, provider, and model",
+        )
+    if preferred_lane_id and (
+        source != "desktop" or model_source != "fleet_auto"
+    ):
+        return _err(
+            rid,
+            4004,
+            "fleet_lane_id requires Desktop Fleet Auto with exact provider and model",
+        )
     fleet_parent_route = None
     # When Desktop parent admission is commissioned, the backend — not stale
     # composer localStorage — selects and pins the route before agent build.
@@ -6920,6 +6949,9 @@ def _(rid, params: dict) -> dict:
             lineage_root_id=key,
             session_id=key,
             cwd=resolved_cwd,
+            preferred_lane_id=preferred_lane_id or None,
+            preferred_provider_id=create_provider if has_fleet_preference else None,
+            preferred_model_id=create_model if has_fleet_preference else None,
         )
         if admission.pin is None:
             return _err(rid, 5033, admission_error(admission))
@@ -6927,6 +6959,16 @@ def _(rid, params: dict) -> dict:
             fleet_parent_route = parent_route_metadata(admission.pin)
         except ValueError as exc:
             return _err(rid, 5033, f"Fleet Auto parent admission failed: {exc}")
+        if has_fleet_preference and (
+            fleet_parent_route.get("fleet_lane_id") != preferred_lane_id
+            or fleet_parent_route.get("provider") != create_provider
+            or fleet_parent_route.get("model") != create_model
+        ):
+            return _err(
+                rid,
+                5033,
+                "Fleet Auto parent admission failed: preferred Fleet route unavailable",
+            )
         session_model_override = {
             "model": fleet_parent_route["model"],
             "provider": fleet_parent_route["provider"],

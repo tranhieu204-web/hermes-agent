@@ -49,8 +49,10 @@ import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 export const ModelMenuCloseContext = createContext<() => void>(() => {})
 
 export interface ModelSelection {
+  fleetLaneId?: string
   model: string
   provider: string
+  selectionKind?: string
   /** Runtime id of the surface that opened the menu. When set, the switch
    *  targets that session (a tile) instead of the primary `$activeSessionId`. */
   sessionId?: null | string
@@ -134,8 +136,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
   // next session.create (see selectModel). The default lives in Settings → Model.
   // Always stamp sessionId from this surface so a tile switch never hits the
   // primary (busy) session by accident.
-  const switchTo = (model: string, provider: string) =>
-    onSelectModel({ model, provider, sessionId: activeSessionId || null })
+  const switchTo = (model: string, provider: ModelOptionProvider | string) => {
+    const providerRow = typeof provider === 'string' ? null : provider
+    const providerSlug = typeof provider === 'string' ? provider : provider.slug
+
+    return onSelectModel({
+      ...(providerRow?.fleet_lane_id ? { fleetLaneId: providerRow.fleet_lane_id } : {}),
+      model,
+      provider: providerSlug,
+      ...(providerRow?.selection_kind ? { selectionKind: providerRow.selection_kind } : {}),
+      sessionId: activeSessionId || null
+    })
+  }
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -175,7 +187,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     const variantFast = !(caps?.fast ?? false) && !!family.fastId
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
 
-    if ((await switchTo(targetId, provider.slug)) === false) {
+    if ((await switchTo(targetId, provider)) === false) {
       return
     }
 

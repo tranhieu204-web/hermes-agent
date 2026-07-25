@@ -49,6 +49,7 @@ def _pin(
     lane_id: str = "grok",
     provider_id: str = "xai-oauth",
     model_id: str = "grok-4.5",
+    adapter_kind: AdapterKind = AdapterKind.NATIVE_PROVIDER,
 ) -> ParentPin:
     return ParentPin(
         profile_id="default",
@@ -56,7 +57,7 @@ def _pin(
         session_id="stored-root",
         purpose=RoutePurpose.DESKTOP_PARENT,
         lane_id=lane_id,
-        adapter_kind=AdapterKind.NATIVE_PROVIDER,
+        adapter_kind=adapter_kind,
         provider_id=provider_id,
         model_id=model_id,
         effort="max",
@@ -119,6 +120,123 @@ def test_session_create_fleet_auto_admits_before_deferred_build_and_returns_grok
         "provider": "xai-oauth",
     }
     assert session["create_service_tier_override"] == ""
+
+
+def test_session_create_passes_exact_fleet_preference_and_returns_route_truth(
+    monkeypatch,
+):
+    captured: dict = {}
+    events: list[str] = []
+
+    def admit(**kwargs):
+        captured.update(kwargs)
+        events.append("admit")
+        pin = _pin(
+            lane_id="antigravity",
+            provider_id="antigravity-subscription",
+            model_id="gemini-3.1-pro-high",
+            adapter_kind=AdapterKind.EXTERNAL_CLI,
+        )
+        return ParentAdmission(
+            reason=ReasonCode.MET,
+            pin=ParentPin(
+                **{
+                    **pin.__dict__,
+                    "lineage_root_id": kwargs["lineage_root_id"],
+                    "session_id": kwargs["session_id"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(server, "_admit_fleet_parent_session", admit)
+    monkeypatch.setattr(
+        server,
+        "_schedule_agent_build",
+        lambda sid: events.append("build"),
+    )
+
+    response = server._methods["session.create"](
+        "request-antigravity",
+        {
+            "cols": 80,
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "fleet_lane_id": "antigravity",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert events == ["admit", "build"]
+    assert captured["preferred_lane_id"] == "antigravity"
+    assert captured["preferred_provider_id"] == "antigravity-subscription"
+    assert captured["preferred_model_id"] == "gemini-3.1-pro-high"
+    assert "error" not in response
+    info = response["result"]["info"]
+    assert info["model_source"] == "fleet_auto"
+    assert info["fleet_lane_id"] == "antigravity"
+    assert info["provider"] == "antigravity-subscription"
+    assert info["model"] == "gemini-3.1-pro-high"
+    assert info["fleet_adapter_kind"] == "external_cli"
+    assert info["display_label"] == "Antigravity · Gemini 3.1 Pro High · external CLI"
+
+
+def test_session_create_rejects_preferred_route_substitution_before_build(
+    monkeypatch,
+):
+    built: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_admit_fleet_parent_session",
+        lambda **kwargs: ParentAdmission(reason=ReasonCode.MET, pin=_pin()),
+    )
+    monkeypatch.setattr(
+        server,
+        "_schedule_agent_build",
+        lambda sid: built.append(sid),
+    )
+
+    response = server._methods["session.create"](
+        "request-substitution",
+        {
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "fleet_lane_id": "antigravity",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert response["error"]["code"] == 5033
+    assert "preferred Fleet route" in response["error"]["message"]
+    assert server._sessions == {}
+    assert built == []
+
+
+def test_session_create_rejects_partial_fleet_preference_before_admission(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        server,
+        "_admit_fleet_parent_session",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("partial preference must not reach admission")
+        ),
+    )
+
+    response = server._methods["session.create"](
+        "request-partial-preference",
+        {
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert response["error"]["code"] == 4004
+    assert "exact lane, provider, and model" in response["error"]["message"]
+    assert server._sessions == {}
 
 
 def test_session_create_manual_model_bypasses_auto_admission(monkeypatch):

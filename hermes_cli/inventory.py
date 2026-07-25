@@ -128,7 +128,7 @@ def _antigravity_parent_provider_row() -> dict | None:
         return None
     models = [m for m in qualification.models if m in _AGY_MODEL_LABELS]
     if not models:
-        models = list(_AGY_MODEL_LABELS.keys())
+        return None
     return {
         "slug": "antigravity-subscription",
         "name": "Antigravity · Gemini",

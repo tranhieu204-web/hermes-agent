@@ -8,15 +8,21 @@ import {
   $activeSessionId,
   $connection,
   $currentCwd,
+  $currentFleetLaneId,
   $selectedStoredSessionId,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
+  getCurrentModelSource,
   getRememberedSessionId,
+  markComposerSelectionManual,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionPinId,
   setCurrentCwd,
+  setCurrentFleetLaneId,
+  setCurrentModelSource,
+  setFleetAutoComposerEnabled,
   setRememberedSessionId,
   setSelectedStoredSessionId,
   workspaceCwdForNewSession
@@ -45,6 +51,33 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   title: null,
   tool_call_count: 0,
   ...over
+})
+
+describe('draft Fleet preference state', () => {
+  afterEach(() => {
+    setCurrentFleetLaneId('')
+    setCurrentModelSource('')
+  })
+
+  it('clears an exact Fleet lane when switching to an ordinary manual provider', () => {
+    setCurrentFleetLaneId('antigravity')
+    setCurrentModelSource('fleet_auto')
+
+    markComposerSelectionManual()
+
+    expect($currentFleetLaneId.get()).toBe('')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('clears an exact Fleet lane when switching back to generic Fleet Auto', () => {
+    setCurrentFleetLaneId('antigravity')
+    setCurrentModelSource('fleet_auto')
+
+    setFleetAutoComposerEnabled(true)
+
+    expect($currentFleetLaneId.get()).toBe('')
+    expect(getCurrentModelSource()).toBe('fleet_auto')
+  })
 })
 
 describe('computed $attentionSessionIds', () => {

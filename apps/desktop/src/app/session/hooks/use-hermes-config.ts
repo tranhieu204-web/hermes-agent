@@ -4,6 +4,7 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import {
+  $currentFleetLaneId,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   setAvailablePersonalities,
@@ -87,7 +88,9 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         const shouldSeedComposer =
           !activeSessionIdRef.current &&
           getComposerSelectionGeneration() === selectionGeneration &&
-          (force || getCurrentModelSource() !== 'manual')
+          (force ||
+            (getCurrentModelSource() !== 'manual' &&
+              !$currentFleetLaneId.get()))
 
         if (shouldSeedComposer) {
           setFleetAutoComposerEnabled(config.fleet?.parent_desktop_enabled === true)
