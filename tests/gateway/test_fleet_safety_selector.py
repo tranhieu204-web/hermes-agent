@@ -79,6 +79,29 @@ def test_select_best_lane_preserves_exact_twenty_point_band(
     assert selected.lane == expected_lane
 
 
+@pytest.mark.parametrize("invalid_used_pct", [-1.0, 101.0, float("nan"), float("inf"), "bad"])
+def test_prevalidated_usage_rejects_non_finite_or_out_of_range_values(
+    invalid_used_pct,
+):
+    selected = select_best_lane(
+        config={
+            "fleet": {
+                "lanes": {
+                    "chatgpt_codex": {"enabled": True},
+                    "claude_code": {"enabled": False},
+                    "grok": {"enabled": False},
+                    "antigravity": {"enabled": False},
+                }
+            }
+        },
+        usage_by_lane={"chatgpt_codex": invalid_used_pct},
+    )
+
+    assert selected.lane == ""
+    assert selected.is_fallback
+    assert "no_eligible_lane" in selected.reason
+
+
 def test_select_best_lane_all_lanes_below_floor_edge_case(monkeypatch):
     def fake_verify(provider, **kwargs):
         # All below their respective floors (floors: codex 8%, claude 2%, grok 5%, antigravity 5%)

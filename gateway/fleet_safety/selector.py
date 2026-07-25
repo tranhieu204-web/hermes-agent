@@ -21,6 +21,7 @@ Key features:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -218,9 +219,23 @@ def select_best_lane(
         )
 
         if usage_by_lane is not None:
-            used_pct = usage_by_lane.get(slug)
+            raw_used_pct = usage_by_lane.get(slug)
+            try:
+                used_pct = (
+                    float(raw_used_pct) if raw_used_pct is not None else None
+                )
+            except (TypeError, ValueError):
+                used_pct = None
+            if used_pct is not None and not (
+                math.isfinite(used_pct) and 0.0 <= used_pct <= 100.0
+            ):
+                used_pct = None
             headroom = (100.0 - used_pct) if used_pct is not None else None
-            reasons = ["prevalidated fleet capacity"]
+            reasons = [
+                "prevalidated fleet capacity"
+                if used_pct is not None
+                else "prevalidated fleet capacity: invalid or missing"
+            ]
         else:
             verified = verified_usage_for(lane.provider, now=now)
             used_pct = verified.used_percent

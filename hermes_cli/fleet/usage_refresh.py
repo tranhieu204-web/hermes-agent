@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping
 
 from utils import atomic_replace
 
+from .live_capacity import RELEVANT_WEEKLY_WINDOWS
 from .usage_paths import COCKPIT_MIRROR_PATH, default_native_usage_path, resolve_usage_path
 
 SCHEMA_VERSION = "plans-1"
@@ -167,22 +168,25 @@ def _find_plan(plans: list[dict[str, Any]], needles: tuple[str, ...]) -> dict[st
     return matches[0] if matches else None
 
 
-def _weekly_used_from_snapshot(snapshot: object) -> float | None:
-    windows = getattr(snapshot, "windows", None) or ()
-    if not windows:
-        return None
-    weekly = [
-        window
-        for window in windows
-        if "week" in str(getattr(window, "label", "")).lower()
-    ]
-    chosen = weekly[0] if weekly else windows[-1]
-    return _clamp_pct(getattr(chosen, "used_percent", None))
+def _weekly_used_from_snapshot(
+    snapshot: object, *, lane_id: str
+) -> float | None:
+    relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
+    values: list[float] = []
+    for window in getattr(snapshot, "windows", None) or ():
+        label = str(getattr(window, "label", "") or "").strip().casefold()
+        if label not in relevant:
+            continue
+        used = _clamp_pct(getattr(window, "used_percent", None))
+        if used is not None:
+            values.append(used)
+    return max(values) if values else None
 
 
 def _fetch_auto_lane_pct(
     provider_id: str,
     *,
+    lane_id: str,
     fetch_usage: Callable[[str], object | None] | None = None,
 ) -> float | None:
     if fetch_usage is None:
@@ -193,7 +197,7 @@ def _fetch_auto_lane_pct(
         snapshot = fetch_usage(provider_id)  # type: ignore[misc]
     except Exception as exc:  # pragma: no cover - provider network failures
         raise UsageRefreshError(f"{provider_id} usage fetch failed: {exc}") from exc
-    return _weekly_used_from_snapshot(snapshot)
+    return _weekly_used_from_snapshot(snapshot, lane_id=lane_id)
 
 
 def _empty_document(*, now: datetime | None = None) -> dict[str, Any]:
@@ -329,7 +333,11 @@ def refresh_usage_document(
 
     for lane_id, provider_id, default_label, needles in AUTO_LANES:
         try:
-            pct = _fetch_auto_lane_pct(provider_id, fetch_usage=fetch_usage)
+            pct = _fetch_auto_lane_pct(
+                provider_id,
+                lane_id=lane_id,
+                fetch_usage=fetch_usage,
+            )
         except UsageRefreshError as exc:
             results.append(
                 LaneRefreshResult(

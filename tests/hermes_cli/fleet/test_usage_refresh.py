@@ -128,6 +128,45 @@ def test_refresh_atomic_write_and_per_lane_freshness(tmp_path, monkeypatch):
     assert path.read_bytes() == prior
 
 
+def test_claude_refresh_persists_most_exhausted_relevant_weekly_window(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "fleet" / "usage-weekly.json"
+
+    def fetch(provider: str):
+        if provider == "openai-codex":
+            return _Snapshot((_Window("Weekly", 5.0),))
+        if provider == "anthropic":
+            return _Snapshot(
+                (
+                    _Window("Current week", 20.0),
+                    _Window("Opus week", 80.0),
+                    _Window("Sonnet week", 99.0),
+                    _Window("Five hour session", 100.0),
+                )
+            )
+        return None
+
+    monkeypatch.setattr(
+        "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
+        lambda lane_id: (None, "health probe unavailable in unit test"),
+    )
+
+    report = refresh_usage_document(
+        path=path,
+        mirror_path=None,
+        fetch_usage=fetch,
+        now=NOW,
+    )
+
+    assert report.ok
+    plans = {
+        row["label"]: row
+        for row in json.loads(path.read_text(encoding="utf-8"))["plans"]
+    }
+    assert plans["Claude Max 20x"]["weekly_pct_used"] == 80.0
+
+
 def test_refresh_console_only_stale_cannot_win_capacity(tmp_path):
     path = tmp_path / "usage.json"
     path.write_text(

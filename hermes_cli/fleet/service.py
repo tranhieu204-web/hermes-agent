@@ -301,6 +301,7 @@ class FleetService:
             ttl_seconds=self.config.lease_ttl_seconds,
             now=at,
             selected_lane_id=selected_lane_id,
+            enforce_selected_lane=self.lane_selector is not None,
         )
         if acquisition.reason is not ReasonCode.MET or acquisition.lease is None:
             return FleetRunResult(

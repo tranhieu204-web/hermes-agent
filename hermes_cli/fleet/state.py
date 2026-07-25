@@ -23,6 +23,7 @@ from .types import (
     ParentPin,
     ParentTurnAcquisition,
     ReasonCode,
+    RouteDecision,
     RoutePurpose,
     TaskPin,
     TaskSpec,
@@ -610,6 +611,7 @@ class FleetStore:
         now: datetime,
         inject_failure: bool = False,
         selected_lane_id: str | None = None,
+        enforce_selected_lane: bool = False,
     ) -> Acquisition:
         at = _at(now)
         connection = self._connect()
@@ -728,11 +730,19 @@ class FleetStore:
                 return Acquisition(ReasonCode.MET, pin, lease, evaluations)
 
             cursor = self._rotation(connection)
-            decision = select_lane(
-                evaluations,
-                rotation_index=cursor,
-                selected_lane_id=selected_lane_id,
-            )
+            if enforce_selected_lane and selected_lane_id is None:
+                decision = RouteDecision(
+                    lane_id=None,
+                    reason=ReasonCode.NO_ELIGIBLE_LANE,
+                    evaluations=evaluations,
+                    rotation_index=cursor,
+                )
+            else:
+                decision = select_lane(
+                    evaluations,
+                    rotation_index=cursor,
+                    selected_lane_id=selected_lane_id,
+                )
             if decision.lane_id is None:
                 self._audit(
                     connection,

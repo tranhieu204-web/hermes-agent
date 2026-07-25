@@ -593,6 +593,82 @@ def test_run_executes_the_same_high_headroom_lane_selected_by_plan(
     ]
 
 
+def test_run_fails_closed_when_live_selector_returns_no_lane(tmp_path):
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": _read("chatgpt_codex", "55", LaneHealth.UP),
+            "claude_code": _read("claude_code", "45", LaneHealth.UP),
+            "grok": _read("grok", "35", LaneHealth.UP),
+            "antigravity": _read("antigravity", "25", LaneHealth.UP),
+        },
+    )
+    service.lane_selector = lambda **_kwargs: SimpleNamespace(lane=None)
+    executed: list[str] = []
+    for lane_id in ("chatgpt_codex", "claude_code", "grok", "antigravity"):
+        service.adapters[lane_id] = _SuccessAdapter(executed)
+
+    result = service.run(TASK, prompt="fail closed")
+
+    assert not result.ok
+    assert result.reason is ReasonCode.NO_ELIGIBLE_LANE
+    assert result.pin is None
+    assert result.lease is None
+    assert executed == []
+
+
+def test_existing_pin_remains_authoritative_when_live_selector_later_has_no_lane(
+    tmp_path,
+):
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": _read("chatgpt_codex", "55", LaneHealth.UP),
+            "claude_code": _read("claude_code", "45", LaneHealth.UP),
+            "grok": _read("grok", "35", LaneHealth.UP),
+            "antigravity": _read("antigravity", "25", LaneHealth.UP),
+        },
+    )
+    executed: list[str] = []
+    for lane_id in ("chatgpt_codex", "claude_code", "grok", "antigravity"):
+        service.adapters[lane_id] = _SuccessAdapter(executed)
+    service.lane_selector = lambda **_kwargs: SimpleNamespace(
+        lane="chatgpt_codex"
+    )
+
+    first = service.run(TASK, prompt="create pin")
+    service.lane_selector = lambda **_kwargs: SimpleNamespace(lane=None)
+    second = service.run(TASK, prompt="reuse pin")
+
+    assert first.ok and second.ok
+    assert first.pin is not None and second.pin is not None
+    assert first.pin.lane_id == second.pin.lane_id == "chatgpt_codex"
+    assert executed == ["chatgpt_codex", "chatgpt_codex"]
+
+
+def test_run_without_live_selector_preserves_legacy_transactional_selection(tmp_path):
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": _read("chatgpt_codex", "55", LaneHealth.UP),
+            "claude_code": _read("claude_code", "45", LaneHealth.UP),
+            "grok": _read("grok", "35", LaneHealth.UP),
+            "antigravity": _read("antigravity", "25", LaneHealth.UP),
+        },
+    )
+    service.lane_selector = None
+    executed: list[str] = []
+    for lane_id in ("chatgpt_codex", "claude_code", "grok", "antigravity"):
+        service.adapters[lane_id] = _SuccessAdapter(executed)
+
+    result = service.run(TASK, prompt="legacy selection")
+
+    assert result.ok
+    assert result.pin is not None
+    assert result.lease is not None
+    assert executed == [result.pin.lane_id]
+
+
 def test_composition_root_all_unknown_creates_no_pin_and_executes_no_adapter(
     tmp_path,
 ):

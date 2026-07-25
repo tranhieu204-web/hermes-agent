@@ -27,19 +27,21 @@ from .types import (
 )
 
 
+RELEVANT_WEEKLY_WINDOWS = {
+    "chatgpt_codex": frozenset({"weekly"}),
+    # Claude's aggregate weekly cap and the Opus-specific cap can both
+    # constrain the admitted Opus lane. Session and Sonnet-only windows do
+    # not describe this lane's weekly headroom.
+    "claude_code": frozenset({"current week", "opus week"}),
+}
+
+
 class LiveUsageAdapter:
     """Prefer live subscription usage for natively queryable lanes."""
 
     _PROVIDERS = {
         "chatgpt_codex": "openai-codex",
         "claude_code": "anthropic",
-    }
-    _RELEVANT_WEEKLY_WINDOWS = {
-        "chatgpt_codex": frozenset({"weekly"}),
-        # Claude's aggregate weekly cap and the Opus-specific cap can both
-        # constrain the admitted Opus lane. Session and Sonnet-only windows do
-        # not describe this lane's weekly headroom.
-        "claude_code": frozenset({"current week", "opus week"}),
     }
 
     def __init__(
@@ -85,7 +87,7 @@ class LiveUsageAdapter:
 
     @classmethod
     def _weekly_used_values(cls, lane_id: str, source: object) -> list[Decimal]:
-        relevant = cls._RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
+        relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
         values: list[Decimal] = []
         for window in getattr(source, "windows", ()) or ():
             label = str(getattr(window, "label", "") or "").strip().casefold()
