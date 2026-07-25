@@ -16,3 +16,4 @@ def test_canonical_runner_preserves_required_windows_environment() -> None:
     assert os.environ["HOMEDRIVE"] == "Q:"
     assert os.environ["HOMEPATH"] == r"\test-home"
     assert Path(os.environ["COMSPEC"]).name.lower() == "cmd.exe"
+    assert ".exe" in os.environ["PATHEXT"].lower().split(";")

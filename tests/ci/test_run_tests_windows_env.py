@@ -19,6 +19,9 @@ def test_canonical_runner_forwards_nonsecret_windows_runtime_environment(tmp_pat
             "APPDATA": str(tmp_path / "roaming-app-data"),
             "HOMEDRIVE": "Q:",
             "HOMEPATH": r"\test-home",
+            "PATHEXT": os.environ.get(
+                "PATHEXT", ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+            ),
             "HERMES_PYTHON": os.environ.get("HERMES_PYTHON", os.sys.executable),
         }
     )
