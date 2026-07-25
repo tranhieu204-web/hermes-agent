@@ -1,45 +1,30 @@
-"""Kill-and-report orchestration for a tripped session.
-
-The enforcer turns a :class:`~gateway.fleet_safety.deadloop_guard.Trip` into
-three side effects, in a fixed order, through an injected :class:`KillActions`
-seam:
-
-  1. **interrupt** the running agent loop — the hard stop (not a warning).
-  2. **release_lease** so the session's turn lease is freed and the slot is
-     reusable.
-  3. **notify** Telegram + desktop with the kill report — never silent.
-
-Every step is best-effort and isolated: a failure in one is captured in the
-:class:`EnforcementResult` and does not prevent the others. The enforcer never
-raises into the housekeeping loop. It is deterministic — no clock, no I/O of
-its own; all effects come from the injected callables — which is what makes it
-unit-testable with a fake ``KillActions``.
-"""
+"""Orchestration for guard evaluation results (continuation vs hard stop)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol
+from typing import List, Protocol
 
-from gateway.fleet_safety.deadloop_guard import Trip
-from gateway.fleet_safety.report import format_kill_report
+from gateway.fleet_safety.deadloop_guard import GuardOutcome, GuardEvaluationResult, Trip
+from gateway.fleet_safety.report import format_continuation_report, format_kill_report
+
+
+def is_stop_command(user_text: str) -> bool:
+    """Exact trimmed standalone STOP or /stop matching."""
+    if not user_text:
+        return False
+    s = str(user_text).strip().lower()
+    return s in {"stop", "/stop"}
 
 
 class KillActions(Protocol):
-    """The three effects the enforcer needs. The live wiring adapts the real
-    gateway registries to this; tests pass a fake."""
-
     def interrupt(self, session_id: str, reason: str) -> bool:
-        """Hard-stop the agent loop for ``session_id``. Return True if a live
-        agent was found and interrupted."""
         ...
 
     def release_lease(self, session_id: str) -> bool:
-        """Release the session's turn lease. Return True if one was held."""
         ...
 
     def notify(self, text: str) -> bool:
-        """Deliver ``text`` to Telegram + desktop. Return True if delivered."""
         ...
 
 
@@ -55,7 +40,7 @@ class EnforcementResult:
 
     @property
     def killed(self) -> bool:
-        """The loop was actually stopped (interrupt or lease-release landed)."""
+        """True only if the loop was actually stopped (interrupt or lease-release landed)."""
         return self.interrupted or self.lease_released
 
 
@@ -63,26 +48,47 @@ class GuardEnforcer:
     def __init__(self, actions: KillActions) -> None:
         self._actions = actions
 
-    def enforce(self, trip: Trip) -> EnforcementResult:
+    def enforce(self, trip: GuardEvaluationResult | Trip) -> EnforcementResult:
+        session_id = getattr(trip, "session_id", "")
+        outcome = getattr(trip, "outcome", None)
+        is_hard_stop = getattr(trip, "is_hard_stop", outcome == GuardOutcome.VERIFIED_HARD_STOP)
+        reason_str = getattr(getattr(trip, "trip_reason", None), "value", getattr(getattr(trip, "reason", None), "value", "runaway"))
+
+        # Continuation notice path — NEVER interrupts, releases lease, or claims a stop
+        if not is_hard_stop or outcome == GuardOutcome.CONTINUATION_NOTICE:
+            report_text = format_continuation_report(trip)
+            result = EnforcementResult(
+                session_id=session_id,
+                reason=reason_str,
+                interrupted=False,
+                lease_released=False,
+                report=report_text,
+            )
+            try:
+                result.notified = bool(self._actions.notify(report_text))
+            except Exception as e:
+                result.errors.append(f"notify failed: {e}")
+            return result
+
+        # Hard stop path — only for verified no-progress or non-recoverable error streaks
+        report_text = format_kill_report(trip)
         result = EnforcementResult(
-            session_id=trip.session_id,
-            reason=trip.reason.value,
-            report=format_kill_report(trip),
+            session_id=session_id,
+            reason=reason_str,
+            report=report_text,
         )
-        kill_reason = f"dead-loop guard: {trip.reason.value} — {trip.detail}"
+        kill_reason = f"fleet-safety hard stop: {reason_str} — {getattr(trip, 'detail', '')}"
 
         try:
-            result.interrupted = bool(self._actions.interrupt(trip.session_id, kill_reason))
-        except Exception as e:  # never let a kill failure escape into housekeeping
+            result.interrupted = bool(self._actions.interrupt(session_id, kill_reason))
+        except Exception as e:
             result.errors.append(f"interrupt failed: {e}")
 
         try:
-            result.lease_released = bool(self._actions.release_lease(trip.session_id))
+            result.lease_released = bool(self._actions.release_lease(session_id))
         except Exception as e:
             result.errors.append(f"release_lease failed: {e}")
 
-        # Report even if the interrupt/lease steps failed — a kill that could
-        # not fully land is exactly what an operator most needs to hear about.
         try:
             result.notified = bool(self._actions.notify(result.report))
         except Exception as e:

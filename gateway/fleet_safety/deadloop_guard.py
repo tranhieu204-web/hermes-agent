@@ -1,27 +1,14 @@
-"""Runaway-loop detector for active agent sessions.
+"""Runaway-loop detector for active agent sessions — provider-neutral & progress-aware.
 
 The detector watches a stream of per-session :class:`SessionObservation`
-samples (one per housekeeping tick) and trips on any of four independent
-runaway signals — the four failure modes of the 2026-07-25 incident:
+samples (one per housekeeping tick) and evaluates runaway signals:
 
-  (a) **Rate.** Model-call count *or* estimated token spend over a threshold in
-      a rolling window (default: >100 calls or >4,000,000 tokens per 15 min on
-      one session). The incident's token rate (~5.5M tokens / 15 min) trips
-      this; a healthy interactive session does not.
-  (b) **Repeated non-retryable error.** The same non-retryable (4xx) status
-      code observed on ``>=K`` consecutive samples (default 3). A 4xx does not
-      get better on retry — hammering it is pure waste.
-  (c) **Wall-clock.** One continuous turn running longer than a hard cap
-      (default 60 min). The incident ran ~13 h.
-  (d) **No-forward-progress.** A huge context (>150k tokens) re-sent across
-      ``>=M`` consecutive samples (default 3) with an unchanged state hash —
-      i.e. the loop keeps paying for a giant context but produces no new tool
-      results / state change.
+  (a) Rate / Runtime / Call thresholds: Emit CONTINUATION_NOTICE and continue execution by default.
+  (b) Repeated non-recoverable error streak (K consecutive failures): Hard stop.
+  (c) Verified No-Progress streak (M consecutive verified no-progress attempts): Hard stop.
 
-Determinism: :meth:`RunawayGuard.observe` takes ``now`` explicitly and holds
-all mutable state on the guard instance. Given the same sequence of
-``(observation, now)`` pairs it always trips at the same point on the same
-reason, in the fixed priority order below. It never reads the clock itself.
+Only verified no-progress or repeated non-recoverable failures hard stop work.
+Threshold crossings emit a continuation notice and continue by default.
 """
 
 from __future__ import annotations
@@ -33,7 +20,7 @@ from typing import Deque, Dict, Optional
 
 
 class TripReason(str, enum.Enum):
-    """Why a session was flagged as a runaway. Ordered by evaluation priority."""
+    """Why a session was flagged or tripped."""
 
     WALL_CLOCK = "wall_clock_runtime_exceeded"
     TOKEN_RATE = "token_spend_rate_exceeded"
@@ -42,31 +29,29 @@ class TripReason(str, enum.Enum):
     NO_PROGRESS = "huge_context_no_forward_progress"
 
 
+class GuardOutcome(str, enum.Enum):
+    """Outcome of a guard observation."""
+
+    NO_ACTION = "no_action"
+    CONTINUATION_NOTICE = "continuation_notice"
+    VERIFIED_HARD_STOP = "verified_hard_stop"
+
+
 @dataclass(frozen=True)
 class GuardThresholds:
-    """Trip thresholds. All windows/caps are in seconds; spend in tokens.
-
-    Defaults are chosen so the 2026-07-25 incident trips well before a full
-    wallet drain, while a normal long interactive/agentic session does not.
-    """
+    """Trip thresholds. All windows/caps are in seconds; spend in tokens."""
 
     window_seconds: float = 900.0            # rolling window for rate checks (15 min)
-    max_calls_per_window: int = 100          # (a) call-rate ceiling in window
-    max_tokens_per_window: int = 4_000_000   # (a) token-rate ceiling in window
-    max_runtime_seconds: float = 3600.0      # (c) continuous wall-clock cap (60 min)
-    repeated_error_limit: int = 3            # (b) same 4xx on N consecutive samples
-    huge_context_tokens: int = 150_000       # (d) "huge" context threshold
-    no_progress_samples: int = 3             # (d) consecutive stalled samples to trip
+    max_calls_per_window: int = 100          # call-rate ceiling in window
+    max_tokens_per_window: int = 4_000_000   # token-rate ceiling in window
+    max_runtime_seconds: float = 3600.0      # continuous wall-clock cap (60 min)
+    repeated_error_limit: int = 3            # same 4xx / non-retryable failure streak
+    huge_context_tokens: int = 150_000       # "huge" context threshold
+    no_progress_samples: int = 3             # consecutive verified no-progress attempts
     enabled: bool = True
 
     @classmethod
     def from_config(cls, cfg: Optional[dict]) -> "GuardThresholds":
-        """Build from a ``fleet_safety.deadloop_guard`` config dict.
-
-        Unknown keys are ignored; missing keys fall back to the class default.
-        Values are coerced defensively so a malformed user config can never
-        crash the housekeeping tick — a bad value falls back to the default.
-        """
         cfg = cfg or {}
 
         def _num(key: str, default, cast):
@@ -90,41 +75,58 @@ class GuardThresholds:
 
 @dataclass(frozen=True)
 class SessionObservation:
-    """One sampled snapshot of an active session.
-
-    Cumulative counters (``api_call_count``, ``tokens_used``) are lifetime
-    totals for the session; the guard differences them across the rolling
-    window to get a rate. ``state_hash`` is any value that changes when the
-    session makes forward progress (new tool result / new activity); the guard
-    only cares whether it changed, not what it is.
-    """
+    """One sampled snapshot of an active session."""
 
     session_id: str
     started_at: float                       # epoch seconds the turn began
     api_call_count: int = 0                 # cumulative model calls this session
-    tokens_used: int = 0                    # cumulative estimated tokens this session
+    tokens_used: int = 0                    # cumulative tokens (measured or estimated)
     context_tokens: int = 0                 # size of the context on the latest call
-    state_hash: Optional[str] = None        # changes iff the session made progress
-    error_code: Optional[int] = None        # non-retryable status on the latest call, else None
+    state_hash: Optional[str] = None        # changes iff progress made
+    error_code: Optional[int] = None        # non-retryable status
     provider: str = ""
     model: str = ""
     effort: str = ""
+    usage_quality: str = "unknown"         # "measured", "estimated", "unknown"
+    no_progress_streak: int = 0
+    failure_streak: int = 0
+    is_non_retryable_failure: bool = False
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost: float = 0.0
 
 
-@dataclass(frozen=True)
-class Trip:
-    """A fired detection. Carries everything the report needs, no live handles."""
+@dataclass
+class GuardEvaluationResult:
+    """Evaluation result for an observation. Backward compatible with Trip."""
 
     session_id: str
-    reason: TripReason
-    detail: str
-    estimated_tokens: int
-    estimated_calls: int
-    runtime_seconds: float
-    provider: str
-    model: str
-    effort: str
-    last_state: Optional[str]
+    reason: Optional[TripReason] = None
+    detail: str = ""
+    estimated_tokens: int = 0
+    estimated_calls: int = 0
+    runtime_seconds: float = 0.0
+    provider: str = ""
+    model: str = ""
+    effort: str = ""
+    last_state: Optional[str] = None
+    outcome: GuardOutcome = GuardOutcome.VERIFIED_HARD_STOP
+    is_hard_stop: bool = True
+    notice_text: str = ""
+    trip_reason: Optional[TripReason] = None
+
+    def __post_init__(self) -> None:
+        if self.reason is not None and self.trip_reason is None:
+            self.trip_reason = self.reason
+        elif self.trip_reason is not None and self.reason is None:
+            self.reason = self.trip_reason
+
+
+# Backward compatibility alias
+Trip = GuardEvaluationResult
 
 
 @dataclass
@@ -136,25 +138,16 @@ class _SessionState:
     repeated_error_count: int = 0
     last_state_hash: Optional[str] = None
     stalled_samples: int = 0
-    tripped: bool = False   # latched — a killed session is not re-reported every tick
+    tripped: bool = False
+    notice_latched: bool = False
 
 
 class RunawayGuard:
-    """Stateful, deterministic runaway detector across many sessions.
-
-    Feed it one :class:`SessionObservation` per active session per tick via
-    :meth:`observe`; it returns a :class:`Trip` the first time a session
-    crosses any threshold and ``None`` otherwise. Once a session trips it is
-    latched (subsequent observations return ``None``) so a killed loop is
-    reported exactly once. Call :meth:`forget` when a session ends to release
-    its state.
-    """
+    """Stateful, deterministic runaway detector across sessions."""
 
     def __init__(self, thresholds: Optional[GuardThresholds] = None) -> None:
         self.thresholds = thresholds or GuardThresholds()
         self._sessions: Dict[str, _SessionState] = {}
-
-    # -- lifecycle -------------------------------------------------------
 
     def forget(self, session_id: str) -> None:
         """Drop tracking for a session that has ended (or after a kill)."""
@@ -163,11 +156,8 @@ class RunawayGuard:
     def active_session_ids(self) -> list:
         return list(self._sessions.keys())
 
-    # -- core ------------------------------------------------------------
-
-    def observe(self, obs: SessionObservation, now: float) -> Optional[Trip]:
-        """Record a sample and return a :class:`Trip` if this session crosses
-        a threshold for the first time. Deterministic in ``(obs, now)``."""
+    def observe(self, obs: SessionObservation, now: float) -> Optional[GuardEvaluationResult]:
+        """Record a sample and return an evaluation result if an action/notice is needed."""
         if not self.thresholds.enabled or not obs.session_id:
             return None
 
@@ -183,26 +173,20 @@ class RunawayGuard:
         self._update_error_streak(st, obs)
         self._update_progress(st, obs)
 
-        trip = self._evaluate(st, obs, now)
-        if trip is not None:
-            st.tripped = True
-        return trip
-
-    # -- accumulators ----------------------------------------------------
+        return self._evaluate(st, obs, now)
 
     def _update_samples(self, st: _SessionState, obs: SessionObservation, now: float) -> None:
         st.samples.append((now, int(obs.api_call_count), int(obs.tokens_used)))
         cutoff = now - self.thresholds.window_seconds
-        # Keep one sample just before the cutoff so the window delta spans the
-        # full window rather than only the samples strictly inside it.
         while len(st.samples) > 1 and st.samples[1][0] < cutoff:
             st.samples.popleft()
 
     def _update_error_streak(self, st: _SessionState, obs: SessionObservation) -> None:
         code = obs.error_code
+        if obs.failure_streak > 0:
+            st.repeated_error_count = obs.failure_streak
+            return
         if code is None:
-            # A clean (non-erroring) sample breaks the streak — the session is
-            # making calls that don't hit the same wall.
             st.last_error_code = None
             st.repeated_error_count = 0
             return
@@ -213,18 +197,21 @@ class RunawayGuard:
             st.repeated_error_count = 1
 
     def _update_progress(self, st: _SessionState, obs: SessionObservation) -> None:
+        if obs.no_progress_streak > 0:
+            st.stalled_samples = obs.no_progress_streak
+            return
         huge = obs.context_tokens >= self.thresholds.huge_context_tokens
-        made_progress = obs.state_hash != st.last_state_hash
+        if obs.state_hash is not None and st.last_state_hash is not None:
+            made_progress = obs.state_hash != st.last_state_hash
+        else:
+            made_progress = True
         st.last_state_hash = obs.state_hash
         if huge and not made_progress:
             st.stalled_samples += 1
-        else:
+        elif made_progress:
             st.stalled_samples = 0
 
-    # -- decision --------------------------------------------------------
-
     def _window_deltas(self, st: _SessionState) -> tuple:
-        """(calls, tokens) accumulated across the retained window."""
         if len(st.samples) < 2:
             return 0, 0
         first = st.samples[0]
@@ -233,16 +220,21 @@ class RunawayGuard:
         tokens = max(0, last[2] - first[2])
         return calls, tokens
 
-    def _evaluate(self, st: _SessionState, obs: SessionObservation, now: float) -> Optional[Trip]:
+    def _evaluate(self, st: _SessionState, obs: SessionObservation, now: float) -> Optional[GuardEvaluationResult]:
         t = self.thresholds
         runtime = max(0.0, now - obs.started_at)
         calls_in_window, tokens_in_window = self._window_deltas(st)
 
-        def _mk(reason: TripReason, detail: str) -> Trip:
-            return Trip(
+        # 1. HARD STOP CONDITIONS — ONLY from verified no-progress or repeated non-retryable error
+        if st.repeated_error_count >= t.repeated_error_limit:
+            st.tripped = True
+            return GuardEvaluationResult(
                 session_id=obs.session_id,
-                reason=reason,
-                detail=detail,
+                reason=TripReason.REPEATED_ERROR,
+                trip_reason=TripReason.REPEATED_ERROR,
+                outcome=GuardOutcome.VERIFIED_HARD_STOP,
+                is_hard_stop=True,
+                detail=f"HTTP {st.last_error_code or 'error'} repeated {st.repeated_error_count}x (limit {t.repeated_error_limit})",
                 estimated_tokens=int(obs.tokens_used),
                 estimated_calls=int(obs.api_call_count),
                 runtime_seconds=runtime,
@@ -252,34 +244,66 @@ class RunawayGuard:
                 last_state=obs.state_hash,
             )
 
-        # Priority order: the most unambiguous / cheapest-to-justify first.
-        if runtime > t.max_runtime_seconds:
-            return _mk(
-                TripReason.WALL_CLOCK,
-                f"turn ran {runtime / 60:.1f} min (cap {t.max_runtime_seconds / 60:.0f} min)",
-            )
-        if tokens_in_window > t.max_tokens_per_window:
-            return _mk(
-                TripReason.TOKEN_RATE,
-                f"{tokens_in_window:,} tokens in {t.window_seconds / 60:.0f} min "
-                f"(cap {t.max_tokens_per_window:,})",
-            )
-        if calls_in_window > t.max_calls_per_window:
-            return _mk(
-                TripReason.CALL_RATE,
-                f"{calls_in_window} model calls in {t.window_seconds / 60:.0f} min "
-                f"(cap {t.max_calls_per_window})",
-            )
-        if st.repeated_error_count >= t.repeated_error_limit:
-            return _mk(
-                TripReason.REPEATED_ERROR,
-                f"HTTP {st.last_error_code} repeated {st.repeated_error_count}x "
-                f"(limit {t.repeated_error_limit})",
-            )
         if st.stalled_samples >= t.no_progress_samples:
-            return _mk(
-                TripReason.NO_PROGRESS,
-                f"{obs.context_tokens:,}-token context re-sent {st.stalled_samples}x "
-                f"with no forward progress",
+            st.tripped = True
+            return GuardEvaluationResult(
+                session_id=obs.session_id,
+                reason=TripReason.NO_PROGRESS,
+                trip_reason=TripReason.NO_PROGRESS,
+                outcome=GuardOutcome.VERIFIED_HARD_STOP,
+                is_hard_stop=True,
+                detail=f"{obs.context_tokens:,}-token context re-sent {st.stalled_samples}x with no forward progress",
+                estimated_tokens=int(obs.tokens_used),
+                estimated_calls=int(obs.api_call_count),
+                runtime_seconds=runtime,
+                provider=obs.provider,
+                model=obs.model,
+                effort=obs.effort,
+                last_state=obs.state_hash,
             )
+
+        # 2. CONTINUATION NOTICES — for rate, runtime, call threshold crossings (latched once per episode)
+        threshold_crossed = False
+        reasons = []
+        if runtime > t.max_runtime_seconds:
+            threshold_crossed = True
+            reasons.append(f"runtime {runtime / 60:.1f}m > {t.max_runtime_seconds / 60:.0f}m")
+        if tokens_in_window > t.max_tokens_per_window:
+            threshold_crossed = True
+            reasons.append(f"tokens {tokens_in_window:,} > {t.max_tokens_per_window:,}/15m ({obs.usage_quality})")
+        if calls_in_window > t.max_calls_per_window:
+            threshold_crossed = True
+            reasons.append(f"calls {calls_in_window} > {t.max_calls_per_window}/15m")
+
+        if threshold_crossed:
+            if not st.notice_latched:
+                st.notice_latched = True
+                reason_str = ", ".join(reasons)
+                notice = (
+                    f"⚠️ Session threshold notice: {reason_str}.\n"
+                    f"Usage: input={obs.input_tokens:,}, output={obs.output_tokens:,}, "
+                    f"cache_read={obs.cache_read_tokens:,}, cache_write={obs.cache_write_tokens:,}, "
+                    f"reasoning={obs.reasoning_tokens:,}, quality={obs.usage_quality}.\n"
+                    "Continuing by default. Reply STOP or /stop to cancel."
+                )
+                primary_reason = TripReason.WALL_CLOCK if runtime > t.max_runtime_seconds else (
+                    TripReason.TOKEN_RATE if tokens_in_window > t.max_tokens_per_window else TripReason.CALL_RATE
+                )
+                return GuardEvaluationResult(
+                    session_id=obs.session_id,
+                    reason=primary_reason,
+                    trip_reason=primary_reason,
+                    outcome=GuardOutcome.CONTINUATION_NOTICE,
+                    is_hard_stop=False,
+                    notice_text=notice,
+                    detail=reason_str,
+                    estimated_tokens=int(obs.tokens_used),
+                    estimated_calls=int(obs.api_call_count),
+                    runtime_seconds=runtime,
+                    provider=obs.provider,
+                    model=obs.model,
+                    effort=obs.effort,
+                    last_state=obs.state_hash,
+                )
+
         return None

@@ -2437,6 +2437,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    enabled_toolsets: Optional[List[str]] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2608,9 +2609,8 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # Subagents inherit parent toolsets or caller-supplied narrowing
+                toolsets=t.get("enabled_toolsets") or t.get("toolsets") or enabled_toolsets,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,

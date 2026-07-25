@@ -1697,26 +1697,39 @@ class AIAgent:
         review_memory: bool = False,
         review_skills: bool = False,
     ) -> None:
-        """Spawn the background memory/skill review thread.
+        """Spawn the background memory/skill review thread with containment guards.
 
-        Thin wrapper — the heavy lifting lives in
-        ``agent.background_review.spawn_background_review_thread`` which
-        returns the thread target.  ``threading.Thread`` is constructed
-        here so existing tests that patch ``run_agent.threading.Thread``
-        keep working.
+        Delegated children, cron/ephemeral agents, internal forks, and nested reviews
+        are suppressed. Top-level reviews are single-flight.
         """
+        # Containment checks
+        if getattr(self, "parent_session_id", None) or getattr(self, "_parent_session_id", None) or getattr(self, "_is_delegated", False) or getattr(self, "_delegate_depth", 0) > 0:
+            return
+        if str(getattr(self, "platform", "") or "").lower() == "cron" or getattr(self, "is_ephemeral", False):
+            return
+        if getattr(self, "_is_fork", False) or getattr(self, "is_review_agent", False) or getattr(self, "_memory_write_context", "") == "background_review":
+            return
+        if getattr(self, "_bg_review_active", False):
+            return
+
+        self._bg_review_active = True
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
-        target, _prompt = spawn_background_review_thread(
+        raw_target, _prompt = spawn_background_review_thread(
             self,
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
         )
-        # Carry the active profile into the review thread so MEMORY.md / skill
-        # review writes land in the right profile (#54937).
+
+        def _wrapped_target():
+            try:
+                raw_target()
+            finally:
+                self._bg_review_active = False
+
         t = threading.Thread(
-            target=propagate_context_to_thread(target), daemon=True, name="bg-review"
+            target=propagate_context_to_thread(_wrapped_target), daemon=True, name="bg-review"
         )
         t.start()
 
@@ -3655,7 +3668,9 @@ class AIAgent:
         when it was killed, and by the periodic "still working" notifications.
         """
         elapsed = time.time() - self._last_activity_ts
-        return {
+        tel = getattr(self, "_progress_telemetry", None)
+        snapshot = tel.get_activity_snapshot() if tel else {}
+        res = {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
             "seconds_since_activity": round(elapsed, 1),
@@ -3665,6 +3680,8 @@ class AIAgent:
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
         }
+        res.update(snapshot)
+        return res
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
@@ -6492,6 +6509,13 @@ class AIAgent:
         *,
         failed: bool,
     ) -> str:
+        if hasattr(self, "_progress_telemetry") and self._progress_telemetry is not None:
+            self._progress_telemetry.record_attempt_completion(
+                tool_name=tool_name,
+                args=function_args,
+                result_text=function_result,
+                is_failure=failed,
+            )
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,
@@ -6582,6 +6606,7 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,
+            enabled_toolsets=function_args.get("enabled_toolsets") or function_args.get("toolsets"),
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
