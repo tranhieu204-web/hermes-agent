@@ -414,3 +414,65 @@ def test_console_health_probe_never_makes_stale_usage_fresh(tmp_path, monkeypatc
     assert read.snapshot.freshness is Freshness.STALE
     assert read.health is not None
     assert read.health.freshness is Freshness.FRESH
+
+
+
+def test_console_health_persists_when_all_auto_usage_refreshes_fail(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "usage-weekly.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "plans-1",
+                "checked_at": "2026-07-01T00:00:00.000Z",
+                "source": "prior usage evidence",
+                "plans": [
+                    {
+                        "label": "ChatGPT Pro · Codex",
+                        "weekly_pct_used": 10,
+                        "checked_at": "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                        "label": "Claude Max 20x",
+                        "weekly_pct_used": 20,
+                        "checked_at": "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                        "label": "SuperGrok",
+                        "weekly_pct_used": 30,
+                        "checked_at": "2026-07-01T00:00:00.000Z",
+                    },
+                    {
+                        "label": "Google AI · Antigravity",
+                        "weekly_pct_used": 40,
+                        "checked_at": "2026-07-01T00:00:00.000Z",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
+        lambda lane_id: (True, f"{lane_id} healthy"),
+    )
+
+    report = refresh_usage_document(
+        path=path,
+        home=tmp_path,
+        mirror_path=None,
+        fetch_usage=lambda _provider: None,
+        now=NOW,
+    )
+
+    assert report.ok
+    document = json.loads(path.read_text(encoding="utf-8"))
+    by_label = {row["label"]: row for row in document["plans"]}
+    assert document["checked_at"] == "2026-07-01T00:00:00.000Z"
+    assert by_label["SuperGrok"]["weekly_pct_used"] == 30
+    assert by_label["SuperGrok"]["checked_at"] == "2026-07-01T00:00:00.000Z"
+    assert by_label["SuperGrok"]["health_status"] == "UP"
+    assert by_label["SuperGrok"]["health_checked_at"] == "2026-07-24T12:00:00.000Z"
+    assert by_label["Google AI · Antigravity"]["weekly_pct_used"] == 40
+    assert by_label["Google AI · Antigravity"]["health_status"] == "UP"

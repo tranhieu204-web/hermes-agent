@@ -306,6 +306,7 @@ def refresh_usage_document(
     assert isinstance(plans, list)
     results: list[LaneRefreshResult] = []
     any_auto_success = False
+    any_console_health_success = False
     stamp = _iso(now)
 
     for lane_id, provider_id, default_label, needles in AUTO_LANES:
@@ -380,6 +381,7 @@ def refresh_usage_document(
         row["health_status"] = "UP" if healthy else "DOWN"
         row["health_checked_at"] = stamp
         if healthy:
+            any_console_health_success = True
             results.append(
                 LaneRefreshResult(
                     lane_id=lane_id,
@@ -405,7 +407,11 @@ def refresh_usage_document(
             )
         )
 
-    if not any_auto_success and previous is not None:
+    if (
+        not any_auto_success
+        and not any_console_health_success
+        and previous is not None
+    ):
         # Preserve prior file entirely when every auto lane failed.
         return UsageRefreshReport(
             path=target,
@@ -417,12 +423,13 @@ def refresh_usage_document(
             document=previous,
         )
 
-    document["source"] = (
-        "hermes native fleet usage refresh "
-        "(openai-codex + anthropic headless; grok/antigravity console health probe)"
-    )
     # Root checked_at tracks last successful auto refresh only.
     if any_auto_success:
+        document["source"] = (
+            "hermes native fleet usage refresh "
+            "(openai-codex + anthropic headless; "
+            "grok/antigravity console health probe)"
+        )
         document["checked_at"] = stamp
     document["schema_version"] = document.get("schema_version") or SCHEMA_VERSION
     validated = _validate_document(document)
@@ -447,8 +454,16 @@ def refresh_usage_document(
         mirrored_to=mirrored,
         source=str(validated.get("source") or ""),
         lanes=tuple(results),
-        ok=any_auto_success,
-        detail="refreshed" if any_auto_success else "created empty shell",
+        ok=any_auto_success or any_console_health_success,
+        detail=(
+            "refreshed"
+            if any_auto_success
+            else (
+                "console health refreshed; prior usage preserved"
+                if any_console_health_success
+                else "created empty shell"
+            )
+        ),
         document=validated,
     )
 
