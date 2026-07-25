@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Mapping, MutableMapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Protocol, Sequence
 
 from .capacity import BridgeUsageAdapter
 from .config import FleetConfig
@@ -47,6 +47,7 @@ class FleetService:
         now: Callable[[], datetime] | None = None,
         owner_uuid: str | None = None,
         require_verified_health: bool = False,
+        lane_selector: Callable[..., object] | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -59,6 +60,7 @@ class FleetService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.owner_uuid = owner_uuid or str(uuid.uuid4())
         self.require_verified_health = require_verified_health
+        self.lane_selector = lane_selector
 
     def _inputs(
         self,
@@ -140,10 +142,39 @@ class FleetService:
 
     def plan(self, task: TaskSpec) -> RouteDecision:
         evaluations = self.inspect(task)
+        rotation_index = self.store.rotation_cursor()
+        if self.lane_selector is None:
+            return select_lane(evaluations, rotation_index=rotation_index)
+
+        eligible = tuple(item for item in evaluations if item.eligible)
+        if not eligible:
+            return select_lane(evaluations, rotation_index=rotation_index)
+
+        cyclic = eligible[rotation_index % len(eligible)]
+        selector_config: dict[str, Any] = {
+            "fleet": {
+                "switch_delta_pct": float(self.config.switch_delta_pct),
+                "lanes": {
+                    item.lane_id: {
+                        "enabled": item.eligible,
+                        "reserve_floor_pct": float(
+                            self.config.lanes[item.lane_id].reserve_floor_pct
+                        ),
+                    }
+                    for item in evaluations
+                },
+            }
+        }
+        selected = self.lane_selector(
+            config=selector_config,
+            current_provider=cyclic.profile.provider_id,
+            is_heavy=True,
+            now=self._now().astimezone(timezone.utc).timestamp(),
+        )
         return select_lane(
             evaluations,
-            rotation_index=self.store.rotation_cursor(),
-            switch_delta=self.config.switch_delta_pct,
+            rotation_index=rotation_index,
+            selected_lane_id=str(getattr(selected, "lane", "") or ""),
         )
 
     def preview_parent(self, task: TaskSpec) -> RouteDecision:

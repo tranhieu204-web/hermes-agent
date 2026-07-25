@@ -327,30 +327,22 @@ def test_billing_safety_requires_observed_evidence_not_policy_text(changes, reas
     assert reason in evaluation.reasons
 
 
-@pytest.mark.parametrize(
-    ("delta", "expected_lane", "switched"),
-    [
-        ("19.999", "chatgpt_codex", False),
-        ("20.000", "claude_code", True),
-        ("20.001", "claude_code", True),
-    ],
-)
-def test_exact_twenty_point_switch_boundary(delta, expected_lane, switched):
+def test_external_ranking_choice_is_validated_without_policy_reranking():
     priority = _inputs(_profile("chatgpt_codex", 0), "60.000")
-    alternative = _inputs(
-        _profile("claude_code", 1), str(Decimal("60.000") + Decimal(delta))
-    )
+    alternative = _inputs(_profile("claude_code", 1), "80.000")
     evaluations = tuple(
         evaluate_lane(item, TASK, now=NOW) for item in (priority, alternative)
     )
 
-    decision = select_lane(evaluations, rotation_index=0)
-
-    assert decision.lane_id == expected_lane
-    assert decision.switch_applied is switched
-    assert decision.reason is (
-        ReasonCode.BALANCE_THRESHOLD if switched else ReasonCode.ROTATION
+    decision = select_lane(
+        evaluations,
+        rotation_index=0,
+        selected_lane_id="claude_code",
     )
+
+    assert decision.lane_id == "claude_code"
+    assert decision.switch_applied
+    assert decision.reason is ReasonCode.BALANCE_THRESHOLD
 
 
 def test_non_comparable_usage_never_overrides_deterministic_rotation():
@@ -374,7 +366,7 @@ def test_non_comparable_usage_never_overrides_deterministic_rotation():
 
     assert decision.lane_id == "chatgpt_codex"
     assert decision.reason is ReasonCode.ROTATION
-    assert ReasonCode.USAGE_NOT_COMPARABLE in decision.evaluations[1].reasons
+    assert decision.evaluations == evaluations
 
 
 def test_exact_top_capacity_ties_rotate_in_fixed_order_without_hidden_mutation():

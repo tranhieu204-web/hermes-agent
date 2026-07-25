@@ -156,7 +156,27 @@ def _service(tmp_path, reads, *, adapters=None):
     )
 
 
-def test_composition_root_selects_up_high_headroom_lane_and_rejects_down(tmp_path):
+def test_composition_root_selects_up_high_headroom_lane_and_rejects_down(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    used_by_provider = {
+        "openai-codex": 10.0,
+        "antigravity": 15.0,
+    }
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda provider, **_kwargs: SimpleNamespace(
+            available=True,
+            fetched_at=NOW,
+            windows=(
+                SimpleNamespace(
+                    label="Weekly",
+                    used_percent=used_by_provider[provider],
+                ),
+            ),
+        ),
+    )
     service = _service(
         tmp_path,
         {
@@ -179,9 +199,59 @@ def test_composition_root_selects_up_high_headroom_lane_and_rejects_down(tmp_pat
     assert ReasonCode.HEALTH_DOWN in by_lane["grok"].reasons
 
 
+def test_composition_root_routes_through_usage_verifier_after_hard_gates(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    fetched_providers = []
+    used_by_provider = {
+        "openai-codex": 40.0,
+        "anthropic": 0.0,
+        "xai-oauth": 0.0,
+        "antigravity": 20.0,
+    }
+
+    def fetch_usage(provider, **_kwargs):
+        fetched_providers.append(provider)
+        return SimpleNamespace(
+            available=True,
+            fetched_at=NOW,
+            windows=(
+                SimpleNamespace(
+                    label="Weekly",
+                    used_percent=used_by_provider[provider],
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch_usage)
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": _read("chatgpt_codex", "60", LaneHealth.UP),
+            "claude_code": _read("claude_code", "100", LaneHealth.DOWN),
+            "grok": _read("grok", "100", LaneHealth.DOWN),
+            "antigravity": _read("antigravity", "80", LaneHealth.UP),
+            "kimi": _read("kimi", None, LaneHealth.UNKNOWN),
+        },
+    )
+
+    decision = service.plan(TASK)
+
+    assert decision.lane_id == "antigravity"
+    assert decision.switch_applied
+    assert fetched_providers == ["openai-codex", "antigravity"]
+    by_lane = {item.lane_id: item for item in decision.evaluations}
+    assert not by_lane["claude_code"].eligible
+    assert not by_lane["grok"].eligible
+    assert ReasonCode.HEALTH_DOWN in by_lane["claude_code"].reasons
+    assert ReasonCode.HEALTH_DOWN in by_lane["grok"].reasons
+
+
 def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     bridge = tmp_path / "fleet" / "usage-weekly.json"
     bridge.parent.mkdir(parents=True)
     bridge.write_text(
@@ -205,7 +275,7 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
 
     fetched_providers = []
 
-    def fetch_usage(provider):
+    def fetch_usage(provider, **_kwargs):
         fetched_providers.append(provider)
         return SimpleNamespace(
             available=provider == "openai-codex",
@@ -254,7 +324,7 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
     assert codex.capacity is not None
     assert codex.capacity.used_pct == Decimal("10.000")
     assert codex.capacity.source_kind == "authoritative_account_usage"
-    assert fetched_providers == ["openai-codex"]
+    assert fetched_providers == ["openai-codex", "openai-codex"]
 
 
 @pytest.mark.parametrize(
@@ -447,8 +517,26 @@ def test_authoritative_usage_does_not_override_independent_down_health(tmp_path)
     ],
 )
 def test_composition_root_uses_exact_twenty_point_switch_threshold(
-    tmp_path, antigravity_remaining, expected_lane, switch_applied
+    tmp_path, monkeypatch, antigravity_remaining, expected_lane, switch_applied
 ):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    used_by_provider = {
+        "openai-codex": 40.0,
+        "antigravity": 100.0 - float(antigravity_remaining),
+    }
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda provider, **_kwargs: SimpleNamespace(
+            available=True,
+            fetched_at=NOW,
+            windows=(
+                SimpleNamespace(
+                    label="Weekly",
+                    used_percent=used_by_provider[provider],
+                ),
+            ),
+        ),
+    )
     service = _service(
         tmp_path,
         {

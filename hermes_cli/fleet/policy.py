@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -236,8 +235,14 @@ def select_lane(
     *,
     rotation_index: int = 0,
     switch_delta: Decimal = SWITCH_DELTA,
+    selected_lane_id: str | None = None,
 ) -> RouteDecision:
-    """Select a lane deterministically without mutating rotation state."""
+    """Validate an external ranking choice or rotate without ranking.
+
+    Live usage ranking belongs to ``gateway.fleet_safety.selector``. This
+    function owns only the hard-gate boundary and deterministic rotation used
+    by non-live callers.
+    """
 
     ordered = tuple(sorted(evaluations, key=lambda item: item.profile.order))
     pool = tuple(item for item in ordered if item.eligible)
@@ -251,40 +256,21 @@ def select_lane(
 
     chosen_pos = rotation_index % len(pool)
     cyclic = pool[chosen_pos]
-    chosen = cyclic
-    annotated: dict[str, LaneEvaluation] = {}
-    comparable = tuple(
-        item for item in pool if _capacity_is_comparable(cyclic, item)
-    )
-    for item in pool:
-        if (
-            item.capacity is not None
-            and cyclic.capacity is not None
-            and item is not cyclic
-            and item not in comparable
-        ):
-            annotated[item.lane_id] = _with_reason(
-                item, ReasonCode.USAGE_NOT_COMPARABLE
-            )
-    if comparable and cyclic in comparable and cyclic.capacity is not None:
-        best_remaining = max(
-            item.capacity.effective_remaining_pct  # type: ignore[union-attr]
-            for item in comparable
+    if selected_lane_id is None:
+        chosen = cyclic
+    else:
+        chosen = next(
+            (item for item in pool if item.lane_id == selected_lane_id),
+            None,
         )
-        difference = (
-            best_remaining - cyclic.capacity.effective_remaining_pct
-        )
-        if difference >= switch_delta:
-            chosen = next(
-                item
-                for item in comparable
-                if item.capacity is not None
-                and item.capacity.effective_remaining_pct == best_remaining
+        if chosen is None:
+            return RouteDecision(
+                lane_id=None,
+                reason=ReasonCode.NO_ELIGIBLE_LANE,
+                evaluations=ordered,
+                rotation_index=rotation_index,
             )
 
-    decision_evaluations = tuple(
-        annotated.get(item.lane_id, item) for item in ordered
-    )
     return RouteDecision(
         lane_id=chosen.lane_id,
         reason=(
@@ -292,39 +278,7 @@ def select_lane(
             if chosen is not cyclic
             else ReasonCode.ROTATION
         ),
-        evaluations=decision_evaluations,
+        evaluations=ordered,
         rotation_index=(chosen_pos + 1) % len(pool),
         switch_applied=chosen is not cyclic,
     )
-
-
-def _capacity_is_comparable(
-    cyclic: LaneEvaluation,
-    candidate: LaneEvaluation,
-) -> bool:
-    left = cyclic.capacity
-    right = candidate.capacity
-    return bool(
-        left is not None
-        and right is not None
-        and left.freshness is Freshness.FRESH
-        and right.freshness is Freshness.FRESH
-        and left.confidence is Confidence.HIGH
-        and right.confidence is Confidence.HIGH
-        and left.measurement_kind is MeasurementKind.MEASURED
-        and right.measurement_kind is MeasurementKind.MEASURED
-        and left.comparability_group
-        and left.comparability_group == right.comparability_group
-        and left.quota_window_id
-        and left.quota_window_id == right.quota_window_id
-    )
-
-
-def _with_reason(
-    evaluation: LaneEvaluation,
-    reason: ReasonCode,
-) -> LaneEvaluation:
-    if reason in evaluation.reasons:
-        return evaluation
-    reasons = tuple(code for code in evaluation.reasons if code is not ReasonCode.MET)
-    return replace(evaluation, reasons=reasons + (reason,))

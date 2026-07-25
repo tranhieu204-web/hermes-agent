@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from hermes_cli.config import load_config_readonly
 from hermes_constants import get_hermes_home
+from gateway.fleet_safety.selector import select_best_lane
 
 from .adapters.live_routes import live_adapters
 from .capacity import BridgeUsageAdapter
@@ -102,6 +103,7 @@ def build_fleet_service(
         capacity_source=live_capacity_source,
         now=now,
         require_verified_health=True,
+        lane_selector=select_best_lane,
     )
 
 
