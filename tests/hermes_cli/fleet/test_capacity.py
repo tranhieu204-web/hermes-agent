@@ -11,6 +11,7 @@ from hermes_cli.fleet.capacity import BridgeUsageAdapter
 from hermes_cli.fleet.types import (
     Confidence,
     Freshness,
+    LaneHealth,
     MeasurementKind,
     ReasonCode,
 )
@@ -236,6 +237,53 @@ def test_bridge_reads_live_plans_schema_with_deterministic_labels_and_row_times(
     assert codex.comparability_group is None
     assert codex.quota_window_id is None
     assert codex.measurement_kind is MeasurementKind.UNKNOWN
+
+
+def test_malformed_plan_usage_preserves_independent_down_health(tmp_path):
+    path = tmp_path / "usage-weekly.json"
+    _write(
+        path,
+        {
+            "checked_at": "2026-07-23T23:30:00Z",
+            "plans": [
+                {
+                    "label": "ChatGPT Pro · Codex",
+                    "weekly_pct_used": "malformed",
+                    "checked_at": "2026-07-23T23:45:00Z",
+                    "health_status": "DOWN",
+                    "health_checked_at": "2026-07-23T23:50:00Z",
+                }
+            ],
+        },
+    )
+
+    result = BridgeUsageAdapter(path).read("chatgpt_codex", now=NOW)
+
+    assert result.snapshot is None
+    assert result.reason is ReasonCode.CAPACITY_INVALID
+    assert result.health is not None
+    assert result.health.status is LaneHealth.DOWN
+    assert result.health.freshness is Freshness.FRESH
+
+
+def test_malformed_legacy_lane_usage_preserves_independent_down_health(tmp_path):
+    path = tmp_path / "usage-weekly.json"
+    _write(
+        path,
+        _payload(
+            used_pct="malformed",
+            health_status="DOWN",
+            health_checked_at="2026-07-23T23:50:00Z",
+        ),
+    )
+
+    result = BridgeUsageAdapter(path).read("chatgpt_codex", now=NOW)
+
+    assert result.snapshot is None
+    assert result.reason is ReasonCode.CAPACITY_INVALID
+    assert result.health is not None
+    assert result.health.status is LaneHealth.DOWN
+    assert result.health.freshness is Freshness.FRESH
 
 
 @pytest.mark.parametrize(

@@ -474,7 +474,10 @@ def test_live_usage_falls_back_to_bridge_without_upgrading_evidence(tmp_path):
     assert read.health.status is LaneHealth.UP
 
 
-def test_authoritative_usage_does_not_override_independent_down_health(tmp_path):
+@pytest.mark.parametrize("bridge_used", [90, "malformed"])
+def test_authoritative_usage_does_not_override_independent_down_health(
+    tmp_path, bridge_used
+):
     bridge = tmp_path / "usage-weekly.json"
     bridge.write_text(
         json.dumps(
@@ -483,7 +486,7 @@ def test_authoritative_usage_does_not_override_independent_down_health(tmp_path)
                 "plans": [
                     {
                         "label": "ChatGPT Pro · Codex",
-                        "weekly_pct_used": 90,
+                        "weekly_pct_used": bridge_used,
                         "checked_at": "2026-07-01T00:00:00Z",
                         "health_status": "DOWN",
                         "health_checked_at": "2026-07-25T08:00:00Z",
@@ -508,6 +511,26 @@ def test_authoritative_usage_does_not_override_independent_down_health(tmp_path)
     assert read.snapshot.source_kind == "authoritative_account_usage"
     assert read.health is not None
     assert read.health.status is LaneHealth.DOWN
+
+    executed: list[str] = []
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": read,
+            "claude_code": _read("claude_code", None, LaneHealth.DOWN),
+            "grok": _read("grok", None, LaneHealth.DOWN),
+            "antigravity": _read("antigravity", None, LaneHealth.DOWN),
+            "kimi": _read("kimi", None, LaneHealth.UNKNOWN),
+        },
+        adapters={"chatgpt_codex": _SuccessAdapter(executed)},
+    )
+
+    result = service.run(TASK, prompt="respect independent down health")
+
+    assert result.reason is ReasonCode.NO_ELIGIBLE_LANE
+    assert result.pin is None
+    assert result.lease is None
+    assert executed == []
 
 
 @pytest.mark.parametrize(
