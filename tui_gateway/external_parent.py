@@ -118,8 +118,6 @@ def _parent_receipt(
             "endpoint_kind": "antigravity_cloud_code",
             "conversation_id": conversation_id,
             "continued": continued,
-            "served_model_id": canonical_model_id,
-            "served_model_label": expected_display_label,
             "fallback_enabled": False,
         }
     )

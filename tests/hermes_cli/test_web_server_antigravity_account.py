@@ -151,3 +151,11 @@ def test_raw_google_credentials_never_create_an_antigravity_account(monkeypatch,
 
     assert status["logged_in"] is False
     assert not ({row["id"] for row in rows} & {"gemini", "google", "vertex", "google-adc"})
+
+
+def test_desktop_never_offers_a_raw_gemini_credential_probe(server):
+    assert "GEMINI_API_KEY" not in server._CREDENTIAL_PROBES
+    assert all(
+        "generativelanguage.googleapis.com" not in url
+        for url, _auth in server._CREDENTIAL_PROBES.values()
+    )

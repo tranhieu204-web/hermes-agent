@@ -9,7 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.fleet.adapters.live_routes import AntigravityAdapter
+from hermes_cli.fleet.adapters.live_routes import (
+    AntigravityAdapter,
+    inspect_agy_subscription_receipt,
+)
 from hermes_cli.fleet.profiles import profile_map
 from hermes_cli.fleet.types import (
     AdapterRequest,
@@ -25,6 +28,9 @@ DISPLAY_MODEL_LABEL = "Gemini 3.1 Pro (High)"
 RECEIPT_LINE = (
     "I0724 11:02:16.509256 40296 model_config_manager.go:272] "
     f'Propagating selected model override to backend: label="{DISPLAY_MODEL_LABEL}"'
+    "\napplyAuthResult: authMethod=consumer, quotaProject="
+    "\nURL: https://daily-cloudcode-pa.googleapis.com/"
+    "v1internal:streamGenerateContent?alt=sse"
 )
 
 
@@ -133,7 +139,7 @@ def test_agy_uses_display_label_positional_prompt_and_unique_profile_logs(
                 'label="Gemini 3.6 Flash (High)"'
             ),
             ReasonCode.MODEL_MISMATCH,
-            "display_label_mismatch",
+            "served_model_mismatch",
         ),
         ("unrelated log line", ReasonCode.MALFORMED_OUTPUT, "missing_receipt"),
         (b"\xff\xfe", ReasonCode.MALFORMED_OUTPUT, "malformed_log"),
@@ -181,6 +187,75 @@ def test_agy_receipt_failures_are_closed_and_sanitized(
     evidence = evidence_files[0].read_text(encoding="utf-8")
     assert expected_status in evidence
     assert secret not in evidence
+
+
+def test_agy_unknown_backend_label_is_not_echoed_to_failure_evidence(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "profile-home"
+    unknown_label = "AGY_UNKNOWN_LABEL_SECRET_CANARY_8f14e45fceea"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def process(argv, **_kwargs):
+        _write_receipt(
+            argv,
+            (
+                "applyAuthResult: authMethod=consumer, quotaProject=\n"
+                "URL: https://daily-cloudcode-pa.googleapis.com/"
+                "v1internal:streamGenerateContent?alt=sse\n"
+                "Propagating selected model override to backend: "
+                f'label="{unknown_label}"'
+            ),
+        )
+        return SimpleNamespace(returncode=0, stdout="must fail closed", stderr="")
+
+    request = _request(tmp_path)
+    result = AntigravityAdapter(
+        sys.executable, run_process=process
+    ).execute(request, _qualification(request))
+
+    assert result.ok is False
+    assert result.reason is ReasonCode.MODEL_MISMATCH
+    assert result.output == ""
+    assert result.metadata["receipt_check"]["status"] == "unsupported_served_model"
+    assert not list(home.rglob("*.log"))
+    evidence_files = list((home / "fleet" / "evidence" / "agy").glob("*.json"))
+    assert len(evidence_files) == 1
+    surfaces = {
+        "returned metadata": json.dumps(result.metadata, sort_keys=True),
+        "persisted receipt": evidence_files[0].read_text(encoding="utf-8"),
+    }
+    leaks = [name for name, content in surfaces.items() if unknown_label in content]
+    assert leaks == []
+
+
+def test_agy_receipt_records_observed_backend_model_before_comparison(tmp_path):
+    """A mismatch receipt preserves what AGY selected, never the requested identity."""
+
+    log_path = tmp_path / "agy.log"
+    log_path.write_text(
+        "\n".join(
+            (
+                "applyAuthResult: authMethod=consumer, quotaProject=",
+                "URL: https://daily-cloudcode-pa.googleapis.com/"
+                "v1internal:streamGenerateContent?alt=sse",
+                "Propagating selected model override to backend: "
+                'label="Gemini 3.6 Flash (High)"',
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    receipt = inspect_agy_subscription_receipt(
+        log_path,
+        canonical_model_id=CANONICAL_MODEL_ID,
+        expected_display_label=DISPLAY_MODEL_LABEL,
+    )
+
+    assert receipt["status"] == "served_model_mismatch"
+    assert receipt["served_model_id"] == "gemini-3.6-flash-high"
+    assert receipt["served_model_label"] == "Gemini 3.6 Flash (High)"
+    assert receipt["canonical_model_id"] == CANONICAL_MODEL_ID
 
 
 def test_agy_unknown_canonical_model_fails_before_process_launch(
