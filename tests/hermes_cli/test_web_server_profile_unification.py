@@ -761,6 +761,16 @@ class TestProfileScopedFleetStatus:
                 default_reservation_pct=Decimal("5.000"),
                 enabled=True,
                 parent_desktop_enabled=True,
+                bridge_usage_file=isolated_profiles["worker_beta"]
+                / "fleet"
+                / "usage-weekly.json",
+            )
+            capacity_source = SimpleNamespace()
+            store = SimpleNamespace(
+                pin_state_summary=lambda: {
+                    "task_worker": {"total": 0, "by_lane": {}, "by_status": {}},
+                    "desktop_parent": {"total": 0, "by_lane": {}, "by_status": {}},
+                }
             )
 
             def inspect(self, task):

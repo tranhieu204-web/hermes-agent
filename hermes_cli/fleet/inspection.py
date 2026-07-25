@@ -212,8 +212,12 @@ def build_inspection_payload(
         command,
         reservation_pct=service.config.default_reservation_pct,
     )
-    evaluations = service.inspect(task, lane_id=lane)
-    parent_evaluations = service.inspect_parent(task, lane_id=lane)
+    if lane is None:
+        evaluations = service.inspect(task)
+        parent_evaluations = service.inspect_parent(task)
+    else:
+        evaluations = service.inspect(task, lane_id=lane)
+        parent_evaluations = service.inspect_parent(task, lane_id=lane)
     visible = tuple(
         item for item in evaluations if lane is None or item.lane_id == lane
     )

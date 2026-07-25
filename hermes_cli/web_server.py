@@ -3048,6 +3048,21 @@ async def get_health():
     }
 
 
+@app.get("/api/fleet/status")
+def get_fleet_status(profile: Optional[str] = None):
+    """Return the profile-scoped, shared Fleet doctor payload.
+
+    Keep this handler synchronous so FastAPI runs the potentially blocking
+    qualification and usage probes in its worker pool. The shared inspection
+    serializer is the contract consumed by both CLI and Desktop.
+    """
+    from hermes_cli.fleet import inspection
+
+    with _config_profile_scope(profile):
+        service = inspection.build_fleet_service()
+        return inspection.build_inspection_payload(service, command="doctor")
+
+
 @app.get("/api/status")
 async def get_status(profile: Optional[str] = None):
     status_scope = None
@@ -6713,18 +6728,20 @@ async def get_model_options(
     Models" control. Normal opens leave it false to stay on the 1h cache.
     """
     try:
-        from hermes_cli.inventory import build_model_options_payload, load_picker_context
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
         def _build_payload_scoped() -> dict:
             # Keep the profile override inside the worker thread so the full
             # sync picker build (config load, pricing, refresh probes) runs
             # off the event loop under the requested profile.
             with _profile_scope(profile):
-                return build_model_options_payload(
+                return build_models_payload(
                     load_picker_context(),
                     explicit_only=bool(explicit_only),
                     include_unconfigured=bool(include_unconfigured),
                     refresh=bool(refresh),
+                    probe_custom_providers=bool(refresh),
+                    probe_current_custom_provider=not bool(refresh),
                 )
 
         return await run_in_threadpool(_build_payload_scoped)
