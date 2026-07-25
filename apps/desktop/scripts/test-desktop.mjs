@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { listPackage } from '@electron/asar'
 
 import PACKAGE_JSON from '../package.json' with { type: 'json' }
+import {
+  assertExistingDesktopInspectionAllowed,
+  isCredentialEnvVar
+} from './desktop-verifier-lib.mjs'
 
 const MODE = process.argv[2] || 'help'
 const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64'
@@ -204,37 +208,6 @@ function openDmg() {
   run('open', [dmgPath])
 }
 
-const CREDENTIAL_ENV_SUFFIXES = [
-  '_API_KEY',
-  '_TOKEN',
-  '_SECRET',
-  '_PASSWORD',
-  '_CREDENTIALS',
-  '_ACCESS_KEY',
-  '_PRIVATE_KEY',
-  '_OAUTH_TOKEN'
-]
-
-const CREDENTIAL_ENV_NAMES = new Set([
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_TOKEN',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'CUSTOM_API_KEY',
-  'GEMINI_BASE_URL',
-  'OPENAI_BASE_URL',
-  'OPENROUTER_BASE_URL',
-  'OLLAMA_BASE_URL',
-  'GROQ_BASE_URL',
-  'XAI_BASE_URL'
-])
-
-function isCredentialEnvVar(name) {
-  if (CREDENTIAL_ENV_NAMES.has(name)) return true
-  return CREDENTIAL_ENV_SUFFIXES.some(suffix => name.endsWith(suffix))
-}
-
 function launchFresh() {
   if (!exists(APP.binary)) {
     die(`Missing app executable: ${APP.binary}`)
@@ -399,7 +372,8 @@ function printArtifacts(options = {}) {
 
 function help() {
   console.log(`Usage:
-  npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
+  HERMES_DESKTOP_ALLOW_EXISTING=1 npm run test:desktop:existing
+                                # operator deployment inspection only; never verification
   npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
   npm run test:desktop:nsis      # (win32 only) build NSIS installer
@@ -408,6 +382,10 @@ function help() {
 Fast rerun (skip rebuild if the packaged app already exists):
   HERMES_DESKTOP_SKIP_BUILD=1 npm run test:desktop:fresh
 `)
+}
+
+if (MODE === 'existing') {
+  assertExistingDesktopInspectionAllowed()
 }
 
 ensurePlatformBuilds()

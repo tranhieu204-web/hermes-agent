@@ -187,6 +187,35 @@ boundaries, optimistic rollback and stale-response ordering, and both sides of a
 local/remote adapter with its profile routing intact. Match how the suite is
 actually run rather than inventing a command; when in doubt, read the scripts.
 
+## Desktop verification process safety
+
+Desktop verification must never launch against the live Hermes profile or clean
+up by process name. Do not use `taskkill /IM`, `Stop-Process -Name`,
+`Get-Process ... | Stop-Process`, `pkill`, `killall`, WMI/CIM name-based
+termination, or an equivalent global process search. Cleanup may target only a
+child handle or PID owned by the current verifier, including its owned process
+tree.
+
+Use only the repository-owned isolated verifier; do not create an ad-hoc
+Desktop launcher:
+
+```bash
+cd apps/desktop
+npm run verify:desktop:isolated -- --exe <absolute-path-to-worktree-build> --smoke --fake-boot
+```
+
+Do not run a verifier against the production `HERMES_HOME`, production Electron
+userData, or the installed Desktop executable. Verification never restarts the
+production app. A final production restart is one separate, explicit deployment
+lifecycle action after the verified artifact is installed; close and reopen the
+app normally once, never by broad process-name termination.
+
+`npm run test:desktop:existing` is not a verification path. It is an operator
+deployment inspection that intentionally uses the existing Hermes installation
+and live profile, and it is guarded by the explicit
+`HERMES_DESKTOP_ALLOW_EXISTING=1` acknowledgement. Never use it to verify a
+candidate build.
+
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?

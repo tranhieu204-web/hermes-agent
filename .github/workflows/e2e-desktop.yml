@@ -41,6 +41,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Desktop verifier process-safety preflight
+        run: node apps/desktop/scripts/check-verifier-process-safety.mjs
       # Full npm ci (not --ignore-scripts): electron's postinstall
       # downloads the binary we launch, and node-pty's native build is
       # needed for the terminal pane.

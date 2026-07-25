@@ -17,6 +17,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Desktop verifier process-safety preflight
+        run: node apps/desktop/scripts/check-verifier-process-safety.mjs
       - uses: ./.github/actions/retry
         with:
           command: npm ci --ignore-scripts
@@ -63,6 +65,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Desktop verifier process-safety preflight
+        run: node apps/desktop/scripts/check-verifier-process-safety.mjs
       - uses: ./.github/actions/retry
         with:
           command: npm ci

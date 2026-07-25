@@ -54,6 +54,15 @@ CASES = {
     "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
+    "relevant root Desktop harness scripts → frontend": (
+        [
+            "scripts/dev-sandbox.sh",
+            "scripts/desktop-verifier.ps1",
+            "scripts/verify-desktop.py",
+            "scripts/dev-desktop.mjs",
+        ],
+        _lanes(python=True, frontend=True, scan=True),
+    ),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
@@ -131,6 +140,18 @@ CASES = {
 @pytest.mark.parametrize("files,expected", CASES.values(), ids=CASES.keys())
 def test_classify(files, expected):
     assert classify(files) == expected
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "scripts/desktop-verifier.ps1",
+        "scripts/verify-desktop.py",
+        "scripts/dev-desktop.mjs",
+    ],
+)
+def test_relevant_root_desktop_harness_scripts_enable_frontend(path):
+    assert classify([path])["frontend"] is True
 
 
 def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():
