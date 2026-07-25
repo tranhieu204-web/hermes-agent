@@ -46,12 +46,16 @@ def _doctor_for(monkeypatch, qualification):
 def test_antigravity_account_descriptor_is_external_and_curated_between_grok_and_anthropic(server):
     rows = server._build_oauth_catalog()
     ids = [row["id"] for row in rows]
-    row = next(row for row in rows if row["id"] == "antigravity")
+    row = next(row for row in rows if row["id"] == "antigravity-subscription")
 
     assert row["name"] == "Antigravity · Gemini 3.1 Pro High"
     assert row["flow"] == "external"
     assert row["cli_command"] == "agy"
-    assert ids.index("xai-oauth") < ids.index("antigravity") < ids.index("anthropic")
+    assert (
+        ids.index("xai-oauth")
+        < ids.index("antigravity-subscription")
+        < ids.index("anthropic")
+    )
 
 
 def test_qualified_antigravity_inventory_row_is_a_draft_only_fleet_parent(monkeypatch):

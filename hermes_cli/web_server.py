@@ -10052,7 +10052,7 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
     },
     {
-        "id": "antigravity",
+        "id": "antigravity-subscription",
         "name": "Antigravity · Gemini 3.1 Pro High",
         "flow": "external",
         "cli_command": "agy",

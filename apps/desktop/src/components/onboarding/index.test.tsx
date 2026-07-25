@@ -58,7 +58,7 @@ afterEach(() => {
 describe('onboarding Picker', () => {
   it('keeps Antigravity after Grok and before Anthropic with an external connected flow', () => {
     const antigravity = {
-      ...provider('antigravity', 'backend fallback title'),
+      ...provider('antigravity-subscription', 'backend fallback title'),
       flow: 'external' as const,
       status: { logged_in: true }
     }
@@ -69,7 +69,7 @@ describe('onboarding Picker', () => {
       provider('xai-oauth', 'xAI Grok')
     ])
 
-    expect(ordered.map(row => row.id)).toEqual(['xai-oauth', 'antigravity', 'anthropic'])
+    expect(ordered.map(row => row.id)).toEqual(['xai-oauth', 'antigravity-subscription', 'anthropic'])
 
     setProviders(ordered)
     render(<Picker ctx={ctx} />)

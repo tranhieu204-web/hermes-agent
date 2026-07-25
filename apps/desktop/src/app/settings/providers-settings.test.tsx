@@ -139,7 +139,7 @@ describe('ProvidersSettings', () => {
     listOAuthProviders.mockResolvedValue({
       providers: [
         provider('anthropic', false, { name: 'Anthropic API Key' }),
-        provider('antigravity', true, {
+        provider('antigravity-subscription', true, {
           cli_command: 'agy',
           disconnectable: false,
           flow: 'external',
@@ -155,7 +155,7 @@ describe('ProvidersSettings', () => {
     expect(screen.getAllByText('Connected').length).toBeGreaterThanOrEqual(2)
     fireEvent.click(row)
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('antigravity')
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('antigravity-subscription')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
