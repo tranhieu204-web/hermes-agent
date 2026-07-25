@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,19 +112,25 @@ def _collect_observations(
         else:
             effective_session_id = base_session_id
 
-        started_at = float(started_ts.get(session_key, now) or now)
+        started_value = started_ts.get(session_key, now)
+        started_at = float(now if started_value is None else started_value)
         api_calls = int(summary.get("api_call_count", 0) or 0)
 
-        # Real normalized counters
-        u = summary.get("usage") or summary.get("turn_usage") or {}
-        if isinstance(u, dict) and (u.get("input_tokens") or u.get("output_tokens") or u.get("cache_read_tokens")):
+        # Explicit producer usage is authoritative even when every counter is
+        # zero and quality is unknown. Only agents with no usage key at all
+        # enter the clearly-labelled legacy estimate path.
+        has_explicit_usage = "usage" in summary or "turn_usage" in summary
+        u = summary.get("usage") if "usage" in summary else summary.get("turn_usage")
+        if has_explicit_usage and isinstance(u, Mapping):
             inp = int(u.get("input_tokens") or 0)
             outp = int(u.get("output_tokens") or 0)
             cread = int(u.get("cache_read_tokens") or 0)
             cwrite = int(u.get("cache_write_tokens") or 0)
             reasoning = int(u.get("reasoning_tokens") or 0)
             cost_val = float(u.get("cost") or 0.0)
-            quality = str(u.get("quality") or "measured")
+            quality = str(u.get("quality") or "unknown").lower()
+            if quality not in {"measured", "estimated", "unknown"}:
+                quality = "unknown"
             tokens_used = inp + outp + cread + cwrite
         else:
             tokens_used = api_calls * int(assumed_context_tokens)
@@ -138,13 +145,14 @@ def _collect_observations(
         # State hash from progress telemetry
         p_seq = summary.get("progress_seq")
         a_seq = summary.get("attempt_seq")
+        f_seq = summary.get("failure_seq")
         no_prog_streak = int(summary.get("no_progress_streak", 0) or 0)
         fail_streak = int(summary.get("failure_streak", 0) or 0)
 
         if p_seq is not None:
             state_hash = f"p_seq:{p_seq}:attempt:{a_seq}"
         else:
-            state_hash = summary.get("last_attempt_key") or f"call:{api_calls}"
+            state_hash = summary.get("last_attempt_key")
 
         observations.append(
             SessionObservation(
@@ -159,7 +167,10 @@ def _collect_observations(
                 model=str(getattr(agent, "model", "") or ""),
                 effort=_agent_effort(agent),
                 usage_quality=quality,
+                attempt_seq=int(a_seq or 0),
+                progress_seq=int(p_seq or 0),
                 no_progress_streak=no_prog_streak,
+                failure_seq=int(f_seq or 0),
                 failure_streak=fail_streak,
                 is_non_retryable_failure=bool(summary.get("is_non_retryable_failure", False)),
                 input_tokens=inp,

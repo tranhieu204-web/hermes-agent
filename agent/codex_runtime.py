@@ -691,6 +691,9 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    # One app-server turn is one provider request for the same turn-scoped
+    # activity contract used by the chat-completions loop.
+    agent._api_call_count = 1
     try:
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:

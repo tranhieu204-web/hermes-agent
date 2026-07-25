@@ -88,7 +88,10 @@ class SessionObservation:
     model: str = ""
     effort: str = ""
     usage_quality: str = "unknown"         # "measured", "estimated", "unknown"
+    attempt_seq: int = 0
+    progress_seq: int = 0
     no_progress_streak: int = 0
+    failure_seq: int = 0
     failure_streak: int = 0
     is_non_retryable_failure: bool = False
     input_tokens: int = 0
@@ -136,8 +139,9 @@ class _SessionState:
     samples: Deque[tuple] = field(default_factory=deque)  # (now, api_call_count, tokens_used)
     last_error_code: Optional[int] = None
     repeated_error_count: int = 0
-    last_state_hash: Optional[str] = None
     stalled_samples: int = 0
+    last_attempt_seq: Optional[int] = None
+    last_failure_seq: Optional[int] = None
     tripped: bool = False
     notice_latched: bool = False
 
@@ -176,40 +180,56 @@ class RunawayGuard:
         return self._evaluate(st, obs, now)
 
     def _update_samples(self, st: _SessionState, obs: SessionObservation, now: float) -> None:
-        st.samples.append((now, int(obs.api_call_count), int(obs.tokens_used)))
+        calls = max(0, int(obs.api_call_count))
+        tokens = max(0, int(obs.tokens_used))
         cutoff = now - self.thresholds.window_seconds
-        while len(st.samples) > 1 and st.samples[1][0] < cutoff:
+
+        if not st.samples:
+            if obs.started_at >= cutoff:
+                st.samples.append((min(now, obs.started_at), 0, 0))
+            st.samples.append((now, calls, tokens))
+            return
+
+        last = st.samples[-1]
+        if now < last[0] or calls < last[1] or tokens < last[2]:
+            st.samples.clear()
+            st.samples.append((now, calls, tokens))
+            return
+
+        st.samples.append((now, calls, tokens))
+        while len(st.samples) > 1 and st.samples[1][0] <= cutoff:
             st.samples.popleft()
 
     def _update_error_streak(self, st: _SessionState, obs: SessionObservation) -> None:
-        code = obs.error_code
-        if obs.failure_streak > 0:
-            st.repeated_error_count = obs.failure_streak
-            return
-        if code is None:
-            st.last_error_code = None
+        failure_seq = max(0, int(obs.failure_seq))
+        if st.last_failure_seq is not None and failure_seq < st.last_failure_seq:
+            st.last_failure_seq = failure_seq
             st.repeated_error_count = 0
+            st.last_error_code = None
             return
-        if code == st.last_error_code:
-            st.repeated_error_count += 1
-        else:
-            st.last_error_code = code
-            st.repeated_error_count = 1
+        if st.last_failure_seq == failure_seq:
+            return
+
+        st.last_failure_seq = failure_seq
+        if not obs.is_non_retryable_failure:
+            st.repeated_error_count = 0
+            st.last_error_code = None
+            return
+
+        st.repeated_error_count = max(0, int(obs.failure_streak))
+        st.last_error_code = obs.error_code
 
     def _update_progress(self, st: _SessionState, obs: SessionObservation) -> None:
-        if obs.no_progress_streak > 0:
-            st.stalled_samples = obs.no_progress_streak
-            return
-        huge = obs.context_tokens >= self.thresholds.huge_context_tokens
-        if obs.state_hash is not None and st.last_state_hash is not None:
-            made_progress = obs.state_hash != st.last_state_hash
-        else:
-            made_progress = True
-        st.last_state_hash = obs.state_hash
-        if huge and not made_progress:
-            st.stalled_samples += 1
-        elif made_progress:
+        attempt_seq = max(0, int(obs.attempt_seq))
+        if st.last_attempt_seq is not None and attempt_seq < st.last_attempt_seq:
+            st.last_attempt_seq = attempt_seq
             st.stalled_samples = 0
+            return
+        if st.last_attempt_seq == attempt_seq:
+            return
+
+        st.last_attempt_seq = attempt_seq
+        st.stalled_samples = max(0, int(obs.no_progress_streak))
 
     def _window_deltas(self, st: _SessionState) -> tuple:
         if len(st.samples) < 2:
@@ -252,7 +272,10 @@ class RunawayGuard:
                 trip_reason=TripReason.NO_PROGRESS,
                 outcome=GuardOutcome.VERIFIED_HARD_STOP,
                 is_hard_stop=True,
-                detail=f"{obs.context_tokens:,}-token context re-sent {st.stalled_samples}x with no forward progress",
+                detail=(
+                    f"producer verified no forward progress across "
+                    f"{st.stalled_samples} repeated attempts"
+                ),
                 estimated_tokens=int(obs.tokens_used),
                 estimated_calls=int(obs.api_call_count),
                 runtime_seconds=runtime,

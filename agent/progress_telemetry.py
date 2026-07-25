@@ -10,7 +10,9 @@ import enum
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional
 
 from agent.tool_result_classification import file_mutation_result_landed
@@ -49,14 +51,45 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
 
+    @property
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+                self.reasoning_tokens,
+                self.cost,
+                self.model_requests,
+            )
+        )
+
     def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
         if not isinstance(other, CanonicalUsage):
             return NotImplemented
-        # Quality degrades to lower confidence
-        q_order = {UsageSourceQuality.MEASURED: 2, UsageSourceQuality.ESTIMATED: 1, UsageSourceQuality.UNKNOWN: 0}
-        q_val = min(q_order[self.quality], q_order[other.quality])
-        q_map = {2: UsageSourceQuality.MEASURED, 1: UsageSourceQuality.ESTIMATED, 0: UsageSourceQuality.UNKNOWN}
-        
+        if self.is_empty and not other.is_empty:
+            quality = other.quality
+        elif other.is_empty and not self.is_empty:
+            quality = self.quality
+        elif self.is_empty and other.is_empty:
+            quality = UsageSourceQuality.UNKNOWN
+        elif self.quality == other.quality:
+            quality = self.quality
+        else:
+            # Only two non-empty buckets can degrade one another.
+            q_order = {
+                UsageSourceQuality.MEASURED: 2,
+                UsageSourceQuality.ESTIMATED: 1,
+                UsageSourceQuality.UNKNOWN: 0,
+            }
+            q_map = {
+                2: UsageSourceQuality.MEASURED,
+                1: UsageSourceQuality.ESTIMATED,
+                0: UsageSourceQuality.UNKNOWN,
+            }
+            quality = q_map[min(q_order[self.quality], q_order[other.quality])]
+
         return CanonicalUsage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
@@ -65,7 +98,7 @@ class CanonicalUsage:
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             cost=self.cost + other.cost,
             model_requests=self.model_requests + other.model_requests,
-            quality=q_map[q_val],
+            quality=quality,
         )
 
 
@@ -78,6 +111,38 @@ _UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-
 _REQ_ID_RE = re.compile(r"\breq_[0-9a-zA-Z]+\b")
 _PID_RE = re.compile(r"\bpid\s*[:=]?\s*\d+\b", re.IGNORECASE)
 _TEMP_PATH_RE = re.compile(r"([a-zA-Z]:[\\/][^:\n]*?[\\/](Temp|tmp)[\\/][^\s\n]+|/tmp/[^\s\n]+)", re.IGNORECASE)
+_VOLATILE_ARG_KEYS = frozenset(
+    {
+        "clock",
+        "current_time",
+        "duration",
+        "duration_ms",
+        "elapsed",
+        "elapsed_ms",
+        "heartbeat",
+        "heartbeat_at",
+        "now",
+        "pid",
+        "request_id",
+        "req_id",
+        "span_id",
+        "time",
+        "timestamp",
+        "trace_id",
+        "ts",
+    }
+)
+_VOLATILE_ARG_SUFFIXES = (
+    "_duration",
+    "_duration_ms",
+    "_elapsed",
+    "_elapsed_ms",
+    "_heartbeat",
+    "_heartbeat_at",
+    "_request_id",
+    "_timestamp",
+)
+_MAX_FINGERPRINTS = 128
 
 
 def normalize_result(result_text: Optional[str]) -> str:
@@ -96,15 +161,49 @@ def normalize_result(result_text: Optional[str]) -> str:
     return text.strip()
 
 
+def _normalize_arg_value(value: Any, *, key: str = "") -> Any:
+    lower_key = key.lower()
+    if lower_key in _VOLATILE_ARG_KEYS or lower_key.endswith(_VOLATILE_ARG_SUFFIXES):
+        return "<VOLATILE>"
+    if isinstance(value, Mapping):
+        return {
+            str(child_key): _normalize_arg_value(child_value, key=str(child_key))
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_arg_value(item) for item in value]
+    if isinstance(value, str):
+        return normalize_result(value)
+    return value
+
+
 def canonical_args_hash(args: Mapping[str, Any] | None) -> str:
-    """Compute deterministic sha256 hash of sorted JSON args."""
+    """Compute a deterministic hash after removing volatile argument values."""
     if not args:
         return hashlib.sha256(b"{}").hexdigest()
     try:
-        compact = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
+        normalized = _normalize_arg_value(args)
+        compact = json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
     except Exception:
-        compact = str(args)
+        compact = normalize_result(str(args))
     return hashlib.sha256(compact.encode("utf-8")).hexdigest()
+
+
+def _mechanically_verified_file_mutation(tool_name: str, result_text: Optional[str]) -> bool:
+    """Require the existing landed-result contract plus a non-empty effect list."""
+    if not file_mutation_result_landed(tool_name, result_text or ""):
+        return False
+    try:
+        payload = json.loads(result_text or "")
+    except (TypeError, ValueError):
+        return False
+    files_modified = payload.get("files_modified") if isinstance(payload, Mapping) else None
+    return isinstance(files_modified, list) and bool(files_modified)
 
 
 class ProgressTelemetry:
@@ -113,6 +212,11 @@ class ProgressTelemetry:
     def __init__(self, session_id: str = "", context_id: str = "") -> None:
         self.session_id = session_id
         self.context_id = context_id or session_id
+        self._usage_baseline = CanonicalUsage()
+        self.reset_for_turn()
+
+    def reset_for_turn(self, cumulative_usage: Optional[CanonicalUsage] = None) -> None:
+        """Reset event evidence and snapshot the cumulative usage baseline."""
         self.attempt_seq: int = 0
         self.progress_seq: int = 0
         self.last_attempt_key: Optional[str] = None
@@ -125,6 +229,8 @@ class ProgressTelemetry:
         self.is_last_failure_retryable: bool = True
         self.usage: CanonicalUsage = CanonicalUsage()
         self.last_attempt_tool: str = ""
+        self._fingerprint_counts: OrderedDict[str, int] = OrderedDict()
+        self._usage_baseline = cumulative_usage or CanonicalUsage()
 
     def record_attempt_completion(
         self,
@@ -145,36 +251,50 @@ class ProgressTelemetry:
         normalized = normalize_result(result_text)
         result_h = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-        # Check landed file mutation first
-        landed = file_mutation_landed or file_mutation_result_landed(tool_name, result_text or "")
-        
-        if landed:
+        # The bool is retained for call-site compatibility, but result evidence
+        # remains authoritative: a generic success or no-op is never progress.
+        _ = file_mutation_landed
+        landed = _mechanically_verified_file_mutation(tool_name, result_text)
+        fingerprint = f"{attempt_key}:{result_h}"
+        prior_count = self._fingerprint_counts.get(fingerprint, 0)
+
+        if is_failure:
+            outcome = AttemptOutcome.UNKNOWN
+        elif landed:
             outcome = AttemptOutcome.VERIFIED_PROGRESS
-        elif attempt_key == self.last_attempt_key and result_h == self.last_result_hash:
+        elif prior_count > 0:
             outcome = AttemptOutcome.VERIFIED_NO_PROGRESS
         else:
             outcome = AttemptOutcome.UNKNOWN
 
-        # Update streaks based on non-negotiable semantics
         if outcome == AttemptOutcome.VERIFIED_PROGRESS:
             self.progress_seq += 1
             self.no_progress_streak = 0
+            self._fingerprint_counts.clear()
         elif outcome == AttemptOutcome.VERIFIED_NO_PROGRESS:
-            self.no_progress_streak += 1
-        else:
-            # UNKNOWN outcome does NOT erase existing same-attempt/same-result no-progress pattern!
-            pass
+            repeat_count = prior_count
+            self.no_progress_streak = max(self.no_progress_streak, repeat_count)
 
-        # Failure tracking
+        if not is_failure and not landed:
+            self._fingerprint_counts[fingerprint] = prior_count + 1
+            self._fingerprint_counts.move_to_end(fingerprint)
+            while len(self._fingerprint_counts) > _MAX_FINGERPRINTS:
+                self._fingerprint_counts.popitem(last=False)
+
         if is_failure:
             sig = failure_sig or f"{tool_name}:{result_h[:12]}"
             self.failure_seq += 1
-            if sig == self.last_failure_sig:
-                self.failure_streak += 1
+            if is_retryable:
+                self.failure_streak = 0
+                self.last_failure_sig = None
+                self.is_last_failure_retryable = True
             else:
-                self.failure_streak = 1
-                self.last_failure_sig = sig
-            self.is_last_failure_retryable = is_retryable
+                if sig == self.last_failure_sig:
+                    self.failure_streak += 1
+                else:
+                    self.failure_streak = 1
+                    self.last_failure_sig = sig
+                self.is_last_failure_retryable = False
         else:
             self.failure_streak = 0
             self.last_failure_sig = None
@@ -189,8 +309,85 @@ class ProgressTelemetry:
         """Update or accumulate usage counters."""
         self.usage = self.usage + new_usage
 
-    def get_activity_snapshot(self) -> Dict[str, Any]:
+    def _usage_delta(
+        self,
+        current_usage: CanonicalUsage,
+        *,
+        model_requests: int,
+    ) -> CanonicalUsage:
+        baseline = self._usage_baseline
+        numeric_fields = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "cost",
+        )
+        if any(
+            getattr(current_usage, field_name) < getattr(baseline, field_name)
+            for field_name in numeric_fields
+        ):
+            self._usage_baseline = current_usage
+            return CanonicalUsage(
+                model_requests=max(0, int(model_requests)),
+                quality=UsageSourceQuality.UNKNOWN,
+            )
+
+        delta = CanonicalUsage(
+            input_tokens=max(0, current_usage.input_tokens - baseline.input_tokens),
+            output_tokens=max(0, current_usage.output_tokens - baseline.output_tokens),
+            cache_read_tokens=max(
+                0,
+                current_usage.cache_read_tokens - baseline.cache_read_tokens,
+            ),
+            cache_write_tokens=max(
+                0,
+                current_usage.cache_write_tokens - baseline.cache_write_tokens,
+            ),
+            reasoning_tokens=max(
+                0,
+                current_usage.reasoning_tokens - baseline.reasoning_tokens,
+            ),
+            cost=max(0.0, current_usage.cost - baseline.cost),
+            model_requests=max(0, int(model_requests)),
+        )
+        provider_tokens_supplied = any(
+            (
+                delta.input_tokens,
+                delta.output_tokens,
+                delta.cache_read_tokens,
+                delta.cache_write_tokens,
+                delta.reasoning_tokens,
+            )
+        )
+        return replace(
+            delta,
+            quality=(
+                UsageSourceQuality.MEASURED
+                if provider_tokens_supplied
+                else UsageSourceQuality.UNKNOWN
+            ),
+        )
+
+    def get_activity_snapshot(
+        self,
+        *,
+        current_usage: Optional[CanonicalUsage] = None,
+        model_requests: Optional[int] = None,
+        cost_status: str = "unknown",
+        cost_source: str = "none",
+    ) -> Dict[str, Any]:
         """Return an atomic turn-scoped snapshot separating liveness from progress."""
+        if current_usage is None:
+            usage = self.usage
+            if model_requests is not None:
+                usage = replace(usage, model_requests=max(0, int(model_requests)))
+        else:
+            usage = self._usage_delta(
+                current_usage,
+                model_requests=model_requests or 0,
+            )
         return {
             "session_id": self.session_id,
             "context_id": self.context_id,
@@ -200,17 +397,22 @@ class ProgressTelemetry:
             "last_outcome": self.last_outcome.value,
             "failure_seq": self.failure_seq,
             "failure_streak": self.failure_streak,
+            "is_non_retryable_failure": (
+                self.failure_streak > 0 and not self.is_last_failure_retryable
+            ),
             "last_attempt_key": self.last_attempt_key,
             "last_result_hash": self.last_result_hash,
             "last_attempt_tool": self.last_attempt_tool,
             "usage": {
-                "input_tokens": self.usage.input_tokens,
-                "output_tokens": self.usage.output_tokens,
-                "cache_read_tokens": self.usage.cache_read_tokens,
-                "cache_write_tokens": self.usage.cache_write_tokens,
-                "reasoning_tokens": self.usage.reasoning_tokens,
-                "cost": self.usage.cost,
-                "model_requests": self.usage.model_requests,
-                "quality": self.usage.quality.value,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
+                "reasoning_tokens": usage.reasoning_tokens,
+                "cost": usage.cost,
+                "model_requests": usage.model_requests,
+                "quality": usage.quality.value,
+                "cost_status": cost_status,
+                "cost_source": cost_source,
             },
         }
