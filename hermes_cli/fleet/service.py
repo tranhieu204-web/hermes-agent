@@ -140,9 +140,9 @@ class FleetService:
             )
         )
 
-    def plan(self, task: TaskSpec) -> RouteDecision:
-        evaluations = self.inspect(task)
-        rotation_index = self.store.rotation_cursor()
+    def _select_route(
+        self, evaluations: tuple, *, rotation_index: int
+    ) -> RouteDecision:
         if self.lane_selector is None:
             return select_lane(evaluations, rotation_index=rotation_index)
 
@@ -157,6 +157,9 @@ class FleetService:
                 "lanes": {
                     item.lane_id: {
                         "enabled": item.eligible,
+                        "provider": item.profile.provider_id,
+                        "model": item.selected_model
+                        or next(iter(item.profile.ordered_models), ""),
                         "reserve_floor_pct": float(
                             self.config.lanes[item.lane_id].reserve_floor_pct
                         ),
@@ -170,11 +173,23 @@ class FleetService:
             current_provider=cyclic.profile.provider_id,
             is_heavy=True,
             now=self._now().astimezone(timezone.utc).timestamp(),
+            usage_by_lane={
+                item.lane_id: 100.0
+                - float(item.capacity.effective_remaining_pct)
+                for item in eligible
+                if item.capacity is not None
+            },
         )
         return select_lane(
             evaluations,
             rotation_index=rotation_index,
             selected_lane_id=str(getattr(selected, "lane", "") or ""),
+        )
+
+    def plan(self, task: TaskSpec) -> RouteDecision:
+        return self._select_route(
+            self.inspect(task),
+            rotation_index=self.store.rotation_cursor(),
         )
 
     def preview_parent(self, task: TaskSpec) -> RouteDecision:
@@ -262,12 +277,30 @@ class FleetService:
                 adapter_result=None,
             )
 
+        candidates = self._inputs(at)
+        selected_lane_id = None
+        if self.store.read_pin(task.task_id) is None:
+            evaluations = tuple(
+                evaluate_lane(
+                    candidate,
+                    task,
+                    now=at,
+                    minimum_confidence=self.config.minimum_confidence,
+                )
+                for candidate in candidates
+            )
+            selected_lane_id = self._select_route(
+                evaluations,
+                rotation_index=self.store.rotation_cursor(),
+            ).lane_id
+
         acquisition = self.store.acquire(
             task,
-            self._inputs(at),
+            candidates,
             owner_uuid=self.owner_uuid,
             ttl_seconds=self.config.lease_ttl_seconds,
             now=at,
+            selected_lane_id=selected_lane_id,
         )
         if acquisition.reason is not ReasonCode.MET or acquisition.lease is None:
             return FleetRunResult(

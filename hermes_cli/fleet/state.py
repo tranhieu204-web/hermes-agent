@@ -609,6 +609,7 @@ class FleetStore:
         ttl_seconds: int,
         now: datetime,
         inject_failure: bool = False,
+        selected_lane_id: str | None = None,
     ) -> Acquisition:
         at = _at(now)
         connection = self._connect()
@@ -727,7 +728,11 @@ class FleetStore:
                 return Acquisition(ReasonCode.MET, pin, lease, evaluations)
 
             cursor = self._rotation(connection)
-            decision = select_lane(evaluations, rotation_index=cursor)
+            decision = select_lane(
+                evaluations,
+                rotation_index=cursor,
+                selected_lane_id=selected_lane_id,
+            )
             if decision.lane_id is None:
                 self._audit(
                     connection,

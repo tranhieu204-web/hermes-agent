@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from gateway.fleet_safety.usage_verify import verified_usage_for
 
@@ -179,6 +179,7 @@ def select_best_lane(
     *,
     is_heavy: bool = True,
     now: Optional[float] = None,
+    usage_by_lane: Optional[Mapping[str, float]] = None,
 ) -> SelectedLane:
     """Route to the enabled lane with the highest verified weekly headroom.
 
@@ -216,16 +217,23 @@ def select_best_lane(
             enabled=True,
         )
 
-        verified = verified_usage_for(lane.provider, now=now)
-        used_pct = verified.used_percent
-
-        if is_heavy and (used_pct is None or verified.stale or verified.suspect):
-            used_pct = None
-            headroom = None
-        else:
+        if usage_by_lane is not None:
+            used_pct = usage_by_lane.get(slug)
             headroom = (100.0 - used_pct) if used_pct is not None else None
+            reasons = ["prevalidated fleet capacity"]
+        else:
+            verified = verified_usage_for(lane.provider, now=now)
+            used_pct = verified.used_percent
+            if is_heavy and (
+                used_pct is None or verified.stale or verified.suspect
+            ):
+                used_pct = None
+                headroom = None
+            else:
+                headroom = (100.0 - used_pct) if used_pct is not None else None
+            reasons = verified.reasons
 
-        candidates[slug] = (lane, used_pct, headroom, verified.reasons)
+        candidates[slug] = (lane, used_pct, headroom, reasons)
 
     # Filter eligible lanes: known headroom >= reserve floor
     eligible: Dict[str, Tuple[LaneConfig, Optional[float], float, List[str]]] = {}

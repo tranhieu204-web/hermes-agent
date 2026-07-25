@@ -13,6 +13,7 @@ from hermes_cli.fleet.inspection import build_fleet_service, build_inspection_pa
 from hermes_cli.fleet.live_capacity import LiveUsageAdapter
 from hermes_cli.fleet.capacity import BridgeUsageAdapter
 from hermes_cli.fleet.types import (
+    AdapterResult,
     CapacityRead,
     CapacitySnapshot,
     Confidence,
@@ -110,8 +111,10 @@ def _read(lane_id: str, remaining: str | None, health: LaneHealth) -> CapacityRe
 class _CapacitySource:
     def __init__(self, reads):
         self.reads = reads
+        self.calls: list[str] = []
 
     def read(self, lane_id, **_kwargs):
+        self.calls.append(lane_id)
         return self.reads[lane_id]
 
 
@@ -122,6 +125,22 @@ class _Adapter:
     def execute(self, *_args, **_kwargs):
         self.calls += 1
         raise AssertionError("adapter must not execute without an eligible lane")
+
+
+@dataclass
+class _SuccessAdapter:
+    calls: list[str]
+
+    def execute(self, request, qualification):
+        self.calls.append(request.profile.lane_id)
+        return AdapterResult(
+            ok=True,
+            reason=ReasonCode.MET,
+            provider_id=request.profile.provider_id,
+            model_id=request.model,
+            auth_kind=qualification.auth_kind or "unknown",
+            adapter_kind=request.profile.adapter_kind,
+        )
 
 
 def _service(tmp_path, reads, *, adapters=None):
@@ -199,32 +218,15 @@ def test_composition_root_selects_up_high_headroom_lane_and_rejects_down(
     assert ReasonCode.HEALTH_DOWN in by_lane["grok"].reasons
 
 
-def test_composition_root_routes_through_usage_verifier_after_hard_gates(
+def test_composition_root_ranks_prevalidated_capacity_after_hard_gates(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    fetched_providers = []
-    used_by_provider = {
-        "openai-codex": 40.0,
-        "anthropic": 0.0,
-        "xai-oauth": 0.0,
-        "antigravity": 20.0,
-    }
-
-    def fetch_usage(provider, **_kwargs):
-        fetched_providers.append(provider)
-        return SimpleNamespace(
-            available=True,
-            fetched_at=NOW,
-            windows=(
-                SimpleNamespace(
-                    label="Weekly",
-                    used_percent=used_by_provider[provider],
-                ),
-            ),
-        )
-
-    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch_usage)
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ranking must not re-fetch provider usage")
+        ),
+    )
     service = _service(
         tmp_path,
         {
@@ -240,7 +242,6 @@ def test_composition_root_routes_through_usage_verifier_after_hard_gates(
 
     assert decision.lane_id == "antigravity"
     assert decision.switch_applied
-    assert fetched_providers == ["openai-codex", "antigravity"]
     by_lane = {item.lane_id: item for item in decision.evaluations}
     assert not by_lane["claude_code"].eligible
     assert not by_lane["grok"].eligible
@@ -324,7 +325,7 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
     assert codex.capacity is not None
     assert codex.capacity.used_pct == Decimal("10.000")
     assert codex.capacity.source_kind == "authoritative_account_usage"
-    assert fetched_providers == ["openai-codex", "openai-codex"]
+    assert fetched_providers == ["openai-codex"]
 
 
 @pytest.mark.parametrize(
@@ -519,22 +520,10 @@ def test_authoritative_usage_does_not_override_independent_down_health(tmp_path)
 def test_composition_root_uses_exact_twenty_point_switch_threshold(
     tmp_path, monkeypatch, antigravity_remaining, expected_lane, switch_applied
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    used_by_provider = {
-        "openai-codex": 40.0,
-        "antigravity": 100.0 - float(antigravity_remaining),
-    }
     monkeypatch.setattr(
         "agent.account_usage.fetch_account_usage",
-        lambda provider, **_kwargs: SimpleNamespace(
-            available=True,
-            fetched_at=NOW,
-            windows=(
-                SimpleNamespace(
-                    label="Weekly",
-                    used_percent=used_by_provider[provider],
-                ),
-            ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ranking must use evaluated capacity")
         ),
     )
     service = _service(
@@ -554,6 +543,54 @@ def test_composition_root_uses_exact_twenty_point_switch_threshold(
 
     assert decision.lane_id == expected_lane
     assert decision.switch_applied is switch_applied
+
+
+def test_run_executes_the_same_high_headroom_lane_selected_by_plan(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("execution ranking must use evaluated capacity")
+        ),
+    )
+    executed: list[str] = []
+    adapter = _SuccessAdapter(executed)
+    service = _service(
+        tmp_path,
+        {
+            "chatgpt_codex": _read("chatgpt_codex", "60", LaneHealth.UP),
+            "claude_code": _read("claude_code", None, LaneHealth.DOWN),
+            "grok": _read("grok", None, LaneHealth.DOWN),
+            "antigravity": _read("antigravity", "90", LaneHealth.UP),
+            "kimi": _read("kimi", None, LaneHealth.UNKNOWN),
+        },
+        adapters={
+            "chatgpt_codex": adapter,
+            "claude_code": object(),
+            "grok": object(),
+            "antigravity": adapter,
+        },
+    )
+    task = TaskSpec(
+        task_id="execution-headroom-route",
+        cwd=Path("."),
+        required_capabilities=TASK.required_capabilities,
+        reservation_pct=Decimal("0"),
+    )
+
+    result = service.run(task, prompt="route through selected lane")
+
+    assert result.ok
+    assert result.pin is not None
+    assert result.pin.lane_id == "antigravity"
+    assert executed == ["antigravity"]
+    assert service.capacity_source.calls == [
+        "chatgpt_codex",
+        "claude_code",
+        "grok",
+        "antigravity",
+    ]
 
 
 def test_composition_root_all_unknown_creates_no_pin_and_executes_no_adapter(
