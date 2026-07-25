@@ -219,11 +219,11 @@ const ALLOW_CASES = [
     ].join('\n')
   },
   {
-    name: 'canonical exact Windows owned-tree cleanup',
+    name: 'canonical exact Windows owned-handle cleanup',
     path: 'apps/desktop/scripts/desktop-verifier-lib.mjs',
     source: [
-      'async function terminateOwnedChild({ spawnSyncImpl, plan }) {',
-      '  return spawnSyncImpl(plan.command, plan.args)',
+      'async function terminateOwnedChild({ child }) {',
+      '  return child.kill()',
       '}'
     ].join('\n')
   },

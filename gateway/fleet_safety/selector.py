@@ -220,12 +220,15 @@ def select_best_lane(
 
         if usage_by_lane is not None:
             raw_used_pct = usage_by_lane.get(slug)
-            try:
-                used_pct = (
-                    float(raw_used_pct) if raw_used_pct is not None else None
-                )
-            except (TypeError, ValueError):
+            if isinstance(raw_used_pct, bool):
                 used_pct = None
+            else:
+                try:
+                    used_pct = (
+                        float(raw_used_pct) if raw_used_pct is not None else None
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    used_pct = None
             if used_pct is not None and not (
                 math.isfinite(used_pct) and 0.0 <= used_pct <= 100.0
             ):

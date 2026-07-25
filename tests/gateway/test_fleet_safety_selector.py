@@ -79,7 +79,20 @@ def test_select_best_lane_preserves_exact_twenty_point_band(
     assert selected.lane == expected_lane
 
 
-@pytest.mark.parametrize("invalid_used_pct", [-1.0, 101.0, float("nan"), float("inf"), "bad"])
+@pytest.mark.parametrize(
+    "invalid_used_pct",
+    [
+        True,
+        False,
+        -1.0,
+        101.0,
+        10**400,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "bad",
+    ],
+)
 def test_prevalidated_usage_rejects_non_finite_or_out_of_range_values(
     invalid_used_pct,
 ):

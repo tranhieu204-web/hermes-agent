@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -147,13 +148,15 @@ def _iso(now: datetime | None = None) -> str:
 
 
 def _clamp_pct(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if number != number:  # NaN
+    if not math.isfinite(number) or not 0.0 <= number <= 100.0:
         return None
-    return max(0.0, min(100.0, round(number)))
+    return float(round(number))
 
 
 def _label_matches(label: object, needles: tuple[str, ...]) -> bool:

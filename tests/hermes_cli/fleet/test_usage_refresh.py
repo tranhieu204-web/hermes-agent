@@ -636,3 +636,68 @@ def test_timestamped_console_attestation_is_fresh_and_comparable(
     assert read.snapshot is not None
     assert read.snapshot.freshness is Freshness.FRESH
     assert read.reason is None
+
+
+@pytest.mark.parametrize(
+    "invalid_pct",
+    [True, False, -1, 101, 10**400, float("nan"), float("inf"), float("-inf"), "bad"],
+)
+def test_invalid_console_attestation_percentage_is_ignored(
+    tmp_path, invalid_pct
+):
+    path = tmp_path / "usage-weekly.json"
+    old_checked_at = "2026-07-01T00:00:00.000Z"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "plans-1",
+                "checked_at": old_checked_at,
+                "plans": [
+                    {"label": "ChatGPT Pro · Codex", "weekly_pct_used": 10},
+                    {"label": "Claude Max 20x", "weekly_pct_used": 20},
+                    {
+                        "label": "SuperGrok",
+                        "weekly_pct_used": 30,
+                        "checked_at": old_checked_at,
+                    },
+                    {"label": "Google AI · Antigravity", "weekly_pct_used": 40},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    attestation = tmp_path / "fleet" / "usage-console-attestation.json"
+    attestation.parent.mkdir(parents=True)
+    attestation.write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-07-24T12:00:00.000Z",
+                "lanes": {"grok": {"weekly_pct_used": invalid_pct}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fetch(provider):
+        if provider == "openai-codex":
+            return _Snapshot((_Window("Weekly", 5.0),))
+        if provider == "anthropic":
+            return _Snapshot((_Window("Current week", 10.0),))
+        return None
+
+    report = refresh_usage_document(
+        path=path,
+        home=tmp_path,
+        mirror_path=None,
+        fetch_usage=fetch,
+        now=NOW,
+    )
+
+    assert report.ok
+    document = json.loads(path.read_text(encoding="utf-8"))
+    grok = next(row for row in document["plans"] if row["label"] == "SuperGrok")
+    assert grok["weekly_pct_used"] == 30
+    assert grok["checked_at"] == old_checked_at
+    read = BridgeUsageAdapter(path).read("grok", now=NOW)
+    assert read.snapshot is not None
+    assert read.snapshot.freshness is Freshness.STALE

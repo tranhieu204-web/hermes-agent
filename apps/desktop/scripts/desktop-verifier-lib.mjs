@@ -485,26 +485,10 @@ export async function waitForCdpPage({
   throw new Error(`timed out waiting for a CDP page on ${endpoint}${detail}`)
 }
 
-export function buildWindowsCleanupPlan(ownedPid, requestedPid = ownedPid) {
-  if (!isPositivePid(ownedPid)) {
-    throw new Error('Windows desktop cleanup requires a valid owned PID')
-  }
-
-  if (!isPositivePid(requestedPid)) {
-    throw new Error('Windows desktop cleanup rejected an invalid requested PID')
-  }
-
-  if (requestedPid !== ownedPid) {
-    throw new Error(`Windows desktop cleanup rejected unowned PID ${requestedPid}`)
-  }
-
-  return {
-    command: 'taskkill.exe',
-    args: ['/PID', String(ownedPid), '/T', '/F']
-  }
-}
-
 export function discoverWindowsDescendantPids(ownedPid, {
+  allowNewIdentities = false,
+  identityLedger = null,
+  includeOwnedPid = false,
   spawnSyncImpl = nodeSpawnSync,
   timeoutMs = DEFAULT_TERMINATION_TIMEOUT_MS
 } = {}) {
@@ -512,9 +496,13 @@ export function discoverWindowsDescendantPids(ownedPid, {
     throw new Error('Windows descendant discovery requires a valid owned PID')
   }
 
+  if (identityLedger !== null && !(identityLedger instanceof Map)) {
+    throw new Error('Windows descendant discovery requires a Map identity ledger')
+  }
+
   const script = [
     'Get-CimInstance Win32_Process',
-    'Select-Object ProcessId,ParentProcessId',
+    'Select-Object ProcessId,ParentProcessId,CreationDate',
     'ConvertTo-Json -Compress'
   ].join(' | ')
   const result = spawnSyncImpl(
@@ -548,11 +536,19 @@ export function discoverWindowsDescendantPids(ownedPid, {
     throw new Error('owned Windows descendant discovery returned invalid JSON', { cause: error })
   }
 
+  const activePids = new Set()
+  const creationIdentityByPid = new Map()
   const childrenByParent = new Map()
 
   for (const record of records) {
     const pid = Number(record?.ProcessId)
     const parentPid = Number(record?.ParentProcessId)
+    const creationIdentity = record?.CreationDate
+
+    if (isPositivePid(pid)) {
+      activePids.add(pid)
+      creationIdentityByPid.set(pid, creationIdentity)
+    }
 
     if (!isPositivePid(pid) || !isPositivePid(parentPid) || pid === ownedPid) {
       continue
@@ -563,7 +559,7 @@ export function discoverWindowsDescendantPids(ownedPid, {
     childrenByParent.set(parentPid, children)
   }
 
-  const descendants = []
+  const descendants = includeOwnedPid && activePids.has(ownedPid) ? [ownedPid] : []
   const visited = new Set([ownedPid])
   const pending = [ownedPid]
 
@@ -581,6 +577,31 @@ export function discoverWindowsDescendantPids(ownedPid, {
     }
   }
 
+  if (identityLedger !== null) {
+    for (const pid of descendants) {
+      const creationIdentity = creationIdentityByPid.get(pid)
+
+      if (typeof creationIdentity !== 'string' ||
+          !/^\/Date\([1-9]\d{9,16}\)\/$/.test(creationIdentity)) {
+        throw new Error(`Windows descendant PID ${pid} has invalid creation identity`)
+      }
+
+      const expectedIdentity = identityLedger.get(pid)
+
+      if (expectedIdentity !== undefined && expectedIdentity !== creationIdentity) {
+        throw new Error(`Windows descendant PID ${pid} changed creation identity`)
+      }
+
+      if (expectedIdentity === undefined) {
+        if (!allowNewIdentities) {
+          throw new Error(`Windows cleanup discovered unverified descendant PID ${pid}`)
+        }
+
+        identityLedger.set(pid, creationIdentity)
+      }
+    }
+  }
+
   return descendants
 }
 
@@ -594,66 +615,106 @@ async function terminateOwnedChild({
   terminationTimeoutMs
 }) {
   if (platform === 'win32') {
-    if (childHasExited(child)) {
-      const discover = discoverWindowsDescendantPidsImpl ??
-        (pid => discoverWindowsDescendantPids(pid, {
-          spawnSyncImpl,
-          timeoutMs: terminationTimeoutMs
-        }))
-      const descendants = await discover(ownedPid)
-
-      for (const descendantPid of [...descendants].reverse()) {
-        if (!isPositivePid(descendantPid) || descendantPid === ownedPid) {
-          throw new Error(`Windows cleanup rejected invalid descendant PID ${descendantPid}`)
-        }
-
-        const plan = buildWindowsCleanupPlan(descendantPid, descendantPid)
-        spawnSyncImpl(plan.command, plan.args, {
-          encoding: 'utf8',
-          timeout: terminationTimeoutMs,
-          windowsHide: true
-        })
+    const discover = async (pid, options = {}) => {
+      if (discoverWindowsDescendantPidsImpl) {
+        return await discoverWindowsDescendantPidsImpl(pid, options)
       }
 
-      const remaining = await discover(ownedPid)
-
-      if (remaining.length) {
-        throw new Error(
-          `owned Windows cleanup left descendant PIDs: ${remaining.join(', ')}`
-        )
-      }
-
-      return
+      return discoverWindowsDescendantPids(pid, {
+        ...options,
+        spawnSyncImpl,
+        timeoutMs: terminationTimeoutMs
+      })
     }
 
-    const plan = buildWindowsCleanupPlan(ownedPid, child.pid)
-    const result = spawnSyncImpl(plan.command, plan.args, {
-      encoding: 'utf8',
-      timeout: terminationTimeoutMs,
-      windowsHide: true
+    if (childHasExited(child)) {
+      throw new Error(
+        `owned Windows child PID ${ownedPid} exited before the pre-termination descendant census`
+      )
+    }
+
+    const identityLedger = new Map()
+    const initialCensus = await discover(ownedPid, {
+      allowNewIdentities: true,
+      identityLedger,
+      includeOwnedPid: true
     })
 
-    if (result.error) {
-      throw new Error(`owned Windows cleanup failed for PID ${ownedPid}: ${result.error.message}`)
+    if (!initialCensus.includes(ownedPid)) {
+      throw new Error(
+        `owned Windows child PID ${ownedPid} exited during the pre-termination descendant census`
+      )
     }
 
-    if (result.status !== 0) {
-      const detail = String(result.stderr || result.stdout || '').trim()
+    const knownDescendantPids = new Set(
+      initialCensus.filter(pid => pid !== ownedPid)
+    )
 
-      try {
-        await waitForChildExit(child, terminationTimeoutMs)
-      } catch (error) {
-        throw new Error(
-          `owned Windows cleanup failed for PID ${ownedPid} with status ${result.status}` +
-          (detail ? `: ${detail}` : ''),
-          { cause: error }
-        )
+    for (const descendantPid of knownDescendantPids) {
+      if (!isPositivePid(descendantPid) || descendantPid === ownedPid) {
+        throw new Error(`Windows cleanup rejected invalid descendant PID ${descendantPid}`)
+      }
+    }
+
+    const discoverAliveDescendants = async () => {
+      const alive = new Set()
+
+      for (const seedPid of [ownedPid, ...knownDescendantPids]) {
+        const discovered = await discover(seedPid, {
+          allowNewIdentities: false,
+          identityLedger,
+          includeOwnedPid: seedPid !== ownedPid
+        })
+
+        for (const descendantPid of discovered) {
+          if (!isPositivePid(descendantPid) || descendantPid === ownedPid) {
+            throw new Error(`Windows cleanup rejected invalid descendant PID ${descendantPid}`)
+          }
+
+          if (!knownDescendantPids.has(descendantPid)) {
+            throw new Error(`Windows cleanup discovered unverified descendant PID ${descendantPid}`)
+          }
+
+          alive.add(descendantPid)
+        }
       }
 
-      return
+      return alive
+    }
+
+    if (childHasExited(child)) {
+      throw new Error(
+        `owned Windows child PID ${ownedPid} exited after the pre-termination descendant census`
+      )
+    }
+
+    if (typeof child.kill !== 'function') {
+      throw new Error(`owned Windows child PID ${ownedPid} has no handle-bound termination method`)
+    }
+
+    let terminationAccepted
+
+    try {
+      terminationAccepted = child.kill()
+    } catch (error) {
+      throw new Error(`owned Windows child handle termination failed for PID ${ownedPid}`, {
+        cause: error
+      })
+    }
+
+    if (!terminationAccepted) {
+      throw new Error(`owned Windows child handle refused termination for PID ${ownedPid}`)
     }
 
     await waitForChildExit(child, terminationTimeoutMs)
+
+    const remaining = await discoverAliveDescendants()
+
+    if (remaining.size) {
+      throw new Error(
+        `owned Windows cleanup left descendant PIDs: ${[...remaining].join(', ')}`
+      )
+    }
 
     return
   }

@@ -17,7 +17,6 @@ import { test } from 'node:test'
 import * as verifierLib from './desktop-verifier-lib.mjs'
 import {
   assertDesktopExecutableProvenance,
-  buildWindowsCleanupPlan,
   cleanupUnlaunchedDesktopSpec,
   createDesktopLaunchSpec,
   discoverWindowsDescendantPids,
@@ -67,18 +66,18 @@ async function waitForFile(filePath, timeoutMs = 5000) {
   throw new Error(`timed out waiting for ${filePath}`)
 }
 
-async function waitForWindowsDescendantExit(ownedPid, descendantPid, timeoutMs = 5000) {
+async function waitForWindowsPidExit(pid, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() <= deadline) {
-    if (!discoverWindowsDescendantPids(ownedPid).includes(descendantPid)) {
+    if (!discoverWindowsDescendantPids(pid, { includeOwnedPid: true }).includes(pid)) {
       return
     }
 
     await new Promise(resolve => setTimeout(resolve, 20))
   }
 
-  throw new Error(`owned Windows PID ${descendantPid} did not exit`)
+  throw new Error(`owned Windows PID ${pid} did not exit`)
 }
 
 function terminateExactOwnedTestPid(pid) {
@@ -252,44 +251,136 @@ test('DevToolsActivePort parser accepts only a nonzero loopback port record', ()
   }
 })
 
-test('Windows cleanup plan is exact and rejects invalid or unowned PIDs', () => {
-  assert.deepEqual(buildWindowsCleanupPlan(4100, 4100), {
-    command: 'taskkill.exe',
-    args: ['/PID', '4100', '/T', '/F']
+test('Windows descendant census binds strict creation identity and rejects PID reuse or late children', () => {
+  const identityLedger = new Map()
+  const parentIdentity = '/Date(1700000000000)/'
+  const childIdentity = '/Date(1700000001000)/'
+  const initial = discoverWindowsDescendantPids(4100, {
+    allowNewIdentities: true,
+    identityLedger,
+    includeOwnedPid: true,
+    spawnSyncImpl: () => ({
+      status: 0,
+      stdout: JSON.stringify([
+        { ProcessId: 4100, ParentProcessId: 1, CreationDate: parentIdentity },
+        { ProcessId: 4101, ParentProcessId: 4100, CreationDate: childIdentity }
+      ]),
+      stderr: ''
+    })
   })
 
-  for (const invalidPid of [0, -1, 1.5, Number.NaN, '4100', null]) {
-    assert.throws(() => buildWindowsCleanupPlan(invalidPid, invalidPid), /owned PID/)
-  }
+  assert.deepEqual(initial, [4100, 4101])
+  assert.deepEqual([...identityLedger], [
+    [4100, parentIdentity],
+    [4101, childIdentity]
+  ])
+  assert.throws(
+    () => discoverWindowsDescendantPids(4101, {
+      identityLedger,
+      includeOwnedPid: true,
+      spawnSyncImpl: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          ProcessId: 4101,
+          ParentProcessId: 9999,
+          CreationDate: '/Date(1700000002000)/'
+        }),
+        stderr: ''
+      })
+    }),
+    /changed creation identity/
+  )
+  assert.throws(
+    () => discoverWindowsDescendantPids(4101, {
+      identityLedger,
+      includeOwnedPid: true,
+      spawnSyncImpl: () => ({
+        status: 0,
+        stdout: JSON.stringify([
+          { ProcessId: 4101, ParentProcessId: 9999, CreationDate: childIdentity },
+          { ProcessId: 4102, ParentProcessId: 4101, CreationDate: '/Date(1700000003000)/' }
+        ]),
+        stderr: ''
+      })
+    }),
+    /unverified descendant PID 4102/
+  )
 
-  assert.throws(() => buildWindowsCleanupPlan(4100, 4101), /unowned PID/)
+  for (const CreationDate of [
+    undefined,
+    null,
+    1700000000000,
+    {},
+    [],
+    '',
+    '   ',
+    'parent-created',
+    '/Date(not-a-number)/'
+  ]) {
+    assert.throws(
+      () => discoverWindowsDescendantPids(4200, {
+        allowNewIdentities: true,
+        identityLedger: new Map(),
+        includeOwnedPid: true,
+        spawnSyncImpl: () => ({
+          status: 0,
+          stdout: JSON.stringify({
+            ProcessId: 4200,
+            ParentProcessId: 1,
+            CreationDate
+          }),
+          stderr: ''
+        })
+      }),
+      /invalid creation identity|has no creation identity/
+    )
+  }
 })
 
-test('Windows cleanup tolerates a taskkill race only after the owned parent exits', async () => {
+test('Windows cleanup kills only the exact owned child handle and proves ledger descendants exited', async () => {
   const spec = createNodeProcessSpec()
+  let parentExited = false
+  let descendantsAlive = true
+  let handleKillCalls = 0
   const fakeChild = Object.assign(new EventEmitter(), {
     pid: 4100,
     exitCode: null,
-    signalCode: null
+    signalCode: null,
+    kill() {
+      handleKillCalls += 1
+      setImmediate(() => {
+        parentExited = true
+        descendantsAlive = false
+        fakeChild.exitCode = 1
+        fakeChild.emit('exit', 1, null)
+      })
+      return true
+    }
   })
   const owned = await launchOwnedDesktop(spec, {
     platform: 'win32',
     spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: (pid, { includeOwnedPid = false } = {}) => {
+      if (parentExited || !descendantsAlive) {
+        return []
+      }
+      if (pid === 4100) {
+        return includeOwnedPid ? [4100, 4101, 4102] : [4101, 4102]
+      }
+      return includeOwnedPid ? [pid] : []
+    },
     spawnSyncImpl: () => {
-      setImmediate(() => {
-        fakeChild.exitCode = 1
-        fakeChild.emit('exit', 1, null)
-      })
-      return { status: 128, stdout: '', stderr: 'owned descendants already exited' }
+      throw new Error('Windows production cleanup must not invoke taskkill')
     }
   })
 
   await owned.cleanup()
 
+  assert.equal(handleKillCalls, 1)
   assert.equal(existsSync(spec.paths.root), false)
 })
 
-test('Windows cleanup still fails closed when taskkill fails and the parent remains alive', async () => {
+test('Windows cleanup requires the parent inside the census snapshot itself', async () => {
   const spec = createNodeProcessSpec()
   const fakeChild = Object.assign(new EventEmitter(), {
     pid: 4100,
@@ -299,64 +390,232 @@ test('Windows cleanup still fails closed when taskkill fails and the parent rema
   const owned = await launchOwnedDesktop(spec, {
     platform: 'win32',
     spawnImpl: () => fakeChild,
-    spawnSyncImpl: () => ({
-      status: 128,
-      stdout: '',
-      stderr: 'access denied'
-    }),
-    terminationTimeoutMs: 5
+    discoverWindowsDescendantPidsImpl: (_pid, { includeOwnedPid = false } = {}) => {
+      assert.equal(includeOwnedPid, true)
+      fakeChild.exitCode = 0
+      return []
+    },
+    spawnSyncImpl: () => {
+      throw new Error('taskkill must not run without a parent-present census')
+    }
   })
 
   try {
-    await assert.rejects(owned.cleanup(), /status 128: access denied/)
+    await assert.rejects(owned.cleanup(), /exited during the pre-termination descendant census/)
     assert.equal(existsSync(spec.paths.root), true)
   } finally {
     rmSync(spec.paths.root, { recursive: true, force: true })
   }
 })
 
-test('Windows cleanup terminates verified descendants after the owned parent exits', async () => {
+test('Windows cleanup rejects when the child exits after its row was observed', async () => {
+  const spec = createNodeProcessSpec()
+  let handleKillCalls = 0
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      handleKillCalls += 1
+      return true
+    }
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: () => {
+      fakeChild.exitCode = 0
+      return [4100]
+    },
+    spawnSyncImpl: () => {
+      throw new Error('taskkill must not run after parent exit')
+    }
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /exited after the pre-termination descendant census/)
+    assert.equal(handleKillCalls, 0)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('Windows cleanup fails closed when the owned child handle refuses termination', async () => {
+  const spec = createNodeProcessSpec()
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      fakeChild.exitCode = 0
+      return false
+    }
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: () => [4100],
+    spawnSyncImpl: () => {
+      throw new Error('taskkill must never substitute for the owned child handle')
+    }
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /child handle refused termination/)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('Windows cleanup rejects an unledgered late child without killing it', async () => {
+  const spec = createNodeProcessSpec()
+  let parentExited = false
+  let lateChildAlive = true
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      setImmediate(() => {
+        parentExited = true
+        fakeChild.exitCode = 0
+        fakeChild.emit('exit', 0, null)
+      })
+      return true
+    }
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: (_pid, { includeOwnedPid = false } = {}) => {
+      if (!parentExited) {
+        return includeOwnedPid ? [4100] : []
+      }
+      return lateChildAlive ? [4101] : []
+    },
+    spawnSyncImpl: () => {
+      lateChildAlive = false
+      throw new Error('unledgered late child must not be killed')
+    }
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /unverified descendant PID 4101/)
+    assert.equal(lateChildAlive, true)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('Windows cleanup preserves the root when a ledger descendant remains alive', async () => {
+  const spec = createNodeProcessSpec()
+  let parentExited = false
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      setImmediate(() => {
+        parentExited = true
+        fakeChild.exitCode = 1
+        fakeChild.emit('exit', 1, null)
+      })
+      return true
+    }
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: (pid, { includeOwnedPid = false } = {}) => {
+      if (pid === 4100) {
+        if (parentExited) {
+          return []
+        }
+        return includeOwnedPid ? [4100, 4101] : [4101]
+      }
+      return pid === 4101 && includeOwnedPid ? [4101] : []
+    },
+    spawnSyncImpl: () => {
+      throw new Error('ledger descendants must not be killed by PID')
+    }
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /left descendant PIDs: 4101/)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('Windows cleanup fails closed when handle termination does not produce child exit', async () => {
+  const spec = createNodeProcessSpec()
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null,
+    kill: () => true
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    discoverWindowsDescendantPidsImpl: (pid, { includeOwnedPid = false } = {}) =>
+      includeOwnedPid ? [pid] : [],
+    spawnSyncImpl: () => {
+      throw new Error('taskkill fallback is forbidden')
+    },
+    terminationTimeoutMs: 5
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /did not exit within 5ms/)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('Windows cleanup fails closed if the parent exits before its descendant census', async () => {
   const spec = createNodeProcessSpec()
   const fakeChild = Object.assign(new EventEmitter(), {
     pid: 4100,
     exitCode: 0,
     signalCode: null
   })
-  const calls = []
-  let discoveryCount = 0
   const owned = await launchOwnedDesktop(spec, {
     platform: 'win32',
-    spawnImpl: () => fakeChild,
-    discoverWindowsDescendantPidsImpl: ownedPid => {
-      assert.equal(ownedPid, 4100)
-      discoveryCount++
-      return discoveryCount === 1 ? [4101, 4102] : []
-    },
-    spawnSyncImpl: (command, args) => {
-      calls.push([command, args])
-      return { status: 0, stdout: '', stderr: '' }
-    }
+    spawnImpl: () => fakeChild
   })
 
-  await owned.cleanup()
-
-  assert.deepEqual(calls, [
-    ['taskkill.exe', ['/PID', '4102', '/T', '/F']],
-    ['taskkill.exe', ['/PID', '4101', '/T', '/F']]
-  ])
-  assert.equal(existsSync(spec.paths.root), false)
+  try {
+    await assert.rejects(
+      owned.cleanup(),
+      /exited before the pre-termination descendant census/
+    )
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
 })
 
-test('Windows cleanup discovers and terminates a detached descendant after parent exit', {
+test('Windows cleanup fails closed for a multi-level orphan without a pre-exit census', {
   skip: process.platform !== 'win32'
 }, async () => {
   const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-win-early-exit-'))
   const grandchildPidFile = join(parent, 'grandchild.pid')
-  const parentScript = [
+  const intermediateScript = [
     "const fs = require('node:fs')",
     "const { spawn } = require('node:child_process')",
-    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
-    `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(child.pid))`,
+    "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+    `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid))`,
+    'grandchild.unref()'
+  ].join(';')
+  const parentScript = [
+    "const { spawn } = require('node:child_process')",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(intermediateScript)}], { detached: true, stdio: 'ignore' })`,
     'child.unref()'
   ].join(';')
   const spec = createNodeProcessSpec({ script: parentScript, tempBaseDir: parent })
@@ -367,16 +626,29 @@ test('Windows cleanup discovers and terminates a detached descendant after paren
     await waitForFile(grandchildPidFile)
     grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8'))
     await waitForExit(owned.child)
-    assert.ok(discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid))
 
-    await owned.cleanup()
-    await waitForWindowsDescendantExit(owned.ownedPid, grandchildPid)
+    const deadline = Date.now() + 5000
+    while (Date.now() <= deadline &&
+           discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid)) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
 
-    assert.equal(existsSync(spec.paths.root), false)
+    assert.ok(
+      discoverWindowsDescendantPids(grandchildPid, { includeOwnedPid: true })
+        .includes(grandchildPid)
+    )
+    assert.ok(!discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid))
+    await assert.rejects(
+      owned.cleanup(),
+      /exited before the pre-termination descendant census/
+    )
+    assert.equal(existsSync(spec.paths.root), true)
   } finally {
     if (Number.isSafeInteger(grandchildPid) &&
-        discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid)) {
+        discoverWindowsDescendantPids(grandchildPid, { includeOwnedPid: true })
+          .includes(grandchildPid)) {
       terminateExactOwnedTestPid(grandchildPid)
+      await waitForWindowsPidExit(grandchildPid)
     }
 
     rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })

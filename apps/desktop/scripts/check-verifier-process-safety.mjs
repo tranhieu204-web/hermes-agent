@@ -75,8 +75,8 @@ const RAW_PROCESS_API_ALLOWLIST = {
       launchOwnedDesktop: new Set(['nodeSpawn', 'spawnImpl']),
       // Reads PID/parent-PID metadata only to recover descendants of an owned exited root.
       discoverWindowsDescendantPids: new Set(['nodeSpawnSync', 'spawnSyncImpl']),
-      // Windows cleanup executes exact taskkill /PID <owned> /T /F.
-      terminateOwnedChild: new Set(['nodeSpawnSync', 'spawnSyncImpl']),
+      // Windows cleanup terminates only the exact ChildProcess handle returned by launch.
+      terminateOwnedChild: new Set(['member.kill']),
       // POSIX cleanup signals only the negative PGID created for this launch.
       terminateOwnedProcessGroup: new Set(['killImpl'])
     }
