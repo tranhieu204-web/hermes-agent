@@ -29,6 +29,15 @@ from hermes_cli.fleet.types import Freshness, ReasonCode
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _disable_live_console_health_probe(monkeypatch):
+    """Keep unit tests independent of installed console-agent state."""
+    monkeypatch.setattr(
+        "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
+        lambda lane_id: (None, f"{lane_id} health probe disabled in unit test"),
+    )
+
+
 @dataclass(frozen=True)
 class _Window:
     label: str
