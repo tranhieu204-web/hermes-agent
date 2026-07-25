@@ -117,33 +117,59 @@ def get_effort_ladder(provider_or_lane: str) -> List[str]:
     return ["none", "low", "medium", "high", "xhigh", "max"]
 
 
+_EFFORT_SCALE = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+_EFFORT_INDEX = {eff: idx for idx, eff in enumerate(_EFFORT_SCALE)}
+
+
+def _clamp_effort_to_ladder(requested_effort: str, ladder: List[str]) -> str:
+    """Clamp requested effort level to the max/min bounds of a provider's ladder."""
+    if not ladder:
+        return requested_effort
+    req = str(requested_effort).strip().lower()
+    if req in ladder:
+        return req
+    if req not in _EFFORT_INDEX:
+        return ladder[-1]
+    req_idx = _EFFORT_INDEX[req]
+    ladder_indices = [(_EFFORT_INDEX.get(item, 3), item) for item in ladder]
+    ladder_indices.sort(key=lambda x: x[0])
+    min_idx, min_item = ladder_indices[0]
+    max_idx, max_item = ladder_indices[-1]
+    if req_idx > max_idx:
+        return max_item
+    if req_idx < min_idx:
+        return min_item
+    for idx_val, item in reversed(ladder_indices):
+        if idx_val <= req_idx:
+            return item
+    return ladder[-1]
+
+
 def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = "") -> str:
-    """Resolve role-based effort from a per-agent map or fallback default."""
+    """Resolve role-based effort from a per-agent map or fallback default, bounded by provider ladder."""
+    lane = get_lane_name(provider or model)
+    ladder = get_effort_ladder(lane or provider or model)
+    raw_effort = ""
     if isinstance(effort_map, dict):
-        # 1. Exact model match
         if model:
             m_lower = str(model).strip().lower()
             if m_lower in effort_map:
-                return str(effort_map[m_lower])
-        # 2. Canonical lane / provider match
-        lane = get_lane_name(provider or model)
-        if lane and lane in effort_map:
-            return str(effort_map[lane])
-        if provider and str(provider).strip().lower() in effort_map:
-            return str(effort_map[str(provider).strip().lower()])
-    elif isinstance(effort_map, str) and effort_map.strip() and effort_map.strip().lower() != "max":
-        return effort_map.strip()
+                raw_effort = str(effort_map[m_lower])
+        if not raw_effort and lane and lane in effort_map:
+            raw_effort = str(effort_map[lane])
+        if not raw_effort and provider and str(provider).strip().lower() in effort_map:
+            raw_effort = str(effort_map[str(provider).strip().lower()])
+    elif isinstance(effort_map, str) and effort_map.strip():
+        raw_effort = effort_map.strip()
 
-    lane = get_lane_name(provider or model)
-    return DEFAULT_LANE_EFFORTS.get(lane, "medium")
+    if not raw_effort:
+        raw_effort = DEFAULT_LANE_EFFORTS.get(lane, "medium")
+
+    return _clamp_effort_to_ladder(raw_effort, ladder)
 
 
 def _resolve_claude_model(used_percent: Optional[float], default_model: str = "claude-sonnet-4-6") -> str:
-    """Apply the Fable->Opus 50% weekly usage threshold for Claude."""
-    if used_percent is not None:
-        if used_percent < 50.0:
-            return "claude-fable-5"
-        return "claude-opus-5"
+    """Return configured model for Claude without inventing non-existent model IDs."""
     return default_model
 
 
@@ -157,7 +183,7 @@ def select_best_lane(
     """Route to the enabled lane with the highest verified weekly headroom.
 
     Enforces reserve floor percentages, anti-thrash 20-pt band, fail-safe unverified
-    attestation treatment, role-based effort resolution, and Claude Fable/Opus ladders.
+    attestation treatment, and role-based effort resolution bounded by provider ladders.
     """
     if now is None:
         now = time.time()
@@ -169,7 +195,6 @@ def select_best_lane(
 
     candidates: Dict[str, Tuple[LaneConfig, Optional[float], Optional[float], List[str]]] = {}
 
-    # Build active candidate pool from default lanes merged with config overrides
     for slug, default_lane in DEFAULT_LANES.items():
         l_cfg = lanes_cfg.get(slug) if isinstance(lanes_cfg, dict) else {}
         if not isinstance(l_cfg, dict):
@@ -189,7 +214,6 @@ def select_best_lane(
         verified = verified_usage_for(lane.provider, now=now)
         used_pct = verified.used_percent
 
-        # Fail-safe: treat unverified, stale, or suspect attestation as unknown for heavy requests
         if is_heavy and (used_pct is None or verified.stale or verified.suspect):
             used_pct = None
             headroom = None
@@ -197,20 +221,6 @@ def select_best_lane(
             headroom = (100.0 - used_pct) if used_pct is not None else None
 
         candidates[slug] = (lane, used_pct, headroom, verified.reasons)
-
-    if not candidates:
-        # Fallback if config disabled all lanes: return codex safety net
-        def_lane = DEFAULT_LANES["chatgpt_codex"]
-        return SelectedLane(
-            lane=def_lane.name,
-            provider=def_lane.provider,
-            model=def_lane.model,
-            effort=DEFAULT_LANE_EFFORTS["chatgpt_codex"],
-            used_percent=None,
-            remaining_headroom=None,
-            is_fallback=True,
-            reason="all lanes disabled in config; using default codex safety net",
-        )
 
     # Filter eligible lanes: known headroom >= reserve floor
     eligible: Dict[str, Tuple[LaneConfig, Optional[float], float, List[str]]] = {}
@@ -222,11 +232,9 @@ def select_best_lane(
     cur_lane_name = get_lane_name(current_provider)
 
     if eligible:
-        # Sort by headroom descending
         sorted_el = sorted(eligible.values(), key=lambda x: x[2], reverse=True)
         best_lane, best_used, best_hr, best_reasons = sorted_el[0]
 
-        # Apply anti-thrash 20-pt band against eligible incumbent
         if cur_lane_name in eligible and cur_lane_name != best_lane.name:
             inc_lane, inc_used, inc_hr, inc_reasons = eligible[cur_lane_name]
             if best_hr < inc_hr + switch_delta:
@@ -238,9 +246,6 @@ def select_best_lane(
             reason_str = f"selected {best_lane.name} (headroom {best_hr:.1f}% exceeds floor {best_lane.reserve_floor_pct}%)"
 
         model_id = best_lane.model
-        if best_lane.name == "claude_code":
-            model_id = _resolve_claude_model(best_used, best_lane.model)
-
         effort_val = resolve_effort_from_map(effort_map, model_id, best_lane.provider)
         return SelectedLane(
             lane=best_lane.name,
@@ -253,28 +258,16 @@ def select_best_lane(
             reason=reason_str,
         )
 
-    # Edge case: all lanes below floor or unverified -> rank all enabled candidates best-effort
-    sorted_all = sorted(
-        candidates.values(),
-        key=lambda x: x[2] if x[2] is not None else -1.0,
-        reverse=True,
-    )
-    fb_lane, fb_used, fb_hr, fb_reasons = sorted_all[0]
-    model_id = fb_lane.model
-    if fb_lane.name == "claude_code":
-        model_id = _resolve_claude_model(fb_used, fb_lane.model)
-    effort_val = resolve_effort_from_map(effort_map, model_id, fb_lane.provider)
-
-    hr_str = f"{fb_hr:.1f}%" if fb_hr is not None else "unknown"
+    # Requirement 3: Fail closed when no eligible verified lane exists
     return SelectedLane(
-        lane=fb_lane.name,
-        provider=fb_lane.provider,
-        model=model_id,
-        effort=effort_val,
-        used_percent=fb_used,
-        remaining_headroom=fb_hr,
+        lane="",
+        provider="",
+        model="",
+        effort="",
+        used_percent=None,
+        remaining_headroom=None,
         is_fallback=True,
-        reason=f"all lanes below floor or unverified; fallback selected {fb_lane.name} (headroom {hr_str})",
+        reason="no_eligible_lane: no eligible verified lane available meeting reserve floor",
     )
 
 
@@ -301,7 +294,6 @@ def rank_fallback_chain(
             pool.append({"provider": def_lane.provider, "model": def_lane.model})
 
     eligible_entries: List[Tuple[float, int, Dict[str, Any]]] = []
-    fallback_entries: List[Tuple[float, int, Dict[str, Any]]] = []
 
     for idx, entry in enumerate(pool):
         if not isinstance(entry, dict):
@@ -313,6 +305,12 @@ def rank_fallback_chain(
 
         lane_name = get_lane_name(prov or mod)
         def_lane = DEFAULT_LANES.get(lane_name)
+
+        # Respect lane enabled state from config
+        if isinstance(lanes_cfg, dict) and lane_name in lanes_cfg and isinstance(lanes_cfg[lane_name], dict):
+            if lanes_cfg[lane_name].get("enabled") is False:
+                continue
+
         floor = def_lane.reserve_floor_pct if def_lane else 0.0
         if isinstance(lanes_cfg, dict) and lane_name in lanes_cfg and isinstance(lanes_cfg[lane_name], dict):
             floor = float(lanes_cfg[lane_name].get("reserve_floor_pct", floor))
@@ -325,10 +323,6 @@ def rank_fallback_chain(
         else:
             headroom = (100.0 - used_pct) if used_pct is not None else None
 
-        # Apply Fable->Opus boundary for Claude entries
-        if lane_name == "claude_code":
-            mod = _resolve_claude_model(used_pct, mod or "claude-sonnet-4-6")
-
         updated_entry = dict(entry)
         if prov:
             updated_entry["provider"] = prov
@@ -337,12 +331,8 @@ def rank_fallback_chain(
 
         if headroom is not None and headroom >= floor:
             eligible_entries.append((headroom, idx, updated_entry))
-        else:
-            hr_score = headroom if headroom is not None else -1.0
-            fallback_entries.append((hr_score, idx, updated_entry))
 
-    # Sort eligible descending by headroom; sort fallback descending by known headroom
+    # Sort eligible descending by headroom
     eligible_entries.sort(key=lambda x: (x[0], -x[1]), reverse=True)
-    fallback_entries.sort(key=lambda x: (x[0], -x[1]), reverse=True)
 
-    return [e for _, _, e in eligible_entries + fallback_entries]
+    return [e for _, _, e in eligible_entries]

@@ -59,10 +59,11 @@ def test_select_best_lane_all_lanes_below_floor_edge_case(monkeypatch):
     monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
 
     selected = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
-    # Should select fallback with highest remaining headroom (codex at 5%)
-    assert selected.lane == "chatgpt_codex"
+    # Requirement 3: Must fail closed when no eligible verified lane exists
+    assert selected.lane == ""
+    assert selected.provider == ""
     assert selected.is_fallback
-    assert "all lanes below floor or unverified" in selected.reason
+    assert "no_eligible_lane" in selected.reason
 
 
 def test_unverified_or_stale_attestation_treated_as_unknown(monkeypatch):
@@ -83,60 +84,80 @@ def test_unverified_or_stale_attestation_treated_as_unknown(monkeypatch):
     assert not selected.is_fallback
 
 
-def test_resolve_effort_from_map():
+def test_resolve_effort_from_map_and_bounded_ladders():
     effort_map = {
         "gpt-5.6-sol": "max",
         "chatgpt_codex": "xhigh",
         "claude_code": "high",
-        "grok": "medium",
-        "antigravity": "high",
+        "grok": "xhigh",       # grok ladder max is high
+        "antigravity": "max",  # antigravity ladder max is high
     }
 
-    # 1. Exact model match
+    # 1. Exact model match (codex ladder supports max)
     assert resolve_effort_from_map(effort_map, model="gpt-5.6-sol") == "max"
-    # 2. Canonical lane match
+    # 2. Canonical lane match (claude ladder supports high)
     assert resolve_effort_from_map(effort_map, model="claude-sonnet-4-6") == "high"
-    # 3. Provider match
-    assert resolve_effort_from_map(effort_map, provider="xai-oauth") == "medium"
-    # 4. Fallback when map is a string
-    assert resolve_effort_from_map("xhigh", model="anything") == "xhigh"
+    # 3. Provider match bounded by Grok ladder (xhigh clamped to high)
+    assert resolve_effort_from_map(effort_map, provider="xai-oauth") == "high"
+    # 4. Provider match bounded by Antigravity ladder (max clamped to high)
+    assert resolve_effort_from_map(effort_map, provider="antigravity") == "high"
     # 5. Default lane fallback when map is empty/invalid
     assert resolve_effort_from_map(None, provider="openai-codex") == "xhigh"
     assert resolve_effort_from_map(None, provider="xai-oauth") == "high"
 
 
-def test_claude_fable_opus_threshold(monkeypatch):
-    # When Claude weekly < 50%, switch to Fable. When >= 50%, switch to Opus.
-    def fake_verify_fable(provider, **kwargs):
+def test_no_invented_claude_model_ids(monkeypatch):
+    # Model IDs must come from validated config/registry, not invented strings like claude-fable-5
+    def fake_verify(provider, **kwargs):
         if "anthropic" in provider or "claude" in provider:
-            return _mock_usage(used_percent=40.0)  # < 50%
+            return _mock_usage(used_percent=40.0)  # 60% headroom
         return _mock_usage(used_percent=90.0)
 
-    monkeypatch.setattr(selector, "verified_usage_for", fake_verify_fable)
-    selected_fable = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
-    assert selected_fable.lane == "claude_code"
-    assert selected_fable.model == "claude-fable-5"
+    monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
+    selected = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
+    assert selected.lane == "claude_code"
+    assert selected.model == "claude-sonnet-4-6"  # Real configured top model, not invented string
 
-    def fake_verify_opus(provider, **kwargs):
-        if "anthropic" in provider or "claude" in provider:
-            return _mock_usage(used_percent=70.0)  # >= 50%
-        return _mock_usage(used_percent=90.0)
 
-    monkeypatch.setattr(selector, "verified_usage_for", fake_verify_opus)
-    selected_opus = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
-    assert selected_opus.lane == "claude_code"
-    assert selected_opus.model == "claude-opus-5"
+def test_disabled_lane_never_selected_or_in_fallback(monkeypatch):
+    def fake_verify(provider, **kwargs):
+        return _mock_usage(used_percent=10.0)  # 90% headroom for all
+
+    monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
+    cfg = {
+        "fleet": {
+            "switch_delta": 0.0,
+            "lanes": {
+                "claude_code": {"enabled": False},
+                "chatgpt_codex": {"enabled": False},
+                "grok": {"enabled": False},
+                "antigravity": {"enabled": False},
+            },
+        }
+    }
+    # When all lanes disabled in config, must fail closed with no_eligible_lane
+    selected = select_best_lane(config=cfg)
+    assert selected.lane == ""
+    assert selected.is_fallback
+    assert "no_eligible_lane" in selected.reason
+
+    chain = [
+        {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+    ranked = rank_fallback_chain(chain, config=cfg)
+    assert ranked == []
 
 
 def test_graceful_degrade_provider_down(monkeypatch):
-    # When primary provider is walled (100% used) or down, gracefully cascade to next
+    # When primary provider is walled (100% used), exclude below-floor entries and rank remaining
     def fake_verify(provider, **kwargs):
         if "codex" in provider or "openai" in provider:
-            return _mock_usage(used_percent=100.0)  # walled / exhausted
+            return _mock_usage(used_percent=100.0)  # walled / exhausted (< 8% floor)
         elif "anthropic" in provider or "claude" in provider:
-            return _mock_usage(used_percent=60.0)  # available (40% hr)
+            return _mock_usage(used_percent=60.0)  # available (40% hr >= 2% floor)
         elif "xai" in provider or "grok" in provider:
-            return _mock_usage(used_percent=50.0)  # available (50% hr)
+            return _mock_usage(used_percent=50.0)  # available (50% hr >= 5% floor)
         return _mock_usage(used_percent=50.0)
 
     monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
@@ -148,8 +169,50 @@ def test_graceful_degrade_provider_down(monkeypatch):
     ]
     ranked = rank_fallback_chain(chain, config={"fleet": {"switch_delta": 0.0}})
 
-    assert len(ranked) == 3
-    # Grok has 50% hr, Claude has 40% hr, Codex has 0% hr (below floor / walled)
+    # Only eligible entries (grok and anthropic) returned; codex (0% hr < floor) excluded
+    assert len(ranked) == 2
     assert ranked[0]["provider"] == "xai-oauth"
     assert ranked[1]["provider"] == "anthropic"
-    assert ranked[2]["provider"] == "openai-codex"
+
+
+def test_e2e_temp_hermes_home_integration_path(tmp_path, monkeypatch):
+    """E2E-style test reading config from HERMES_HOME and proving selection path."""
+    import yaml
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True)
+    cfg_file = hermes_home / "config.yaml"
+    cfg_data = {
+        "fleet": {
+            "switch_delta": 20.0,
+            "lanes": {
+                "chatgpt_codex": {"enabled": True, "reserve_floor_pct": 10.0},
+                "claude_code": {"enabled": True, "reserve_floor_pct": 5.0},
+            },
+        },
+        "agent": {
+            "reasoning_effort": {
+                "chatgpt_codex": "xhigh",
+                "claude_code": "high",
+                "grok": "xhigh",  # Should bound to high for Grok
+            }
+        }
+    }
+    cfg_file.write_text(yaml.dump(cfg_data), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def fake_verify(provider, **kwargs):
+        if "anthropic" in provider or "claude" in provider:
+            return _mock_usage(used_percent=20.0)  # 80% headroom
+        elif "codex" in provider or "openai" in provider:
+            return _mock_usage(used_percent=50.0)  # 50% headroom
+        return _mock_usage(used_percent=90.0)
+
+    monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
+
+    from hermes_cli.config import load_config
+    loaded_cfg = load_config()
+    selected = select_best_lane(config=loaded_cfg)
+    assert selected.lane == "claude_code"
+    assert selected.remaining_headroom == 80.0
+    assert selected.effort == "high"
+
