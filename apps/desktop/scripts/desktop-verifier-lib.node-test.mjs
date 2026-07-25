@@ -265,6 +265,56 @@ test('Windows cleanup plan is exact and rejects invalid or unowned PIDs', () => 
   assert.throws(() => buildWindowsCleanupPlan(4100, 4101), /unowned PID/)
 })
 
+test('Windows cleanup tolerates a taskkill race only after the owned parent exits', async () => {
+  const spec = createNodeProcessSpec()
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    spawnSyncImpl: () => {
+      setImmediate(() => {
+        fakeChild.exitCode = 1
+        fakeChild.emit('exit', 1, null)
+      })
+      return { status: 128, stdout: '', stderr: 'owned descendants already exited' }
+    }
+  })
+
+  await owned.cleanup()
+
+  assert.equal(existsSync(spec.paths.root), false)
+})
+
+test('Windows cleanup still fails closed when taskkill fails and the parent remains alive', async () => {
+  const spec = createNodeProcessSpec()
+  const fakeChild = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    exitCode: null,
+    signalCode: null
+  })
+  const owned = await launchOwnedDesktop(spec, {
+    platform: 'win32',
+    spawnImpl: () => fakeChild,
+    spawnSyncImpl: () => ({
+      status: 128,
+      stdout: '',
+      stderr: 'access denied'
+    }),
+    terminationTimeoutMs: 5
+  })
+
+  try {
+    await assert.rejects(owned.cleanup(), /status 128: access denied/)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
 test('Windows cleanup terminates verified descendants after the owned parent exits', async () => {
   const spec = createNodeProcessSpec()
   const fakeChild = Object.assign(new EventEmitter(), {

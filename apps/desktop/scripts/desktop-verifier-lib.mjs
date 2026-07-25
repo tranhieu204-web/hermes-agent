@@ -637,12 +637,20 @@ async function terminateOwnedChild({
       throw new Error(`owned Windows cleanup failed for PID ${ownedPid}: ${result.error.message}`)
     }
 
-    if (result.status !== 0 && !childHasExited(child)) {
+    if (result.status !== 0) {
       const detail = String(result.stderr || result.stdout || '').trim()
-      throw new Error(
-        `owned Windows cleanup failed for PID ${ownedPid} with status ${result.status}` +
-        (detail ? `: ${detail}` : '')
-      )
+
+      try {
+        await waitForChildExit(child, terminationTimeoutMs)
+      } catch (error) {
+        throw new Error(
+          `owned Windows cleanup failed for PID ${ownedPid} with status ${result.status}` +
+          (detail ? `: ${detail}` : ''),
+          { cause: error }
+        )
+      }
+
+      return
     }
 
     await waitForChildExit(child, terminationTimeoutMs)
