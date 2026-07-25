@@ -40,10 +40,19 @@ def _console_attestation_path(*, home: Path | None = None) -> Path:
     return (base / "fleet" / "usage-console-attestation.json").resolve()
 
 
-def _read_console_attestation(path: Path) -> dict[str, float]:
-    """Optional operator/CI file: {"lanes": {"grok": {"weekly_pct_used": 10}}}."""
+def _read_console_attestation(path: Path) -> dict[str, tuple[float, str]]:
+    """Read timestamped weekly usage evidence for console-only lanes.
+
+    A lane-level or document-level ``checked_at`` wins. For compatibility with
+    the original percentage-only schema, the file modification time is the
+    evidence timestamp; it ages naturally instead of being re-stamped by each
+    refresh.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
+        file_checked_at = _iso(
+            datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        )
     except OSError:
         return {}
     try:
@@ -53,17 +62,26 @@ def _read_console_attestation(path: Path) -> dict[str, float]:
     lanes = document.get("lanes") if isinstance(document, dict) else None
     if not isinstance(lanes, dict):
         return {}
-    out: dict[str, float] = {}
+    document_checked_at = document.get("checked_at")
+    out: dict[str, tuple[float, str]] = {}
     for lane_id, row in lanes.items():
         if not isinstance(row, dict):
             continue
         pct = _clamp_pct(row.get("weekly_pct_used"))
-        if pct is not None:
-            out[str(lane_id)] = pct
+        checked_at = row.get("checked_at") or document_checked_at or file_checked_at
+        if pct is None or not isinstance(checked_at, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            continue
+        out[str(lane_id)] = (pct, _iso(parsed))
     return out
 
 
-def _probe_console_lane_health(lane_id: str) -> tuple[bool, str]:
+def _probe_console_lane_health(lane_id: str) -> tuple[bool | None, str]:
     """Return (healthy, detail) without inventing usage percentages."""
     if lane_id == "grok":
         try:
@@ -71,7 +89,7 @@ def _probe_console_lane_health(lane_id: str) -> tuple[bool, str]:
 
             status = get_xai_oauth_auth_status() or {}
         except Exception as exc:  # noqa: BLE001 - probe must fail closed
-            return False, f"xai-oauth status failed: {type(exc).__name__}"
+            return None, f"xai-oauth status failed: {type(exc).__name__}"
         if bool(status.get("logged_in")):
             return True, "xai-oauth logged_in"
         return False, "xai-oauth not logged_in"
@@ -84,11 +102,11 @@ def _probe_console_lane_health(lane_id: str) -> tuple[bool, str]:
                 (profile_map()["antigravity"],)
             )["antigravity"]
         except Exception as exc:  # noqa: BLE001
-            return False, f"antigravity doctor failed: {type(exc).__name__}"
+            return None, f"antigravity doctor failed: {type(exc).__name__}"
         if qualification.qualified:
             return True, "antigravity live-receipt qualified"
         return False, qualification.detail or "antigravity not qualified"
-    return False, f"unsupported console lane: {lane_id}"
+    return None, f"unsupported console lane: {lane_id}"
 
 
 
@@ -306,7 +324,7 @@ def refresh_usage_document(
     assert isinstance(plans, list)
     results: list[LaneRefreshResult] = []
     any_auto_success = False
-    any_console_health_success = False
+    any_console_health_evidence = False
     stamp = _iso(now)
 
     for lane_id, provider_id, default_label, needles in AUTO_LANES:
@@ -374,42 +392,47 @@ def refresh_usage_document(
             }
             plans.append(row)
         prior_pct = _clamp_pct(row.get("weekly_pct_used"))
-        if lane_id in attestation:
-            row["weekly_pct_used"] = attestation[lane_id]
-            prior_pct = attestation[lane_id]
-        healthy, health_detail = _probe_console_lane_health(lane_id)
-        row["health_status"] = "UP" if healthy else "DOWN"
-        row["health_checked_at"] = stamp
-        if healthy:
-            any_console_health_success = True
-            results.append(
-                LaneRefreshResult(
-                    lane_id=lane_id,
-                    updated=False,
-                    weekly_pct_used=prior_pct,
-                    checked_at=(
-                        str(row["checked_at"])
-                        if isinstance(row.get("checked_at"), str)
-                        else None
-                    ),
-                    detail=f"console health probe ok; {health_detail}",
-                )
-            )
-            continue
+        attested = lane_id in attestation
+        if attested:
+            attested_pct, attested_checked_at = attestation[lane_id]
+            row["weekly_pct_used"] = attested_pct
+            row["checked_at"] = attested_checked_at
+            row["measurement_kind"] = "measured"
+            row["comparability_group"] = "subscription-weekly"
+            row["quota_window_id"] = "subscription-weekly"
+            row.setdefault("overage_disabled", True)
+            row.setdefault("resets", "weekly")
+            prior_pct = attested_pct
+
+        health_state, health_detail = _probe_console_lane_health(lane_id)
+        health_observed = health_state is not None
+        if health_observed:
+            any_console_health_evidence = True
+            row["health_status"] = "UP" if health_state else "DOWN"
+            row["health_checked_at"] = stamp
+
         prior_checked = row.get("checked_at")
+        if health_state is True:
+            health_summary = f"console health probe ok; {health_detail}"
+        elif health_state is False:
+            health_summary = f"console health probe down; {health_detail}"
+        else:
+            health_summary = f"console health probe unavailable; {health_detail}"
         results.append(
             LaneRefreshResult(
                 lane_id=lane_id,
-                updated=False,
+                updated=attested or health_observed,
                 weekly_pct_used=prior_pct,
-                checked_at=str(prior_checked) if isinstance(prior_checked, str) else None,
-                detail=f"console-only; health probe failed: {health_detail}",
+                checked_at=(
+                    str(prior_checked) if isinstance(prior_checked, str) else None
+                ),
+                detail=health_summary,
             )
         )
 
     if (
         not any_auto_success
-        and not any_console_health_success
+        and not any_console_health_evidence
         and previous is not None
     ):
         # Preserve prior file entirely when every auto lane failed.
@@ -454,13 +477,13 @@ def refresh_usage_document(
         mirrored_to=mirrored,
         source=str(validated.get("source") or ""),
         lanes=tuple(results),
-        ok=any_auto_success or any_console_health_success,
+        ok=any_auto_success or any_console_health_evidence,
         detail=(
             "refreshed"
             if any_auto_success
             else (
                 "console health refreshed; prior usage preserved"
-                if any_console_health_success
+                if any_console_health_evidence
                 else "created empty shell"
             )
         ),

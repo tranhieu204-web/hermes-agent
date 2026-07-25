@@ -89,7 +89,7 @@ def test_refresh_atomic_write_and_per_lane_freshness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
-        lambda lane_id: (False, "unhealthy in unit test"),
+        lambda lane_id: (None, "health probe unavailable in unit test"),
     )
 
     report = refresh_usage_document(
@@ -476,3 +476,115 @@ def test_console_health_persists_when_all_auto_usage_refreshes_fail(
     assert by_label["SuperGrok"]["health_checked_at"] == "2026-07-24T12:00:00.000Z"
     assert by_label["Google AI · Antigravity"]["weekly_pct_used"] == 40
     assert by_label["Google AI · Antigravity"]["health_status"] == "UP"
+
+
+
+def test_confirmed_console_down_persists_when_auto_usage_fails(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "usage-weekly.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "plans-1",
+                "checked_at": "2026-07-01T00:00:00.000Z",
+                "plans": [
+                    {"label": "ChatGPT Pro · Codex", "weekly_pct_used": 10},
+                    {"label": "Claude Max 20x", "weekly_pct_used": 20},
+                    {
+                        "label": "SuperGrok",
+                        "weekly_pct_used": 30,
+                        "health_status": "UP",
+                        "health_checked_at": "2026-07-24T11:00:00.000Z",
+                    },
+                    {
+                        "label": "Google AI · Antigravity",
+                        "weekly_pct_used": 40,
+                        "health_status": "UP",
+                        "health_checked_at": "2026-07-24T11:00:00.000Z",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
+        lambda lane_id: (False, f"{lane_id} confirmed down"),
+    )
+
+    report = refresh_usage_document(
+        path=path,
+        home=tmp_path,
+        mirror_path=None,
+        fetch_usage=lambda _provider: None,
+        now=NOW,
+    )
+
+    assert report.ok
+    document = json.loads(path.read_text(encoding="utf-8"))
+    by_label = {row["label"]: row for row in document["plans"]}
+    assert by_label["SuperGrok"]["health_status"] == "DOWN"
+    assert by_label["SuperGrok"]["health_checked_at"] == "2026-07-24T12:00:00.000Z"
+    assert by_label["Google AI · Antigravity"]["health_status"] == "DOWN"
+
+
+def test_timestamped_console_attestation_is_fresh_and_comparable(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "usage-weekly.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "plans-1",
+                "checked_at": "2026-07-01T00:00:00.000Z",
+                "plans": [
+                    {"label": "ChatGPT Pro · Codex", "weekly_pct_used": 10},
+                    {"label": "Claude Max 20x", "weekly_pct_used": 20},
+                    {"label": "SuperGrok", "weekly_pct_used": 30},
+                    {
+                        "label": "Google AI · Antigravity",
+                        "weekly_pct_used": 40,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    attestation = tmp_path / "fleet" / "usage-console-attestation.json"
+    attestation.parent.mkdir(parents=True)
+    attestation.write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-07-24T12:00:00.000Z",
+                "lanes": {"grok": {"weekly_pct_used": 5}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.fleet.usage_refresh._probe_console_lane_health",
+        lambda lane_id: (True, f"{lane_id} healthy"),
+    )
+
+    report = refresh_usage_document(
+        path=path,
+        home=tmp_path,
+        mirror_path=None,
+        fetch_usage=lambda _provider: None,
+        now=NOW,
+    )
+
+    assert report.ok
+    document = json.loads(path.read_text(encoding="utf-8"))
+    grok = next(row for row in document["plans"] if row["label"] == "SuperGrok")
+    assert grok["weekly_pct_used"] == 5
+    assert grok["checked_at"] == "2026-07-24T12:00:00.000Z"
+    assert grok["measurement_kind"] == "measured"
+    assert grok["comparability_group"] == "subscription-weekly"
+    assert grok["quota_window_id"] == "subscription-weekly"
+
+    read = BridgeUsageAdapter(path).read("grok", now=NOW)
+    assert read.snapshot is not None
+    assert read.snapshot.freshness is Freshness.FRESH
+    assert read.reason is None
