@@ -10,6 +10,7 @@ from .types import (
     AdapterKind,
     Confidence,
     Freshness,
+    LaneHealth,
     LaneEvaluation,
     LaneInputs,
     MeasurementKind,
@@ -137,6 +138,19 @@ def evaluate_lane(
         reasons.append(ReasonCode.OCCUPANCY_FULL)
 
     snapshot = inputs.capacity.snapshot
+    health = inputs.capacity.health
+    if (
+        inputs.require_verified_health
+        and purpose is RoutePurpose.TASK_WORKER
+    ):
+        if (
+            health is None
+            or health.freshness is not Freshness.FRESH
+            or health.status is LaneHealth.UNKNOWN
+        ):
+            reasons.append(ReasonCode.HEALTH_UNVERIFIED)
+        elif health.status is LaneHealth.DOWN:
+            reasons.append(ReasonCode.HEALTH_DOWN)
     trustworthy_capacity = (
         snapshot is not None
         and snapshot.freshness is Freshness.FRESH
@@ -177,6 +191,13 @@ def evaluate_lane(
             or not snapshot.quota_window_id
         ):
             usage_reasons.append(ReasonCode.USAGE_NOT_COMPARABLE)
+    if (
+        inputs.require_verified_health
+        and purpose is RoutePurpose.TASK_WORKER
+        and usage_reasons
+    ):
+        reasons.extend(usage_reasons)
+        usage_reasons = []
 
     # 8. Cooldown.
     if inputs.cooldown_until is not None and inputs.cooldown_until > at:

@@ -3,8 +3,8 @@
 Writes the profile-scoped capacity document under Hermes home with atomic
 replace semantics. Auto-queryable lanes (Codex/Claude) fetch weekly used % from
 provider APIs. Console-only Grok/Antigravity never invent a usage percentage,
-but when a live health probe succeeds they may receive a fresh ``checked_at``
-plus measured metadata while preserving the prior ``weekly_pct_used``.
+and their live health probes update only separate health fields while
+preserving prior usage evidence and its timestamp.
 """
 
 from __future__ import annotations
@@ -358,8 +358,9 @@ def refresh_usage_document(
             )
         )
 
-    # Console-only lanes: never invent weekly_pct_used. Optional attestation may
-    # supply %, and a live health probe may stamp measured freshness metadata.
+    # Console-only lanes: usage and health have independent clocks. A health
+    # probe may update only health fields; it must never refresh a prior usage
+    # percentage or make an unattested percentage measured/comparable.
     attestation = _read_console_attestation(_console_attestation_path(home=home))
     for lane_id, default_label, needles in CONSOLE_ONLY_LANES:
         row = _find_plan(plans, needles)  # type: ignore[arg-type]
@@ -376,19 +377,19 @@ def refresh_usage_document(
             row["weekly_pct_used"] = attestation[lane_id]
             prior_pct = attestation[lane_id]
         healthy, health_detail = _probe_console_lane_health(lane_id)
+        row["health_status"] = "UP" if healthy else "DOWN"
+        row["health_checked_at"] = stamp
         if healthy:
-            row["checked_at"] = stamp
-            row["comparability_group"] = "subscription-weekly"
-            row["quota_window_id"] = "subscription-weekly"
-            row["measurement_kind"] = "measured"
-            row.setdefault("overage_disabled", True)
-            row.setdefault("resets", "weekly")
             results.append(
                 LaneRefreshResult(
                     lane_id=lane_id,
-                    updated=True,
+                    updated=False,
                     weekly_pct_used=prior_pct,
-                    checked_at=stamp,
+                    checked_at=(
+                        str(row["checked_at"])
+                        if isinstance(row.get("checked_at"), str)
+                        else None
+                    ),
                     detail=f"console health probe ok; {health_detail}",
                 )
             )

@@ -15,6 +15,7 @@ from hermes_cli.fleet.adapters.live_routes import (
     live_adapters,
 )
 from hermes_cli.fleet.adapters.native_provider import NativeProviderAdapter
+from hermes_cli.fleet.capacity import BridgeUsageAdapter
 from hermes_cli.fleet.live import FleetQualificationDoctor
 from hermes_cli.fleet.profiles import profile_map
 from hermes_cli.fleet.types import OverageState, TaskSpec
@@ -246,6 +247,11 @@ def test_default_service_qualifies_and_executes_each_live_lane(
                         "weekly_pct_used": 10,
                         "resets": "weekly",
                         "checked_at": "2026-07-24T00:00:00Z",
+                        "health_status": "UP",
+                        "health_checked_at": "2026-07-24T00:00:00Z",
+                        "comparability_group": "subscription-weekly",
+                        "quota_window_id": "subscription-weekly",
+                        "measurement_kind": "measured",
                     }
                 ],
             }
@@ -343,6 +349,7 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         config_data=config,
         doctor=doctor,
         adapters=adapters,
+        capacity_source=BridgeUsageAdapter(bridge),
         store_path=tmp_path / "state.db",
         now=lambda: NOW,
     )

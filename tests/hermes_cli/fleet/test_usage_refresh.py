@@ -351,7 +351,7 @@ def test_fleet_refresh_usage_ps1_has_no_dated_worktree_fallback():
     assert "hermes-agent" in text
 
 
-def test_console_health_probe_stamps_freshness_without_inventing_pct(tmp_path, monkeypatch):
+def test_console_health_probe_never_makes_stale_usage_fresh(tmp_path, monkeypatch):
     path = tmp_path / "usage-weekly.json"
     path.write_text(
         json.dumps(
@@ -401,6 +401,16 @@ def test_console_health_probe_stamps_freshness_without_inventing_pct(tmp_path, m
     agy = by_label["Google AI · Antigravity"]
     assert grok["weekly_pct_used"] == 12
     assert agy["weekly_pct_used"] == 18
-    assert grok["checked_at"] == "2026-07-24T12:00:00.000Z"
-    assert agy["measurement_kind"] == "measured"
-    assert grok["comparability_group"] == "subscription-weekly"
+    assert "checked_at" not in grok
+    assert "checked_at" not in agy
+    assert "measurement_kind" not in agy
+    assert "comparability_group" not in grok
+    assert grok["health_status"] == "UP"
+    assert agy["health_status"] == "UP"
+    assert grok["health_checked_at"] == "2026-07-24T12:00:00.000Z"
+
+    read = BridgeUsageAdapter(path).read("grok", now=NOW)
+    assert read.snapshot is not None
+    assert read.snapshot.freshness is Freshness.STALE
+    assert read.health is not None
+    assert read.health.freshness is Freshness.FRESH

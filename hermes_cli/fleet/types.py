@@ -46,6 +46,8 @@ class ReasonCode(str, Enum):
     CAPACITY_EXHAUSTED = "CAPACITY_EXHAUSTED"
     USAGE_STALE = "USAGE_STALE"
     USAGE_NOT_COMPARABLE = "USAGE_NOT_COMPARABLE"
+    HEALTH_DOWN = "HEALTH_DOWN"
+    HEALTH_UNVERIFIED = "HEALTH_UNVERIFIED"
     ROTATION_WITHOUT_FRESH_CAPACITY = "ROTATION_WITHOUT_FRESH_CAPACITY"
     LANE_COOLDOWN = "LANE_COOLDOWN"
     NO_ELIGIBLE_LANE = "NO_ELIGIBLE_LANE"
@@ -98,6 +100,23 @@ class OverageState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class LaneHealth(str, Enum):
+    UP = "UP"
+    DOWN = "DOWN"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class HealthRead:
+    status: LaneHealth
+    captured_at: datetime
+    read_at: datetime
+    expires_at: datetime
+    freshness: Freshness
+    source_id: str
+    detail: str = ""
+
+
 @dataclass(frozen=True)
 class CapacitySnapshot:
     lane_id: str
@@ -124,6 +143,7 @@ class CapacityRead:
     snapshot: CapacitySnapshot | None
     reason: ReasonCode | None
     detail: str = ""
+    health: HealthRead | None = None
 
 
 @dataclass(frozen=True)
@@ -199,6 +219,7 @@ class LaneInputs:
     reserve_floor_pct: Decimal = Decimal("0")
     cooldown_until: datetime | None = None
     rotation_without_fresh_capacity: bool = False
+    require_verified_health: bool = False
 
 
 @dataclass(frozen=True)

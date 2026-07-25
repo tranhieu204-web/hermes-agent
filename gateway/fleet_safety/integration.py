@@ -58,13 +58,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_ASSUMED_CONTEXT_TOKENS = 160_000
 
 
-def _load_fleet_safety_config() -> dict:
+def _load_full_config() -> dict:
     try:
         from hermes_cli.config import load_config
-        return (load_config().get("fleet_safety") or {})
+        return load_config() or {}
     except Exception as e:  # pragma: no cover - defensive
-        logger.debug("fleet_safety config load failed: %s", e)
+        logger.debug("config load failed: %s", e)
         return {}
+
+
+def _load_fleet_safety_config() -> dict:
+    return _load_full_config().get("fleet_safety") or {}
 
 
 # --------------------------------------------------------------------------
@@ -308,7 +312,7 @@ def select_best_lane_for(
     now: Optional[float] = None,
 ) -> SelectedLane:
     """Select the best fallback routing lane using usage-headroom rules."""
-    cfg = _load_fleet_safety_config()
+    cfg = _load_full_config()
     return select_best_lane(cfg, current_provider=current_provider, is_heavy=is_heavy, now=now)
 
 
@@ -336,17 +340,7 @@ def decide_routing(
         divergence_points=float(verify_cfg.get("divergence_points", 15.0) or 15.0),
     )
     cap = WalletCap(wallet_cfg)
-    decision = cap.decide(
+    return cap.decide(
         RoutingRequest(provider=provider, effort=effort, is_heavy=is_heavy),
         verified.used_percent,
     )
-    if decision.action == WalletAction.FALLBACK_PROVIDER:
-        from dataclasses import replace
-        best = select_best_lane(cfg, current_provider=provider, is_heavy=is_heavy, now=now)
-        decision = replace(
-            decision,
-            fallback_provider=best.provider,
-            fallback_model=best.model,
-            reason=f"{decision.reason} -> fallback to {best.lane} ({best.provider}/{best.model})",
-        )
-    return decision

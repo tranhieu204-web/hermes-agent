@@ -89,10 +89,4 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
             seen.add(identity)
             chain.append(entry)
 
-    try:
-        from gateway.fleet_safety.selector import rank_fallback_chain
-        chain = rank_fallback_chain(chain, config)
-    except Exception:
-        pass
-
     return chain

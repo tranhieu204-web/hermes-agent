@@ -45,6 +45,7 @@ class FleetService:
         capacity_source: BridgeUsageAdapter,
         now: Callable[[], datetime] | None = None,
         owner_uuid: str | None = None,
+        require_verified_health: bool = False,
     ) -> None:
         self.config = config
         self.store = store
@@ -56,6 +57,7 @@ class FleetService:
         self.capacity_source = capacity_source
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.owner_uuid = owner_uuid or str(uuid.uuid4())
+        self.require_verified_health = require_verified_health
 
     def _inputs(
         self,
@@ -91,6 +93,7 @@ class FleetService:
                     rotation_without_fresh_capacity=(
                         self.config.rotation_without_fresh_capacity
                     ),
+                    require_verified_health=self.require_verified_health,
                 )
             )
         return tuple(candidates)

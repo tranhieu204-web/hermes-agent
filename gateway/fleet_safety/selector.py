@@ -191,7 +191,12 @@ def select_best_lane(
     cfg = config or {}
     fleet_cfg = cfg.get("fleet") or {}
     lanes_cfg = fleet_cfg.get("lanes") or {}
-    switch_delta = float(fleet_cfg.get("switch_delta", 20.0))
+    switch_delta = float(
+        fleet_cfg.get(
+            "switch_delta_pct",
+            fleet_cfg.get("switch_delta", 20.0),
+        )
+    )
 
     candidates: Dict[str, Tuple[LaneConfig, Optional[float], Optional[float], List[str]]] = {}
 
@@ -334,4 +339,3 @@ def rank_fallback_chain(
     eligible_entries.sort(key=lambda x: (x[0], -x[1]), reverse=True)
 
     return [e for _, _, e in eligible_entries]
-

@@ -553,7 +553,7 @@ class FleetStore:
                         Decimal("0"), remaining - reserved
                     ).quantize(Decimal("0.001")),
                 )
-                capacity = CapacityRead(snapshot, capacity.reason, capacity.detail)
+                capacity = replace(capacity, snapshot=snapshot)
             live.append(
                 replace(
                     candidate,

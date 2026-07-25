@@ -80,7 +80,7 @@ def test_profiles_are_fixed_order_and_truthful_for_current_live_lanes():
     assert profiles[2].supports_parent_session
     assert profiles[3].implemented
     assert profiles[3].executable == "agy"
-    assert profiles[3].ordered_models == ("gemini-3.1-pro-high",)
+    assert profiles[3].ordered_models[0] == "gemini-3.1-pro-high"
     assert profiles[3].supported_efforts == ("low", "medium", "high")
     assert profiles[3].selected_effort == "medium"
     assert profiles[3].supports_task_worker

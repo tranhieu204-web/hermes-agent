@@ -17,6 +17,7 @@ from .adapters.live_routes import live_adapters
 from .capacity import BridgeUsageAdapter
 from .config import parse_fleet_config
 from .live import FleetQualificationDoctor
+from .live_capacity import LiveUsageAdapter
 from .profiles import ordered_profiles
 from .service import FleetService
 from .state import FleetStore
@@ -53,6 +54,7 @@ def build_fleet_service(
     config_data: Mapping[str, Any] | None = None,
     doctor: FleetQualificationDoctor | None = None,
     adapters: Mapping[str, object] | None = None,
+    capacity_source: object | None = None,
     store_path: Path | None = None,
     now=None,
 ) -> FleetService:
@@ -62,12 +64,15 @@ def build_fleet_service(
         load_config_readonly() if config_data is None else config_data
     )
     profiles = ordered_profiles()
-    capacity_source = BridgeUsageAdapter(config.bridge_usage_file)
+    bridge_capacity_source = BridgeUsageAdapter(config.bridge_usage_file)
+    live_capacity_source = capacity_source or LiveUsageAdapter(
+        bridge_capacity_source
+    )
 
     def bridge_billing_status(lane_id: str) -> Mapping[str, object]:
         """Map fresh bridge capacity overage flags into doctor billing evidence."""
         read_at = now() if now is not None else None
-        snapshot = capacity_source.read(lane_id, now=read_at).snapshot
+        snapshot = bridge_capacity_source.read(lane_id, now=read_at).snapshot
         if (
             snapshot is None
             or snapshot.freshness is not Freshness.FRESH
@@ -94,8 +99,9 @@ def build_fleet_service(
             if adapters is None
             else adapters
         ),
-        capacity_source=capacity_source,
+        capacity_source=live_capacity_source,
         now=now,
+        require_verified_health=True,
     )
 
 
