@@ -493,6 +493,85 @@ def test_parent_turn_guard_releases_lease_and_cools_future_admissions_on_failure
     assert calls[1][3] is True
 
 
+def test_fleet_pinned_session_rejects_mid_session_model_switch():
+    session = {"fleet_parent_route": fleet_parent.parent_route_metadata(_pin())}
+
+    with pytest.raises(ValueError, match="Fleet-pinned session"):
+        server._apply_model_switch("sid", session, "gpt-5")
+
+
+def test_prompt_submit_uses_parent_turn_guard_and_skips_config_swap(
+    monkeypatch, tmp_path
+):
+    class InlineThread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    events: list[tuple] = []
+    sync_calls: list[str] = []
+
+    class Guard:
+        def release(self, *, outcome, provider_failure):
+            events.append(("release", outcome, provider_failure))
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(
+        server,
+        "_sync_agent_model_with_config",
+        lambda sid, session: sync_calls.append(sid),
+    )
+    monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(
+        fleet_parent,
+        "acquire_parent_turn_guard",
+        lambda route, cwd: events.append(("acquire", route["model"], cwd))
+        or Guard(),
+    )
+
+    agent = types.SimpleNamespace(
+        session_id="stored-root",
+        model="grok-4.5",
+        provider="xai-oauth",
+        clear_interrupt=lambda: None,
+        run_conversation=lambda *args, **kwargs: {"final_response": "ok"},
+    )
+    session = {
+        "agent": agent,
+        "session_key": "stored-root",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "inflight_turn": None,
+        "fleet_parent_route": fleet_parent.parent_route_metadata(_pin()),
+    }
+
+    server._run_prompt_submit("rid", "sid", session, "hello")
+
+    assert events[0] == ("acquire", "grok-4.5", tmp_path)
+    assert events[-1] == ("release", "complete", False)
+    assert sync_calls == []
+
+
 def test_no_eligible_parent_fails_closed_without_session_or_build(monkeypatch):
     built: list[str] = []
     monkeypatch.setattr(

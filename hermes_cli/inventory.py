@@ -141,10 +141,39 @@ def _antigravity_parent_provider_row() -> dict | None:
         "is_current": False,
         "is_user_defined": False,
         "base_url": "",
+        "selection_kind": "fleet_parent",
+        "fleet_lane_id": "antigravity",
+        "selectable": True,
+        "blocked_reason": None,
+        "source": "fleet_auto",
         "capabilities": {
             m: {"fast": False, "reasoning": True} for m in models
         },
     }
+
+
+def build_model_options_payload(
+    ctx: ConfigContext,
+    *,
+    explicit_only: bool = False,
+    include_unconfigured: bool = False,
+    refresh: bool = False,
+) -> dict:
+    """Build the stable API-server/dashboard/TUI model-options payload."""
+
+    refresh = bool(refresh)
+    return build_models_payload(
+        ctx,
+        explicit_only=bool(explicit_only),
+        include_unconfigured=bool(include_unconfigured),
+        picker_hints=True,
+        canonical_order=True,
+        pricing=True,
+        capabilities=True,
+        refresh=refresh,
+        probe_custom_providers=refresh,
+        probe_current_custom_provider=not refresh,
+    )
 
 
 def build_models_payload(

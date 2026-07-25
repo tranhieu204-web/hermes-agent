@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from '.'
+import { Picker, sortProviders } from '.'
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -56,6 +56,33 @@ afterEach(() => {
 })
 
 describe('onboarding Picker', () => {
+  it('keeps Antigravity after Grok and before Anthropic with an external connected flow', () => {
+    const antigravity = {
+      ...provider('antigravity', 'backend fallback title'),
+      flow: 'external' as const,
+      status: { logged_in: true }
+    }
+
+    const ordered = sortProviders([
+      provider('anthropic', 'Anthropic Claude'),
+      antigravity,
+      provider('xai-oauth', 'xAI Grok')
+    ])
+
+    expect(ordered.map(row => row.id)).toEqual(['xai-oauth', 'antigravity', 'anthropic'])
+
+    setProviders(ordered)
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.getByText('Antigravity · Gemini 3.1 Pro High')).toBeTruthy()
+    expect(screen.getByText('Connected')).toBeTruthy()
+    expect(
+      screen.getByRole('button', {
+        name: /Antigravity · Gemini 3\.1 Pro High.*Connected/
+      })
+    ).toBeTruthy()
+  })
+
   it('features Nous Portal and hides other providers behind a disclosure', () => {
     setProviders([provider('anthropic', 'Anthropic Claude'), provider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)

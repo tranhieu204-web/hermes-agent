@@ -1968,6 +1968,7 @@ export interface Translations {
       refreshModels: string
       fast: string
       medium: string
+      newSessionOnly: string
     }
     modelOptions: {
       noOptions: string

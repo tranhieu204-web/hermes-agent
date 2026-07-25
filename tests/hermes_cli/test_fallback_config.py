@@ -52,6 +52,7 @@ class TestGetFallbackChainRanking:
 
         monkeypatch.setattr("gateway.fleet_safety.selector.verified_usage_for", fake_verified)
         cfg = {
+            "fleet": {"enabled": True},
             "fallback_providers": [
                 {"provider": "grok", "model": "grok-4.5"},
                 {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},

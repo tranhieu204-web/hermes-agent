@@ -10025,6 +10025,7 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.inventory._antigravity_parent_provider_row", lambda: None)
 
     resp = server._methods["model.options"](
         102,

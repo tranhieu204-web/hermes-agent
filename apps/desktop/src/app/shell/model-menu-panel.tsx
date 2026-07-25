@@ -269,6 +269,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {
+                    const existingSessionBlocked =
+                      !!activeSessionId && group.provider.selection_kind === 'fleet_parent'
+
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.
                     const activeId =
@@ -299,6 +302,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     )
 
                     const meta = [
+                      existingSessionBlocked ? copy.newSessionOnly : null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
                     ]
@@ -314,6 +318,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                     // edit submenu (reasoning/fast) is reached by HOVER, so you can
                     // still tweak those without the click dismissing everything.
                     const activate = () => {
+                      if (existingSessionBlocked) {
+                        return
+                      }
+
                       if (!isCurrent) {
                         void selectFamily(family, group.provider)
                       }
@@ -325,6 +333,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                         <DropdownMenuSubTrigger
                           className={dropdownMenuRow}
+                          disabled={existingSessionBlocked}
                           hideChevron
                           onClick={activate}
                           onKeyDown={event => {

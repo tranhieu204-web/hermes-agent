@@ -39,7 +39,17 @@ const GOOGLE_PROVIDER = {
   slug: 'google'
 }
 
-const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
+const ANTIGRAVITY_PROVIDER = {
+  authenticated: true,
+  fleet_lane_id: 'antigravity',
+  models: ['gemini-3.1-pro-high'],
+  name: 'Antigravity · Gemini',
+  selectable: true,
+  selection_kind: 'fleet_parent',
+  slug: 'antigravity-subscription'
+}
+
+const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, ANTIGRAVITY_PROVIDER, MOA_PROVIDER]
 
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
@@ -121,6 +131,33 @@ describe('ModelMenuPanel MoA presets', () => {
     // Pre-session picks are UI state shipped on the next session.create — the
     // row must not be disabled and must still route through onSelectModel.
     expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: null })
+  })
+})
+
+describe('ModelMenuPanel external Fleet parents', () => {
+  it('disables Antigravity for an existing conversation instead of migrating it', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    const row = await content.findByText('Gemini 3.1 pro high')
+    const item = row.closest('[role="menuitem"]')
+
+    expect(item?.getAttribute('data-disabled')).not.toBeNull()
+    fireEvent.click(row)
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('lets a fresh draft select Antigravity for admission through session.create', async () => {
+    $activeSessionId.set('')
+    const { content, onSelectModel } = renderPanel()
+
+    const row = await content.findByText('Gemini 3.1 pro high')
+    fireEvent.click(row)
+
+    expect(onSelectModel).toHaveBeenCalledWith({
+      model: 'gemini-3.1-pro-high',
+      provider: 'antigravity-subscription',
+      sessionId: null
+    })
   })
 })
 

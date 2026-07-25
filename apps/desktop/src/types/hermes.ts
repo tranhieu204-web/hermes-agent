@@ -361,6 +361,13 @@ export interface ModelPricing {
 }
 
 export interface ModelOptionProvider {
+  /** Virtual rows such as external Fleet parents are draft-only routes, not
+   * ordinary providers that can be hot-swapped into a live conversation. */
+  selection_kind?: 'fleet_parent' | string
+  fleet_lane_id?: string
+  selectable?: boolean
+  blocked_reason?: null | string
+  source?: string
   is_current?: boolean
   models?: string[]
   name: string

@@ -9945,6 +9945,50 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _antigravity_status() -> Dict[str, Any]:
+    """Report only a live, exact Antigravity consumer-subscription route."""
+
+    try:
+        from hermes_cli.fleet.live import FleetQualificationDoctor
+        from hermes_cli.fleet.profiles import profile_map
+
+        profile = profile_map()["antigravity"]
+        qualification = FleetQualificationDoctor().qualify((profile,)).get(
+            "antigravity"
+        )
+        if qualification is None:
+            return {"logged_in": False, "source": None}
+        expires_at = qualification.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if (
+            qualification.qualified is not True
+            or expires_at <= datetime.now(timezone.utc)
+            or qualification.auth_kind != "cli_subscription"
+            or qualification.auth_source != "antigravity:agy-live-receipt"
+            or qualification.provider_id != "antigravity-subscription"
+            or "gemini-3.1-pro-high" not in qualification.models
+            or not qualification.executable
+            or qualification.subscription_only_proven is not True
+            or qualification.paid_fallback_absent is not True
+            or qualification.parent_session_proven is not True
+        ):
+            return {"logged_in": False, "source": None}
+    except Exception:
+        return {"logged_in": False, "source": None}
+
+    return {
+        "logged_in": True,
+        "source": "antigravity_subscription",
+        "source_label": (
+            "Live Antigravity consumer subscription · Gemini 3.1 Pro High"
+        ),
+        "token_preview": None,
+        "expires_at": qualification.expires_at,
+        "has_refresh_token": False,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -10006,6 +10050,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "hermes auth add xai-oauth",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth",
         "status_fn": None,  # dispatched via auth.get_xai_oauth_auth_status
+    },
+    {
+        "id": "antigravity",
+        "name": "Antigravity · Gemini 3.1 Pro High",
+        "flow": "external",
+        "cli_command": "agy",
+        "docs_url": "",
+        "status_fn": _antigravity_status,
     },
     {
         "id": "copilot-acp",

@@ -104,8 +104,14 @@ def parent_route_metadata(pin: ParentPin) -> dict[str, Any]:
         and pin.provider_id == "antigravity-subscription"
         and pin.model_id in _AGY_MODEL_LABELS
     ):
+        user_model_label = (
+            _AGY_MODEL_LABELS[pin.model_id]
+            .replace(" (High)", " High")
+            .replace(" (Medium)", " Medium")
+            .replace(" (Low)", " Low")
+        )
         display_label = (
-            f"Antigravity · {_AGY_MODEL_LABELS[pin.model_id]} · external CLI"
+            f"Antigravity · {user_model_label} · external CLI"
         )
     else:
         raise ValueError("unsupported external fleet parent")
