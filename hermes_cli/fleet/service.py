@@ -13,6 +13,7 @@ from .state import FleetStore
 from .types import (
     AdapterRequest,
     AdapterResult,
+    CapacityRead,
     FleetRunResult,
     LaneInputs,
     LaneProfile,
@@ -64,12 +65,28 @@ class FleetService:
         at: datetime,
         *,
         purpose: RoutePurpose = RoutePurpose.TASK_WORKER,
+        lane_id: str | None = None,
     ) -> tuple[LaneInputs, ...]:
         candidates: list[LaneInputs] = []
         for profile in self.profiles:
+            if lane_id is not None and profile.lane_id != lane_id:
+                continue
             lane_config = self.config.lanes[profile.lane_id]
             active, reserved = self.store.lane_usage(profile.lane_id, now=at)
             cooldown = self.store.cooldown(profile.lane_id, now=at)
+            capacity = (
+                self.capacity_source.read(
+                    profile.lane_id,
+                    now=at,
+                    reserved_pct=reserved,
+                )
+                if lane_config.enabled
+                else CapacityRead(
+                    None,
+                    ReasonCode.CAPACITY_MISSING,
+                    f"{profile.lane_id}: disabled; live usage not fetched",
+                )
+            )
             candidates.append(
                 LaneInputs(
                     profile=profile,
@@ -80,11 +97,7 @@ class FleetService:
                         else profile.supports_parent_session
                     ),
                     qualification=self.qualifications.get(profile.lane_id),
-                    capacity=self.capacity_source.read(
-                        profile.lane_id,
-                        now=at,
-                        reserved_pct=reserved,
-                    ),
+                    capacity=capacity,
                     active_leases=active,
                     active_reserved_pct=reserved,
                     max_concurrency=lane_config.max_concurrency,
@@ -98,7 +111,7 @@ class FleetService:
             )
         return tuple(candidates)
 
-    def inspect(self, task: TaskSpec) -> tuple:
+    def inspect(self, task: TaskSpec, *, lane_id: str | None = None) -> tuple:
         at = self._now().astimezone(timezone.utc)
         return tuple(
             evaluate_lane(
@@ -107,10 +120,10 @@ class FleetService:
                 now=at,
                 minimum_confidence=self.config.minimum_confidence,
             )
-            for candidate in self._inputs(at)
+            for candidate in self._inputs(at, lane_id=lane_id)
         )
 
-    def inspect_parent(self, task: TaskSpec) -> tuple:
+    def inspect_parent(self, task: TaskSpec, *, lane_id: str | None = None) -> tuple:
         at = self._now().astimezone(timezone.utc)
         return tuple(
             evaluate_lane(
@@ -121,7 +134,7 @@ class FleetService:
                 purpose=RoutePurpose.DESKTOP_PARENT,
             )
             for candidate in self._inputs(
-                at, purpose=RoutePurpose.DESKTOP_PARENT
+                at, purpose=RoutePurpose.DESKTOP_PARENT, lane_id=lane_id
             )
         )
 

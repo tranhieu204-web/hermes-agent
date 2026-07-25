@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from hermes_cli.fleet.inspection import build_fleet_service
+from hermes_cli.fleet.inspection import build_fleet_service, build_inspection_payload
 from hermes_cli.fleet.live_capacity import LiveUsageAdapter
 from hermes_cli.fleet.capacity import BridgeUsageAdapter
 from hermes_cli.fleet.types import (
@@ -203,9 +203,11 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(
-        "agent.account_usage.fetch_account_usage",
-        lambda provider: SimpleNamespace(
+    fetched_providers = []
+
+    def fetch_usage(provider):
+        fetched_providers.append(provider)
+        return SimpleNamespace(
             available=provider == "openai-codex",
             fetched_at=NOW,
             windows=(
@@ -215,7 +217,11 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
                     reset_at=None,
                 ),
             ),
-        ),
+        )
+
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        fetch_usage,
     )
     service = build_fleet_service(
         config_data={
@@ -248,6 +254,117 @@ def test_composition_root_prefers_fresh_authoritative_usage_over_stale_file(
     assert codex.capacity is not None
     assert codex.capacity.used_pct == Decimal("10.000")
     assert codex.capacity.source_kind == "authoritative_account_usage"
+    assert fetched_providers == ["openai-codex"]
+
+
+@pytest.mark.parametrize(
+    ("lane_id", "windows", "expected_used"),
+    [
+        (
+            "chatgpt_codex",
+            (("Session", 95), ("Weekly", 10)),
+            Decimal("10.000"),
+        ),
+        (
+            "claude_code",
+            (
+                ("Current session", 99),
+                ("Current week", 20),
+                ("Opus week", 30),
+                ("Sonnet week", 95),
+            ),
+            Decimal("30.000"),
+        ),
+    ],
+)
+def test_live_usage_uses_only_lane_relevant_weekly_windows(
+    tmp_path, lane_id, windows, expected_used
+):
+    adapter = LiveUsageAdapter(
+        BridgeUsageAdapter(tmp_path / "missing-usage.json"),
+        fetch_usage=lambda _provider: SimpleNamespace(
+            available=True,
+            fetched_at=NOW,
+            windows=tuple(
+                SimpleNamespace(label=label, used_percent=used)
+                for label, used in windows
+            ),
+        ),
+    )
+
+    read = adapter.read(lane_id, now=NOW)
+
+    assert read.snapshot is not None
+    assert read.snapshot.used_pct == expected_used
+
+
+def test_lane_scoped_inspection_fetches_requested_live_usage_once(tmp_path):
+    bridge = tmp_path / "usage-weekly.json"
+    bridge.write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-07-25T08:00:00Z",
+                "plans": [
+                    {
+                        "label": "ChatGPT Pro · Codex",
+                        "weekly_pct_used": 25,
+                        "checked_at": "2026-07-25T08:00:00Z",
+                        "health_status": "UP",
+                        "health_checked_at": "2026-07-25T08:00:00Z",
+                        "overage_disabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fetched_providers = []
+
+    def fetch_usage(provider):
+        fetched_providers.append(provider)
+        return SimpleNamespace(
+            available=True,
+            fetched_at=NOW,
+            windows=(SimpleNamespace(label="Weekly", used_percent=25),),
+        )
+
+    live_capacity = LiveUsageAdapter(
+        BridgeUsageAdapter(bridge),
+        fetch_usage=fetch_usage,
+        cache_ttl=timedelta(seconds=30),
+    )
+    service = build_fleet_service(
+        config_data={
+            "fleet": {
+                "enabled": True,
+                "lanes": {
+                    "chatgpt_codex": {"enabled": True},
+                    "claude_code": {"enabled": True},
+                    "grok": {"enabled": True},
+                    "antigravity": {"enabled": True},
+                    "kimi": {"enabled": False},
+                },
+            }
+        },
+        doctor=_Doctor(),
+        adapters={
+            lane_id: object()
+            for lane_id in (
+                "chatgpt_codex",
+                "claude_code",
+                "grok",
+                "antigravity",
+            )
+        },
+        capacity_source=live_capacity,
+        store_path=tmp_path / "state.db",
+        now=lambda: NOW,
+    )
+
+    payload = build_inspection_payload(service, command="doctor", lane="chatgpt_codex")
+
+    assert payload["evaluations"][0]["lane_id"] == "chatgpt_codex"
+    assert fetched_providers == ["openai-codex"]
 
 
 def test_live_usage_falls_back_to_bridge_without_upgrading_evidence(tmp_path):
@@ -310,7 +427,7 @@ def test_authoritative_usage_does_not_override_independent_down_health(tmp_path)
         fetch_usage=lambda _provider: SimpleNamespace(
             available=True,
             fetched_at=NOW,
-            windows=(SimpleNamespace(used_percent=10),),
+            windows=(SimpleNamespace(label="Weekly", used_percent=10),),
         ),
     )
 
