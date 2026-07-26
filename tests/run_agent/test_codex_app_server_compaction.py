@@ -3,9 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_runtime import _record_codex_app_server_compaction
+from agent.codex_runtime import (
+    _record_codex_app_server_compaction,
+    _record_codex_app_server_usage,
+)
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from agent.progress_telemetry import ProgressTelemetry
 from agent.transports.codex_app_server_session import TurnResult
+from hermes_state import SessionDB
 
 
 class FakeCodexSession:
@@ -292,3 +297,87 @@ def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
     assert _record_codex_app_server_compaction(agent, turn) is True
     assert compressor._fallback_compression_streak == 0
     assert compressor._verify_compaction_cleared_threshold is True
+
+
+def test_codex_compaction_rotates_usage_ledger_before_next_paid_response(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_session_id = "CODEX_PARENT"
+    db.create_session(
+        parent_session_id,
+        source="cli",
+        model="gpt-test",
+    )
+    db.append_message(parent_session_id, "user", "compact this thread")
+    parent_ledger = ProgressTelemetry(session_id=parent_session_id)
+    parent_ledger.record_usage_component(
+        component_id="before-compaction",
+        source="codex_app_server_response",
+        session_id=parent_session_id,
+        provenance="measured",
+        authority="provider_response",
+        authoritative=True,
+        total_tokens=13,
+    )
+    agent = SimpleNamespace(
+        session_id=parent_session_id,
+        platform="cli",
+        model="gpt-test",
+        provider="openai-codex",
+        base_url="https://example.invalid/codex",
+        api_key="",
+        _session_init_model_config=None,
+        _session_db=db,
+        _session_db_created=True,
+        _progress_telemetry=parent_ledger,
+        context_compressor=None,
+        event_callback=None,
+        session_api_calls=0,
+        session_prompt_tokens=0,
+        session_completion_tokens=0,
+        session_total_tokens=0,
+        session_input_tokens=0,
+        session_output_tokens=0,
+        session_cache_read_tokens=0,
+        session_cache_write_tokens=0,
+        session_reasoning_tokens=0,
+        session_estimated_cost_usd=0.0,
+        session_cost_status="unknown",
+        session_cost_source="none",
+        _emit_status=lambda _message: None,
+    )
+    turn = TurnResult(
+        thread_id="thread-rotated",
+        turn_id="turn-after-compact",
+        compacted=True,
+        token_usage_last={
+            "inputTokens": 5,
+            "cachedInputTokens": 1,
+            "outputTokens": 3,
+            "reasoningOutputTokens": 1,
+            "totalTokens": 9,
+        },
+    )
+
+    assert _record_codex_app_server_compaction(agent, turn) is True
+
+    child_session_id = agent.session_id
+    child_ledger = agent._progress_telemetry
+    assert child_session_id != parent_session_id
+    assert child_ledger is not parent_ledger
+    assert child_ledger.session_id == child_session_id
+    assert child_ledger.parent_session_id == parent_session_id
+    assert child_ledger.parent_ledger_id == parent_ledger.ledger_id
+    assert child_ledger.usage_aggregate.known_total == 0
+    assert parent_ledger.frozen is True
+    assert parent_ledger.usage_aggregate.known_total == 13
+    parent_row = db.get_session(parent_session_id)
+    child_row = db.get_session(child_session_id)
+    assert parent_row["end_reason"] == "compression"
+    assert child_row["parent_session_id"] == parent_session_id
+
+    # Runtime order is compaction first, response accounting second. The first
+    # paid response after the boundary must land in the empty child ledger.
+    usage = _record_codex_app_server_usage(agent, turn)
+    assert usage["total_tokens"] == 9
+    assert child_ledger.usage_aggregate.known_total == 9
+    assert parent_ledger.usage_aggregate.known_total == 13

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.progress_telemetry import ProgressTelemetry
 from agent.turn_context import TurnContext, build_turn_context
 from hermes_state import SessionDB
 
@@ -195,6 +196,34 @@ def _build(agent, **overrides):
     )
     kwargs.update(overrides)
     return build_turn_context(**kwargs)
+
+
+def test_turn_reset_advances_generation_while_sequences_restart():
+    """The real turn prologue owns the telemetry generation transition."""
+    agent = _FakeAgent()
+    agent._progress_telemetry = ProgressTelemetry(session_id=agent.session_id)
+    initial = agent._progress_telemetry.get_activity_snapshot()
+
+    _build(agent)
+    first_turn = agent._progress_telemetry.get_activity_snapshot()
+    agent._progress_telemetry.record_attempt_completion(
+        "write_file",
+        {"path": "a.py"},
+        {"success": True},
+        is_failure=False,
+        event_id="tool:turn-one",
+        call_id="call-turn-one",
+        verified_progress=True,
+    )
+
+    _build(agent, user_message="second turn")
+    second_turn = agent._progress_telemetry.get_activity_snapshot()
+
+    assert first_turn["turn_generation"] == initial["turn_generation"] + 1
+    assert second_turn["turn_generation"] == first_turn["turn_generation"] + 1
+    assert second_turn["attempt_seq"] == 0
+    assert second_turn["failure_seq"] == 0
+    assert second_turn["progress_seq"] == 0
 
 
 def test_returns_turn_context_with_user_message_appended():

@@ -1318,6 +1318,7 @@ def handle_function_call(
                         function_name, next_args,
                         task_id=task_id,
                         session_id=session_id,
+                        tool_call_id=tool_call_id,
                         user_task=user_task,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.progress_telemetry import Retryability
 from agent.tool_result_classification import file_mutation_result_landed
 
 
@@ -233,10 +234,15 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
+        self._last_terminal_metadata: dict[str, Any] = {}
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    @property
+    def last_terminal_metadata(self) -> dict[str, Any]:
+        return dict(self._last_terminal_metadata)
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
@@ -289,13 +295,51 @@ class ToolCallGuardrailController:
         result: str | None,
         *,
         failed: bool | None = None,
+        retryability: Retryability | str | None = None,
+        error_code: int | None = None,
+        event_id: str | None = None,
+        event_sequence: int | None = None,
+        status: str | None = None,
+        failure_signature: str | None = None,
+        count_unknown_for_loop_safety: bool = False,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+        explicit_retryability = (
+            Retryability(retryability) if retryability is not None else None
+        )
+        self._last_terminal_metadata = {
+            "event_id": event_id,
+            "event_sequence": event_sequence,
+            "status": status or ("failure" if failed else "success"),
+            "retryability": (
+                explicit_retryability.value if explicit_retryability is not None else None
+            ),
+            "error_code": error_code,
+            "failure_signature": failure_signature,
+        }
 
         if failed:
+            # These counters drive only the legacy repeated-call loop safety.
+            # Provider-neutral non-retryable streaks remain owned by
+            # ProgressTelemetry.  An explicitly unknown terminal attempt may
+            # participate here only when the production compatibility seam
+            # opts in; it remains labelled unknown in terminal metadata.
+            counts_for_loop_safety = (
+                explicit_retryability is None
+                or explicit_retryability is Retryability.NON_RETRYABLE
+                or (
+                    count_unknown_for_loop_safety
+                    and explicit_retryability is Retryability.UNKNOWN
+                )
+            )
+            if not counts_for_loop_safety:
+                self._exact_failure_counts.pop(signature, None)
+                self._same_tool_failure_counts.pop(tool_name, None)
+                self._no_progress.pop(signature, None)
+                return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)

@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
@@ -59,8 +60,35 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     """
     agent.session_api_calls += 1
 
+    telemetry = getattr(agent, "_progress_telemetry", None)
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if telemetry is not None and session_id:
+        if not getattr(telemetry, "session_id", ""):
+            telemetry.bind_session_id(session_id)
+        elif telemetry.session_id != session_id:
+            raise RuntimeError(
+                "codex usage producer session does not match telemetry binding"
+            )
+    turn_id = str(getattr(turn, "turn_id", "") or "").strip()
+    if not turn_id:
+        thread_id = str(getattr(turn, "thread_id", "") or "").strip()
+        turn_id = f"{thread_id or 'unknown'}:{agent.session_api_calls}"
+    usage_component_id = f"codex-app-server-response:{turn_id}"
+
     usage = getattr(turn, "token_usage_last", None)
     if not isinstance(usage, dict) or not usage:
+        if telemetry is not None and session_id:
+            telemetry.record_usage_component(
+                component_id=usage_component_id,
+                source="codex_app_server_response",
+                session_id=session_id,
+                provenance="unknown",
+                authority="provider_response",
+                authoritative=False,
+                accepted_event_id=turn_id,
+                details={"api_mode": "codex_app_server"},
+                reason="provider_usage_missing",
+            )
         compressor = getattr(agent, "context_compressor", None)
         if (
             compressor is not None
@@ -108,6 +136,31 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
     total_tokens = reported_total or canonical_usage.total_tokens
+    if telemetry is not None and session_id:
+        telemetry.record_usage_component(
+            component_id=usage_component_id,
+            source="codex_app_server_response",
+            session_id=session_id,
+            provenance="measured",
+            authority="provider_response",
+            authoritative=True,
+            accepted_event_id=turn_id,
+            input_tokens=canonical_usage.input_tokens,
+            output_tokens=canonical_usage.output_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=canonical_usage.cache_read_tokens,
+            cache_write_tokens=canonical_usage.cache_write_tokens,
+            reasoning_tokens=canonical_usage.reasoning_tokens,
+            details={
+                "api_mode": "codex_app_server",
+                "input_tokens": canonical_usage.input_tokens,
+                "output_tokens": canonical_usage.output_tokens,
+                "total_tokens": total_tokens,
+                "cache_read_tokens": canonical_usage.cache_read_tokens,
+                "cache_write_tokens": canonical_usage.cache_write_tokens,
+                "reasoning_tokens": canonical_usage.reasoning_tokens,
+            },
+        )
     usage_dict = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -221,6 +274,73 @@ def _record_codex_app_server_compaction(
         except Exception:
             pass
 
+    # Codex owns the compacted provider thread, but Hermes still needs a
+    # durable session boundary so usage after compaction cannot accumulate in
+    # the pre-compaction ledger. Stage the empty child ledger first, atomically
+    # publish the DB continuation, then freeze/install the exact ledger pair.
+    # If staging or durable publication fails, the parent session and ledger
+    # remain the coherent live pair.
+    old_session_id = ""
+    session_db = getattr(agent, "_session_db", None)
+    current_session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if session_db is not None and current_session_id:
+        try:
+            parent_ledger = getattr(agent, "_progress_telemetry", None)
+            new_session_id = (
+                f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            )
+            child_ledger = (
+                parent_ledger.spawn_child(new_session_id)
+                if parent_ledger is not None
+                else None
+            )
+            handoff_messages = session_db.get_messages(current_session_id)
+            session_db.publish_compression_child(
+                parent_session_id=current_session_id,
+                child_session_id=new_session_id,
+                source=getattr(agent, "platform", None)
+                or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                model=getattr(agent, "model", None),
+                model_config=(
+                    getattr(agent, "_session_init_model_config", None)
+                    if isinstance(
+                        getattr(agent, "_session_init_model_config", None), dict
+                    )
+                    else None
+                ),
+                system_prompt=getattr(agent, "_cached_system_prompt", None),
+                messages=handoff_messages,
+                cwd=getattr(agent, "working_directory", None)
+                or getattr(agent, "session_cwd", None),
+                profile_name=None,
+                require_compression_lease=False,
+            )
+            if parent_ledger is not None:
+                parent_ledger.freeze()
+            if child_ledger is not None:
+                agent._progress_telemetry = child_ledger
+            old_session_id = current_session_id
+            agent.session_id = new_session_id
+            agent._session_db_created = True
+            try:
+                from gateway.session_context import set_current_session_id
+
+                set_current_session_id(new_session_id)
+            except Exception:
+                os.environ["HERMES_SESSION_ID"] = new_session_id
+            try:
+                from hermes_logging import set_session_context
+
+                set_session_context(new_session_id)
+            except Exception:
+                pass
+        except Exception:
+            logger.warning(
+                "Codex compaction session publication failed; keeping parent "
+                "session and usage ledger active",
+                exc_info=True,
+            )
+
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         compressor.compression_count = getattr(
@@ -252,7 +372,7 @@ def _record_codex_app_server_compaction(
                 {
                     "platform": getattr(agent, "platform", None) or "",
                     "session_id": getattr(agent, "session_id", None) or "",
-                    "old_session_id": "",
+                    "old_session_id": old_session_id,
                     "in_place": False,
                     "compression_count": getattr(
                         compressor, "compression_count", 0
@@ -451,38 +571,60 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     not tear down the codex turn loop. Errors are logged at DEBUG so the
     notification stream keeps flowing regardless.
     """
-    # item_id -> (tool_name, args, started_wall_time). Populated on
-    # item/started and consumed on item/completed so duration is correct
-    # even when codex doesn't report durationMs.
+    # Stable call id -> (tool_name, args, started_wall_time).  Missing Codex
+    # item IDs are correlated by the shared turn allocator before callbacks.
     started: dict[str, tuple[str, dict, float]] = {}
 
-    def _stable_call_id(item: dict, name: str) -> str:
-        """Deterministic tool_call id mirroring CodexEventProjector, so a
-        live TUI tool card correlates with the same tool call after the
-        session is resumed and history is projected."""
+    def _stable_call_id(
+        item: dict,
+        name: str,
+        *,
+        event_sequence: int | None,
+        lifecycle: str,
+    ) -> str:
+        """Preserve provider IDs; allocate omissions from safe item metadata."""
+        from agent.tool_call_identity import allocator_for_owner
         from agent.transports.codex_event_projector import _deterministic_call_id
 
-        item_id = item.get("id") or ""
-        item_type = item.get("type") or ""
-        if item_type == "commandExecution":
-            return _deterministic_call_id("exec", item_id)
-        if item_type == "fileChange":
-            return _deterministic_call_id("apply_patch", item_id)
-        if item_type == "mcpToolCall":
-            server = item.get("server") or "mcp"
-            tool = item.get("tool") or "unknown"
-            return _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
-        if item_type == "dynamicToolCall":
-            tool = item.get("tool") or "unknown"
-            return _deterministic_call_id(f"dyn_{tool}", item_id)
-        return _deterministic_call_id(name, item_id)
+        item_id = str(item.get("id") or "").strip()
+        item_type = str(item.get("type") or "")
+        if item_id:
+            if item_type == "commandExecution":
+                return _deterministic_call_id("exec", item_id)
+            if item_type == "fileChange":
+                return _deterministic_call_id("apply_patch", item_id)
+            if item_type == "mcpToolCall":
+                server = item.get("server") or "mcp"
+                tool = item.get("tool") or "unknown"
+                return _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
+            if item_type == "dynamicToolCall":
+                tool = item.get("tool") or "unknown"
+                return _deterministic_call_id(f"dyn_{tool}", item_id)
+            return _deterministic_call_id(name, item_id)
 
-    def _fire_tool_started(item: dict) -> None:
-        item_id = item.get("id") or ""
+        if event_sequence is None:
+            raise RuntimeError("tool-call identity unavailable for Codex item")
+        return allocator_for_owner(agent).allocate_missing(
+            tool_name=name,
+            provider_metadata={
+                "source": "codex_app_server",
+                "item_type": item_type,
+                "server": str(item.get("server") or ""),
+            },
+            event_identity={
+                "source": "codex_app_server",
+                "event_sequence": int(event_sequence),
+            },
+            lifecycle=lifecycle,
+        )
+
+    def _fire_tool_started(item: dict, event_sequence: int | None = None) -> None:
         name = _codex_item_to_tool_name(item)
         args = _codex_item_to_args(item)
-        if item_id:
-            started[item_id] = (name, args, time.monotonic())
+        call_id = _stable_call_id(
+            item, name, event_sequence=event_sequence, lifecycle="start"
+        )
+        started[call_id] = (name, args, time.monotonic())
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
@@ -499,16 +641,20 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         start_cb = getattr(agent, "tool_start_callback", None)
         if start_cb is not None:
             try:
-                start_cb(_stable_call_id(item, name), name, args)
+                start_cb(call_id, name, args)
             except Exception:
                 logger.debug(
                     "tool_start_callback raised for %s", name, exc_info=True,
                 )
 
-    def _fire_tool_completed(item: dict) -> None:
-        item_id = item.get("id") or ""
+    def _fire_tool_completed(
+        item: dict, event_sequence: int | None = None,
+    ) -> None:
         name = _codex_item_to_tool_name(item)
-        prior = started.pop(item_id, None)
+        call_id = _stable_call_id(
+            item, name, event_sequence=event_sequence, lifecycle="complete"
+        )
+        prior = started.pop(call_id, None)
         # Prefer codex's own durationMs when present so the bubble shows
         # exact tool wall-time; fall back to our started timestamp; fall
         # back to None if we never saw an item/started (some codex
@@ -520,11 +666,54 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         elif prior is not None:
             duration = time.monotonic() - prior[2]
         result, is_error = _codex_item_completion_payload(item)
+        args = prior[1] if prior is not None else _codex_item_to_args(item)
+        completion = None
+        observe = getattr(agent, "_observe_guardrail_completion", None)
+        if observe is not None:
+            try:
+                completion = observe(
+                    name,
+                    args,
+                    result,
+                    failed=is_error,
+                    event_id=f"codex:item/completed:{call_id}",
+                    event_sequence=event_sequence,
+                    call_id=call_id,
+                    adapter="codex_app_server",
+                    source="codex_app_server",
+                )
+            except Exception:
+                logger.debug(
+                    "terminal completion observation raised for %s",
+                    name,
+                    exc_info=True,
+                )
+            if completion is not None:
+                if getattr(completion, "replayed", False):
+                    return
+                result = getattr(completion, "result", result)
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
-                cb("tool.completed", name, None, None,
-                   duration=duration, is_error=is_error, result=result)
+                terminal_metadata = {}
+                snapshot = getattr(completion, "snapshot", None)
+                if snapshot:
+                    terminal_metadata = {
+                        "event_id": getattr(completion, "event_id", None),
+                        "event_sequence": getattr(completion, "event_sequence", None),
+                        "call_id": call_id,
+                        "adapter": snapshot.get("last_adapter"),
+                        "source": snapshot.get("last_source"),
+                        "status": snapshot.get("last_status"),
+                        "retryability": snapshot.get("last_retryability"),
+                        "error_code": snapshot.get("last_error_code"),
+                        "activity_snapshot": snapshot,
+                    }
+                cb(
+                    "tool.completed", name, None, None,
+                    duration=duration, is_error=is_error, result=result,
+                    **terminal_metadata,
+                )
             except Exception:
                 logger.debug(
                     "tool_progress_callback raised on tool.completed for %s",
@@ -532,9 +721,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                 )
         complete_cb = getattr(agent, "tool_complete_callback", None)
         if complete_cb is not None:
-            args = prior[1] if prior is not None else _codex_item_to_args(item)
             try:
-                complete_cb(_stable_call_id(item, name), name, args, result)
+                complete_cb(call_id, name, args, result)
             except Exception:
                 logger.debug(
                     "tool_complete_callback raised for %s", name, exc_info=True,
@@ -601,11 +789,11 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             return
         item_type = item.get("type") or ""
         if method == "item/started" and item_type in _CODEX_TOOL_ITEM_TYPES:
-            _fire_tool_started(item)
+            _fire_tool_started(item, note.get("sequence"))
             return
         if method == "item/completed":
             if item_type in _CODEX_TOOL_ITEM_TYPES:
-                _fire_tool_completed(item)
+                _fire_tool_completed(item, note.get("sequence"))
             elif item_type == "agentMessage":
                 _fire_agent_message_completed(item)
 

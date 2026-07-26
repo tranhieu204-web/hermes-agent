@@ -1147,6 +1147,14 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+CREATE TABLE IF NOT EXISTS delegated_usage_receipts (
+    parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    component_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (parent_session_id, component_id)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -4905,6 +4913,68 @@ class SessionDB:
                 now,
             ),
         )
+
+    def record_delegated_usage_receipt(
+        self,
+        *,
+        parent_session_id: str,
+        receipt: Dict[str, Any],
+    ) -> bool:
+        """Append one sanitized child-usage receipt, idempotent by completion."""
+
+        parent_session_id = str(parent_session_id or "").strip()
+        if not parent_session_id:
+            raise ValueError("delegated usage receipt requires a parent session_id")
+        from agent.usage_provenance import aggregate_usage, usage_components_from_mapping
+
+        components = usage_components_from_mapping(
+            receipt,
+            default_component_id="delegated-child:unknown",
+            fallback_session_id=parent_session_id,
+            default_source="delegated_child_completion",
+            default_authority="delegated_child_backend",
+        )
+        normalized = aggregate_usage(parent_session_id, components).components[0]
+        payload = json.dumps(
+            normalized.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO delegated_usage_receipts
+                   (parent_session_id, component_id, receipt_json, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    parent_session_id,
+                    normalized.component_id,
+                    payload,
+                    time.time(),
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
+    def get_delegated_usage_receipts(
+        self, parent_session_id: str
+    ) -> List[Dict[str, Any]]:
+        """Read append-only child usage receipts in acceptance order."""
+
+        rows = self._conn.execute(
+            """SELECT receipt_json FROM delegated_usage_receipts
+               WHERE parent_session_id = ?
+               ORDER BY created_at, rowid""",
+            (str(parent_session_id or "").strip(),),
+        ).fetchall()
+        receipts = []
+        for row in rows:
+            raw = row["receipt_json"] if isinstance(row, sqlite3.Row) else row[0]
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                receipts.append(parsed)
+        return receipts
 
     def ensure_session(
         self,

@@ -10,6 +10,7 @@ Grafted from PR #65412 (@HaiderSultanArc) onto the merged bridge.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from agent.codex_runtime import (
     _codex_item_completion_payload,
@@ -44,6 +45,10 @@ def _recording_agent():
         _emit_interim_assistant_message=None,
         show_commentary=True,
     )
+    from agent.progress_telemetry import ProgressTelemetry
+
+    agent._progress_telemetry = ProgressTelemetry()
+    agent._progress_telemetry.reset_for_turn()
     return agent, calls
 
 
@@ -147,6 +152,42 @@ def test_failed_command_result_and_error_flag_are_preserved():
     assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
 
 
+def test_completed_item_threads_stable_terminal_metadata_and_replay_is_noop():
+    agent, calls = _recording_agent()
+    accepted = SimpleNamespace(replayed=False, result="ok")
+    replayed = SimpleNamespace(replayed=True, result="ok")
+    agent._observe_guardrail_completion = MagicMock(side_effect=[accepted, replayed])
+    first_bridge = make_codex_app_server_event_bridge(agent)
+    reconnected_bridge = make_codex_app_server_event_bridge(agent)
+    note = {
+        "method": "item/completed",
+        "sequence": 17,
+        "params": {
+            "item": {
+                "type": "commandExecution",
+                "id": "stable-item",
+                "command": "echo ok",
+                "aggregatedOutput": "ok",
+                "exitCode": 0,
+            }
+        },
+    }
+
+    first_bridge(note)
+    reconnected_bridge(note)
+
+    assert agent._observe_guardrail_completion.call_count == 2
+    kwargs = agent._observe_guardrail_completion.call_args_list[0].kwargs
+    assert kwargs["call_id"] == "codex_exec_stable-item"
+    assert kwargs["event_id"] == "codex:item/completed:stable-item"
+    assert kwargs["event_sequence"] == 17
+    assert kwargs["adapter"] == "codex_app_server"
+    assert len(calls["tool_complete"]) == 1
+    assert len(
+        [e for e in calls["tool_progress"] if e[0][0] == "tool.completed"]
+    ) == 1
+
+
 def test_non_tool_events_and_malformed_payloads_are_ignored():
     agent, calls = _recording_agent()
     bridge = make_codex_app_server_event_bridge(agent)
@@ -180,3 +221,44 @@ def test_one_broken_callback_does_not_hide_other_live_events():
     bridge({"method": "item/started", "params": {"item": item}})
 
     assert starts == [("codex_dyn_search_d1", "search", {})]
+
+
+def test_missing_codex_item_id_is_established_before_live_callbacks_and_correlates():
+    agent, calls = _recording_agent()
+    agent._observe_guardrail_completion = MagicMock(
+        return_value=SimpleNamespace(replayed=False, result="ok")
+    )
+    bridge = make_codex_app_server_event_bridge(agent)
+    started = {"type": "commandExecution", "command": "echo private"}
+    completed = {**started, "aggregatedOutput": "done", "exitCode": 0}
+
+    bridge({"method": "item/started", "sequence": 41, "params": {"item": started}})
+    bridge({"method": "item/completed", "sequence": 42, "params": {"item": completed}})
+
+    assert len(calls["tool_start"]) == 1
+    assert len(calls["tool_complete"]) == 1
+    call_id = calls["tool_start"][0][0]
+    assert call_id.startswith("call_fallback_g1_o")
+    assert calls["tool_complete"][0][0] == call_id
+    assert agent._observe_guardrail_completion.call_args.kwargs["call_id"] == call_id
+    assert "private" not in call_id
+
+
+def test_two_missing_codex_item_ids_are_collision_safe_and_replay_stable():
+    agent, calls = _recording_agent()
+    bridge = make_codex_app_server_event_bridge(agent)
+    first = {"method": "item/started", "sequence": 51, "params": {"item": {
+        "type": "dynamicToolCall", "tool": "search", "arguments": {"query": "private-a"}
+    }}}
+    second = {"method": "item/started", "sequence": 52, "params": {"item": {
+        "type": "dynamicToolCall", "tool": "search", "arguments": {"query": "private-b"}
+    }}}
+
+    bridge(first)
+    bridge(second)
+    bridge(first)
+
+    ids = [entry[0] for entry in calls["tool_start"]]
+    assert ids[0] != ids[1]
+    assert ids[2] == ids[0]
+    assert all("private" not in call_id for call_id in ids)

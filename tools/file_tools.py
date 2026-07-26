@@ -11,6 +11,7 @@ import threading
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
+from agent.landed_effect_receipts import issue_landed_file_mutation_result
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations,
@@ -1570,8 +1571,8 @@ def _mark_verification_stale(
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False,
-                    session_id: str | None = None) -> str:
+                    cross_profile: bool = False, session_id: str | None = None,
+                    tool_call_id: str = "") -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1612,7 +1613,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
-            return json.dumps(result_dict, ensure_ascii=False)
+            public_result = json.dumps(result_dict, ensure_ascii=False)
+            if result_dict.get("error"):
+                return public_result
+            return issue_landed_file_mutation_result(
+                public_result,
+                tool_name="write_file",
+                function_args={"path": path},
+                landed_paths=[path],
+                tool_call_id=tool_call_id,
+                session_id=session_id or "",
+            )
 
         # Serialize the read→modify→write region per-path so concurrent
         # subagents can't interleave on the same file.  Different paths
@@ -1643,7 +1654,17 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
-        return json.dumps(result_dict, ensure_ascii=False)
+        public_result = json.dumps(result_dict, ensure_ascii=False)
+        if result_dict.get("error"):
+            return public_result
+        return issue_landed_file_mutation_result(
+            public_result,
+            tool_name="write_file",
+            function_args={"path": path},
+            landed_paths=[_resolved],
+            tool_call_id=tool_call_id,
+            session_id=session_id or "",
+        )
     except Exception as e:
         if _is_expected_write_exception(e):
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
@@ -1655,7 +1676,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               session_id: str | None = None, tool_call_id: str = "") -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
@@ -1841,7 +1862,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
                 )
-        return json.dumps(result_dict, ensure_ascii=False)
+        public_result = json.dumps(result_dict, ensure_ascii=False)
+        if result_dict.get("error"):
+            return public_result
+        return issue_landed_file_mutation_result(
+            public_result,
+            tool_name="patch",
+            function_args={"mode": mode, "path": path, "patch": patch},
+            landed_paths=_resolved_modified,
+            tool_call_id=tool_call_id,
+            session_id=session_id or "",
+        )
     except Exception as e:
         return tool_error(str(e))
 
@@ -2076,6 +2107,7 @@ def _handle_write_file(args, **kw):
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id") or "",
     )
 
 
@@ -2087,6 +2119,7 @@ def _handle_patch(args, **kw):
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
+        tool_call_id=kw.get("tool_call_id") or "",
     )
 
 

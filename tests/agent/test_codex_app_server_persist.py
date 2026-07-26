@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.codex_runtime import run_codex_app_server_turn
+from agent.progress_telemetry import ProgressTelemetry
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -58,6 +59,9 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     agent._session_db = session_db
     agent._session_db_created = True
     agent.session_id = session_id
+    # Match the production invariant: telemetry is constructed only after the
+    # final session id is known and remains immutably bound to that session.
+    agent._progress_telemetry = ProgressTelemetry(session_id=session_id)
     return agent
 
 
@@ -110,6 +114,7 @@ def test_codex_turn_persists_each_message_exactly_once():
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
     tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = None
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
@@ -158,6 +163,8 @@ def test_codex_turn_persists_each_message_exactly_once():
     finally:
         import shutil
 
+        if db is not None:
+            db.close()
         shutil.rmtree(tmp)
 
 

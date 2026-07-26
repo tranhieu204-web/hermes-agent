@@ -50,6 +50,38 @@ def _item_completed(item: dict) -> dict:
     return {"method": "item/completed", "params": {"item": item}}
 
 
+def test_missing_codex_item_id_gets_turn_scoped_terminal_identity():
+    agent = _make_stub_agent()
+    agent._current_turn_id = "codex-session:turn-9"
+    agent.tool_start_callback = MagicMock()
+    agent.tool_complete_callback = MagicMock()
+    agent._observe_guardrail_completion = MagicMock(
+        return_value=SimpleNamespace(replayed=False, result="ok", snapshot={})
+    )
+    bridge = make_codex_app_server_event_bridge(agent)
+    started_item = {
+        "type": "commandExecution",
+        "command": "printf ok",
+        "cwd": "/tmp",
+    }
+    completed_item = {
+        **started_item,
+        "exitCode": 0,
+        "aggregatedOutput": "ok",
+    }
+
+    bridge({"method": "item/started", "sequence": 21, "params": {"item": started_item}})
+    bridge({"method": "item/completed", "sequence": 22, "params": {"item": completed_item}})
+
+    start_id = agent.tool_start_callback.call_args.args[0]
+    complete_id = agent.tool_complete_callback.call_args.args[0]
+    observed = agent._observe_guardrail_completion.call_args.kwargs
+    assert start_id
+    assert start_id == complete_id == observed["call_id"]
+    assert observed["event_id"].endswith(start_id)
+    assert start_id.startswith("call_fallback_")
+
+
 # ---------- name / args / preview / result mapping ----------
 
 

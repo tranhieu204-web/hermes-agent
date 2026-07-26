@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
+from agent.progress_telemetry import ProgressTelemetry
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -1451,6 +1452,10 @@ def init_agent(
         timestamp_str = agent.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         agent.session_id = f"{timestamp_str}_{short_uuid}"
+
+    # Progress telemetry must never observe an event under a provisional or
+    # empty identity. Construct it only after the final session id is known.
+    agent._progress_telemetry = ProgressTelemetry(session_id=agent.session_id)
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session

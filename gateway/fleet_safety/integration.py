@@ -24,6 +24,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.progress_telemetry import normalize_result
+from agent.usage_provenance import UsageProvenance, usage_aggregate_from_mapping
+
 from gateway.fleet_safety.deadloop_guard import (
     GuardThresholds,
     RunawayGuard,
@@ -112,16 +115,33 @@ def _collect_observations(
             summary = agent.get_activity_summary() or {}
         except Exception:
             summary = {}
-        session_id = getattr(agent, "session_id", None) or session_key
+        session_id = str(getattr(agent, "session_id", None) or session_key).strip()
         started_at = float(started_ts.get(session_key, now) or now)
         api_calls = int(summary.get("api_call_count", 0) or 0)
         # No live per-session token meter is exposed; estimate from call count
         # and the assumed per-call context size. Deliberately conservative.
+        # Terminal usage is carried additively below, but does not replace this
+        # b8 rate-detector input or any authoritative wallet/headroom source.
         tokens_used = api_calls * int(assumed_context_tokens)
-        # State hash changes only on forward progress: new activity or a new
-        # tool. Re-sending the same context with the same activity ts and tool
-        # (calls climbing, nothing new happening) reads as "no progress".
-        state_hash = f"{summary.get('last_activity_ts')}:{summary.get('current_tool')}"
+        # Heartbeats and wall-clock fields are liveness, not semantic progress.
+        # Canonicalization replaces those values while preserving terminal
+        # sequences, tool identity, counters, and landed-effect evidence.
+        state_hash = normalize_result(summary)
+        attempt_seq = summary.get("attempt_seq")
+        failure_seq = summary.get("failure_seq")
+        progress_seq = summary.get("progress_seq")
+        is_non_retryable = bool(summary.get("is_non_retryable_failure", False))
+        last_error_code = summary.get("last_error_code")
+        terminal_session_id = (
+            summary.get("last_session_id") or summary.get("session_id") or session_id
+        )
+        usage = usage_aggregate_from_mapping(
+            session_id,
+            summary.get("usage"),
+            default_component_id="activity-summary-usage",
+            fallback_session_id=str(terminal_session_id or ""),
+            missing_reason="missing_activity_usage",
+        )
 
         observations.append(
             SessionObservation(
@@ -129,9 +149,27 @@ def _collect_observations(
                 started_at=started_at,
                 api_call_count=api_calls,
                 tokens_used=tokens_used,
+                token_count_provenance=UsageProvenance.ESTIMATED,
                 context_tokens=int(assumed_context_tokens),
                 state_hash=state_hash,
-                error_code=None,  # runtime doesn't surface last error here yet
+                error_code=last_error_code if is_non_retryable else None,
+                turn_generation=int(summary.get("turn_generation", 0) or 0),
+                attempt_seq=(int(attempt_seq) if attempt_seq is not None else None),
+                progress_seq=(int(progress_seq) if progress_seq is not None else None),
+                failure_seq=(int(failure_seq) if failure_seq is not None else None),
+                failure_streak=int(summary.get("failure_streak", 0) or 0),
+                is_non_retryable_failure=is_non_retryable,
+                last_event_id=summary.get("last_event_id"),
+                last_event_sequence=summary.get("last_event_sequence"),
+                last_call_id=summary.get("last_call_id"),
+                last_adapter=summary.get("last_adapter"),
+                last_source=summary.get("last_source"),
+                last_retryability=summary.get("last_retryability"),
+                last_status=summary.get("last_status"),
+                failure_signature=summary.get("last_failure_signature"),
+                last_result=summary.get("last_result"),
+                usage=usage,
+                terminal_session_id=terminal_session_id,
                 provider=str(getattr(agent, "provider", "") or ""),
                 model=str(getattr(agent, "model", "") or ""),
                 effort=_agent_effort(agent),

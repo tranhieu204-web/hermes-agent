@@ -570,7 +570,18 @@ def finalize_turn(
             last_reasoning = msg["reasoning"]
             break
 
-    # Build result with interrupt info if applicable
+    # Build result with interrupt info if applicable.  Checkpoint receipts are
+    # structured policy evidence only; they never assert stop/release effects.
+    _iteration_checkpoint_receipts = []
+    _iteration_budget = getattr(agent, "iteration_budget", None)
+    if _iteration_budget is not None:
+        try:
+            _iteration_checkpoint_receipts = [
+                receipt.to_dict() for receipt in _iteration_budget.receipts
+            ]
+        except Exception:
+            logger.debug("Could not serialize iteration checkpoint receipts", exc_info=True)
+
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
@@ -604,6 +615,7 @@ def finalize_turn(
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
         "session_id": agent.session_id,
+        "iteration_checkpoint_receipts": _iteration_checkpoint_receipts,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

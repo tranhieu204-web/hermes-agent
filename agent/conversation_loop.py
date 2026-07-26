@@ -40,7 +40,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, IterationCheckpointOutcome
 from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
@@ -80,6 +80,7 @@ from agent.retry_utils import (
 )
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_provenance import UsageProvenance
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -91,6 +92,103 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+def _provider_usage_payload_present(raw_usage: Any) -> bool:
+    """Distinguish an explicit zero-valued meter from missing usage."""
+
+    if raw_usage is None:
+        return False
+    if isinstance(raw_usage, dict):
+        return bool(raw_usage)
+    model_dump = getattr(raw_usage, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return bool(model_dump(exclude_none=True))
+        except Exception:
+            pass
+    try:
+        return bool(vars(raw_usage))
+    except TypeError:
+        return True
+
+
+def _record_model_response_usage(
+    agent: Any,
+    response: Any,
+    *,
+    api_request_id: str,
+) -> None:
+    """Record one accepted wire response at the provider-neutral loop seam.
+
+    Provider-specific shapes have already crossed into ``normalize_usage``;
+    provenance aggregation itself never branches on provider identity. A
+    provider response id is the stable idempotency key for replayed responses.
+    """
+
+    telemetry = getattr(agent, "_progress_telemetry", None)
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if telemetry is None or not session_id:
+        return
+    if not getattr(telemetry, "session_id", ""):
+        telemetry.bind_session_id(session_id)
+    elif telemetry.session_id != session_id:
+        raise RuntimeError("model usage producer session does not match telemetry binding")
+
+    response_id = str(getattr(response, "id", "") or "").strip()
+    if response_id:
+        identity = response_id
+    else:
+        sequence = int(getattr(agent, "_provider_response_receipt_seq", 0) or 0) + 1
+        agent._provider_response_receipt_seq = sequence
+        identity = f"{api_request_id}:{sequence}"
+    api_mode = str(getattr(agent, "api_mode", "") or "unknown")
+    component_id = f"model-response:{api_mode}:{identity}"
+
+    raw_usage = getattr(response, "usage", None)
+    if not _provider_usage_payload_present(raw_usage):
+        telemetry.record_usage_component(
+            component_id=component_id,
+            source="model_response",
+            session_id=session_id,
+            provenance=UsageProvenance.UNKNOWN,
+            authority="provider_response",
+            authoritative=False,
+            accepted_event_id=identity,
+            details={"api_mode": api_mode},
+            reason="provider_usage_missing",
+        )
+        return
+
+    usage = normalize_usage(
+        raw_usage,
+        provider=getattr(agent, "provider", None),
+        api_mode=api_mode,
+    )
+    telemetry.record_usage_component(
+        component_id=component_id,
+        source="model_response",
+        session_id=session_id,
+        provenance=UsageProvenance.MEASURED,
+        authority="provider_response",
+        authoritative=True,
+        accepted_event_id=identity,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        total_tokens=usage.total_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
+        details={
+            "api_mode": api_mode,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+            "cache_read_tokens": usage.cache_read_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+        },
+    )
 
 # Modules that indicate a deterministic local processing error when they
 # appear in an exception traceback WITHOUT any API-call module. Used by the
@@ -877,6 +975,42 @@ def _notify_context_engine_turn_complete(
         )
 
 
+def _evaluate_outer_iteration_checkpoint(
+    agent: Any,
+    *,
+    owner_id: str,
+    generation: int,
+):
+    """Atomically evaluate outer-loop renewal against current telemetry.
+
+    Missing or malformed telemetry intentionally resolves to sequence zero, so
+    legacy/no-evidence turns retain the existing exhausted-budget behavior.
+    """
+
+    snapshot: Dict[str, Any] = {}
+    telemetry = getattr(agent, "_progress_telemetry", None)
+    if telemetry is not None:
+        try:
+            snapshot = telemetry.get_activity_snapshot() or {}
+        except Exception:
+            logger.debug("Iteration checkpoint telemetry snapshot failed", exc_info=True)
+
+    event_sequence = snapshot.get("last_event_sequence")
+    if event_sequence is None:
+        event_sequence = snapshot.get("attempt_seq", 0)
+    no_progress_limit = getattr(agent, "_iteration_no_progress_limit", 3)
+    return agent.iteration_budget.checkpoint(
+        owner_id=owner_id,
+        expected_generation=generation,
+        session_id=getattr(agent, "session_id", None),
+        evidence_session_id=snapshot.get("last_session_id"),
+        event_sequence=event_sequence,
+        progress_sequence=snapshot.get("progress_seq", 0),
+        no_progress_streak=snapshot.get("no_progress_streak", 0),
+        no_progress_limit=no_progress_limit,
+    )
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1037,7 +1171,10 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    _iteration_owner_id = turn_id
+    _iteration_generation = agent.iteration_budget.generation
+
+    while True:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -1051,28 +1188,86 @@ def run_conversation(
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
-        # Check for interrupt request (e.g., user sent new message)
+        # Hard interrupts (including the registered /stop route) always win at
+        # the outer boundary before evidence-based budget renewal is evaluated.
         if agent._interrupt_requested:
             interrupted = True
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
-        
+
+        # Refunds and renewals must not make total provider-loop work unbounded.
+        # This ceiling is independent of budget exhaustion and therefore does
+        # not manufacture an exhaustion receipt.
+        if api_call_count >= agent.iteration_budget.hard_max_total:
+            _turn_exit_reason = "iteration_hard_limit"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    "\n⚠️  Hard provider iteration ceiling reached "
+                    f"({api_call_count}/{agent.iteration_budget.hard_max_total})"
+                )
+            break
+
+        # Grace calls are legacy accounting: they consume their one-shot flag,
+        # but do not claim a regular budget slot.
+        if agent._budget_grace_call:
+            agent._budget_grace_call = False
+        elif not agent.iteration_budget.consume(
+            owner_id=_iteration_owner_id,
+            expected_generation=_iteration_generation,
+        ):
+            _checkpoint_receipt = _evaluate_outer_iteration_checkpoint(
+                agent,
+                owner_id=_iteration_owner_id,
+                generation=_iteration_generation,
+            )
+            if _checkpoint_receipt.outcome is IterationCheckpointOutcome.EXTENDED:
+                _iteration_generation = _checkpoint_receipt.generation
+                # Re-enter at the interrupt boundary, then atomically consume
+                # the newly granted slot.  No conversation message is changed.
+                continue
+
+            if _checkpoint_receipt.outcome is IterationCheckpointOutcome.NOT_EXHAUSTED:
+                # A concurrent refund made a slot available after consume().
+                # Retry from the interrupt boundary without reporting exhaustion.
+                _iteration_generation = _checkpoint_receipt.generation
+                continue
+
+            if _checkpoint_receipt.outcome in {
+                IterationCheckpointOutcome.RACE_LOST,
+                IterationCheckpointOutcome.STALE_GENERATION,
+            }:
+                _turn_exit_reason = "iteration_checkpoint_race_lost"
+                break
+
+            if (
+                _checkpoint_receipt.outcome
+                is IterationCheckpointOutcome.DENIED_VERIFIED_NO_PROGRESS
+            ):
+                _turn_exit_reason = "iteration_checkpoint_no_progress"
+                failed = True
+                final_response = (
+                    "Iteration continuation was denied because the latest "
+                    "terminal evidence verified no progress."
+                )
+                break
+
+            # No current evidence, a session mismatch, or the hard renewable
+            # ceiling all preserve the existing budget-exhaustion/finalization
+            # route.  The structured receipt explains which policy denied it.
+            _turn_exit_reason = "budget_exhausted"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    "\n⚠️  Iteration budget exhausted "
+                    f"({agent.iteration_budget.used}/"
+                    f"{agent.iteration_budget.max_total} iterations used)"
+                )
+            break
+
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
-
-        # Grace call: the budget is exhausted but we gave the model one
-        # more chance.  Consume the grace flag so the loop exits after
-        # this iteration regardless of outcome.
-        if agent._budget_grace_call:
-            agent._budget_grace_call = False
-        elif not agent.iteration_budget.consume():
-            _turn_exit_reason = "budget_exhausted"
-            if not agent.quiet_mode:
-                agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
-            break
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -2306,6 +2501,11 @@ def run_conversation(
                     continue  # Retry the API call
 
                 agent._turn_received_provider_response = True
+                _record_model_response_usage(
+                    agent,
+                    response,
+                    api_request_id=api_request_id,
+                )
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

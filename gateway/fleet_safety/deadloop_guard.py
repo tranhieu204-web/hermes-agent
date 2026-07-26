@@ -29,7 +29,15 @@ from __future__ import annotations
 import enum
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, Optional
+from typing import Any, Deque, Dict, Optional
+
+from agent.usage_provenance import (
+    UsageAggregate,
+    UsageComponentReceipt,
+    UsageProvenance,
+    aggregate_usage,
+    usage_aggregate_from_mapping,
+)
 
 
 class TripReason(str, enum.Enum):
@@ -103,17 +111,70 @@ class SessionObservation:
     started_at: float                       # epoch seconds the turn began
     api_call_count: int = 0                 # cumulative model calls this session
     tokens_used: int = 0                    # cumulative estimated tokens this session
+    token_count_provenance: UsageProvenance | str = UsageProvenance.ESTIMATED
     context_tokens: int = 0                 # size of the context on the latest call
     state_hash: Optional[str] = None        # changes iff the session made progress
     error_code: Optional[int] = None        # non-retryable status on the latest call, else None
+    turn_generation: int = 0                # immutable generation assigned at turn start
+    attempt_seq: Optional[int] = None       # distinct terminal attempts observed
+    progress_seq: Optional[int] = None
+    failure_seq: Optional[int] = None       # distinct failed terminal attempts
+    failure_streak: int = 0
+    is_non_retryable_failure: bool = False
+    last_event_id: Optional[str] = None
+    last_event_sequence: Optional[int] = None
+    last_call_id: Optional[str] = None
+    last_adapter: Optional[str] = None
+    last_source: Optional[str] = None
+    last_retryability: Optional[str] = None
+    last_status: Optional[str] = None
+    failure_signature: Optional[str] = None
+    last_result: Any = None
+    usage: UsageAggregate | dict | None = None
+    terminal_session_id: Optional[str] = None
     provider: str = ""
     model: str = ""
     effort: str = ""
 
+    def __post_init__(self) -> None:
+        bound_session_id = str(self.session_id or "").strip()
+        if not bound_session_id:
+            raise ValueError("session observation requires a nonempty session_id")
+        terminal_session_id = str(self.terminal_session_id or "").strip()
+        usage = usage_aggregate_from_mapping(
+            bound_session_id,
+            self.usage,
+            default_component_id="session-observation-usage",
+            fallback_session_id=terminal_session_id or bound_session_id,
+            missing_reason="missing_observation_usage",
+        )
+        if terminal_session_id and terminal_session_id != bound_session_id:
+            usage = aggregate_usage(
+                bound_session_id,
+                (
+                    *usage.components,
+                    UsageComponentReceipt(
+                        component_id="session-observation-terminal-session",
+                        session_id=terminal_session_id,
+                        provenance=UsageProvenance.UNKNOWN,
+                        reason="session_mismatch",
+                    ),
+                ),
+            )
+        object.__setattr__(self, "session_id", bound_session_id)
+        object.__setattr__(
+            self,
+            "token_count_provenance",
+            UsageProvenance.coerce(self.token_count_provenance),
+        )
+        object.__setattr__(self, "usage", usage)
+        # Identity is bound by the runtime, not by terminal payloads.
+        object.__setattr__(self, "terminal_session_id", bound_session_id)
+
 
 @dataclass(frozen=True)
-class Trip:
-    """A fired detection. Carries everything the report needs, no live handles."""
+class GuardEvaluationResult:
+    """A fired detection with immutable session and usage evidence."""
 
     session_id: str
     reason: TripReason
@@ -125,6 +186,55 @@ class Trip:
     model: str
     effort: str
     last_state: Optional[str]
+    usage: UsageAggregate | dict | None = None
+    token_count_provenance: UsageProvenance | str = UsageProvenance.ESTIMATED
+
+    def __post_init__(self) -> None:
+        bound_session_id = str(self.session_id or "").strip()
+        if not bound_session_id:
+            raise ValueError("guard evaluation requires a nonempty session_id")
+        object.__setattr__(self, "session_id", bound_session_id)
+        object.__setattr__(
+            self,
+            "usage",
+            usage_aggregate_from_mapping(
+                bound_session_id,
+                self.usage,
+                default_component_id="guard-evaluation-usage",
+                fallback_session_id=bound_session_id,
+                missing_reason="missing_evaluation_usage",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "token_count_provenance",
+            UsageProvenance.coerce(self.token_count_provenance),
+        )
+
+    @property
+    def usage_provenance(self) -> UsageProvenance:
+        return self.usage.provenance
+
+    @property
+    def known_component_count(self) -> int:
+        return self.usage.known_component_count
+
+    @property
+    def unknown_component_count(self) -> int:
+        return self.usage.unknown_component_count
+
+    @property
+    def usage_verified(self) -> bool:
+        return self.usage.usage_verified
+
+    @property
+    def headroom_verified(self) -> bool:
+        return self.usage.headroom_verified
+
+
+# Backward-compatible public name for enforcer/tests while evaluation callers
+# adopt the more precise result type.
+Trip = GuardEvaluationResult
 
 
 @dataclass
@@ -133,7 +243,10 @@ class _SessionState:
 
     samples: Deque[tuple] = field(default_factory=deque)  # (now, api_call_count, tokens_used)
     last_error_code: Optional[int] = None
+    last_failure_signature: Optional[str] = None
     repeated_error_count: int = 0
+    last_attempt_identity: Optional[tuple[int, int]] = None
+    last_failure_identity: Optional[tuple[int, int]] = None
     last_state_hash: Optional[str] = None
     stalled_samples: int = 0
     tripped: bool = False   # latched — a killed session is not re-reported every tick
@@ -165,7 +278,7 @@ class RunawayGuard:
 
     # -- core ------------------------------------------------------------
 
-    def observe(self, obs: SessionObservation, now: float) -> Optional[Trip]:
+    def observe(self, obs: SessionObservation, now: float) -> Optional[GuardEvaluationResult]:
         """Record a sample and return a :class:`Trip` if this session crosses
         a threshold for the first time. Deterministic in ``(obs, now)``."""
         if not self.thresholds.enabled or not obs.session_id:
@@ -199,6 +312,48 @@ class RunawayGuard:
             st.samples.popleft()
 
     def _update_error_streak(self, st: _SessionState, obs: SessionObservation) -> None:
+        sequence = obs.attempt_seq
+        if sequence is None or sequence <= 0:
+            sequence = obs.failure_seq
+        if sequence is not None:
+            sequence = int(sequence)
+            generation = max(0, int(obs.turn_generation or 0))
+            attempt_identity = (generation, sequence)
+            if (
+                st.last_attempt_identity is not None
+                and attempt_identity <= st.last_attempt_identity
+            ):
+                # Housekeeping polls and transport replays do not create new
+                # failures. Generation makes a reset sequence in a new turn
+                # distinct while still rejecting stale previous-turn samples.
+                return
+            st.last_attempt_identity = attempt_identity
+
+            if not obs.is_non_retryable_failure:
+                st.last_error_code = None
+                st.last_failure_signature = None
+                st.repeated_error_count = 0
+                return
+
+            failure_seq = max(1, int(obs.failure_seq or sequence))
+            failure_identity = (generation, failure_seq)
+            prior_identity = st.last_failure_identity
+            if prior_identity is None:
+                delta = max(1, int(obs.failure_streak or 0))
+            elif generation == prior_identity[0]:
+                delta = max(1, failure_seq - prior_identity[1])
+            else:
+                # Turn-local failure_seq legitimately resets. The generation is
+                # the immutable ordering component, so this is a new failure.
+                delta = max(1, int(obs.failure_streak or 0))
+            st.last_failure_identity = failure_identity
+            st.last_error_code = obs.error_code
+            st.last_failure_signature = obs.failure_signature
+            st.repeated_error_count += delta
+            return
+
+        # Legacy observation producers have no terminal sequence. Preserve the
+        # original per-sample behavior until they adopt the additive fields.
         code = obs.error_code
         if code is None:
             # A clean (non-erroring) sample breaks the streak — the session is
@@ -233,13 +388,15 @@ class RunawayGuard:
         tokens = max(0, last[2] - first[2])
         return calls, tokens
 
-    def _evaluate(self, st: _SessionState, obs: SessionObservation, now: float) -> Optional[Trip]:
+    def _evaluate(
+        self, st: _SessionState, obs: SessionObservation, now: float
+    ) -> Optional[GuardEvaluationResult]:
         t = self.thresholds
         runtime = max(0.0, now - obs.started_at)
         calls_in_window, tokens_in_window = self._window_deltas(st)
 
-        def _mk(reason: TripReason, detail: str) -> Trip:
-            return Trip(
+        def _mk(reason: TripReason, detail: str) -> GuardEvaluationResult:
+            return GuardEvaluationResult(
                 session_id=obs.session_id,
                 reason=reason,
                 detail=detail,
@@ -250,6 +407,8 @@ class RunawayGuard:
                 model=obs.model,
                 effort=obs.effort,
                 last_state=obs.state_hash,
+                usage=obs.usage,
+                token_count_provenance=obs.token_count_provenance,
             )
 
         # Priority order: the most unambiguous / cheapest-to-justify first.
@@ -271,9 +430,14 @@ class RunawayGuard:
                 f"(cap {t.max_calls_per_window})",
             )
         if st.repeated_error_count >= t.repeated_error_limit:
+            failure_label = (
+                f"HTTP {st.last_error_code}"
+                if st.last_error_code is not None
+                else (st.last_failure_signature or "code-free non-retryable failure")
+            )
             return _mk(
                 TripReason.REPEATED_ERROR,
-                f"HTTP {st.last_error_code} repeated {st.repeated_error_count}x "
+                f"{failure_label} repeated {st.repeated_error_count}x "
                 f"(limit {t.repeated_error_limit})",
             )
         if st.stalled_samples >= t.no_progress_samples:

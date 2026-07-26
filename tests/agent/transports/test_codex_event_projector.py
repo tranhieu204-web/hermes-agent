@@ -265,6 +265,32 @@ class TestHelpers:
         assert a == b
         assert "exec" in a
 
+    def test_missing_ids_are_collision_safe_replay_stable_and_role_correlated(self) -> None:
+        projector = CodexEventProjector()
+        first = {
+            "method": "item/completed",
+            "sequence": 71,
+            "params": {"item": {"type": "commandExecution", "exitCode": 0}},
+        }
+        second = {
+            "method": "item/completed",
+            "sequence": 72,
+            "params": {"item": {"type": "commandExecution", "exitCode": 0}},
+        }
+
+        a = projector.project(first).messages
+        b = projector.project(second).messages
+        replay = projector.project(first).messages
+        a_id = a[0]["tool_calls"][0]["id"]
+        b_id = b[0]["tool_calls"][0]["id"]
+
+        assert a_id.startswith("call_fallback_g1_o")
+        assert a_id != b_id
+        assert replay[0]["tool_calls"][0]["id"] == a_id
+        for pair in (a, b, replay):
+            assert [message["role"] for message in pair] == ["assistant", "tool"]
+            assert pair[1]["tool_call_id"] == pair[0]["tool_calls"][0]["id"]
+
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid
         a = _format_tool_args({"b": 1, "a": 2})

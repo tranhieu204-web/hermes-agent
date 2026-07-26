@@ -126,7 +126,6 @@ def test_intermediate_ack_uses_summary_instead_of_premature_text(agent, monkeypa
 
 def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
     agent.max_iterations = 2
-    agent.iteration_budget.max_total = 2
     answers = iter([_response("premature report"), _response("verified final report")])
     agent._interruptible_api_call = lambda _kwargs: next(answers)
     agent._handle_max_iterations = MagicMock(return_value="replacement summary")
@@ -150,7 +149,6 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
 def test_multiple_verification_retries_publish_each_candidate_once(agent, monkeypatch):
     """Multiple verification retries should publish each candidate once, in order."""
     agent.max_iterations = 3
-    agent.iteration_budget.max_total = 3
     answers = iter([
         _response("candidate one"),
         _response("candidate two"),

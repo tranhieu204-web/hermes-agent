@@ -310,6 +310,7 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    "model is not supported",
     # OpenRouter returns 404 with this message when none of the candidate
     # endpoints for the selected model support tool/function calling.
     # Classifying this as model_not_found triggers fallback to a different
@@ -1331,6 +1332,12 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
+        # FastAPI-style endpoints (including the ChatGPT Codex backend) use
+        # a top-level ``detail`` string.  Ignoring it makes every descriptive
+        # rejection look like an empty generic 400 to the large-session
+        # heuristic below, which can fabricate a context overflow.
+        if not err_body_msg:
+            err_body_msg = str(body.get("detail") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while

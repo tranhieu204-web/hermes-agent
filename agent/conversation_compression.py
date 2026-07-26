@@ -2081,6 +2081,19 @@ def compress_context(
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_"
                         f"{uuid.uuid4().hex[:6]}"
                     )
+                    # Stage the fresh usage ledger before DB publication. Spawning
+                    # is side-effect free (the parent remains mutable), so any
+                    # exception or failed transaction leaves the live parent pair
+                    # untouched. Installation happens only after the durable
+                    # parent-close + child-handoff transaction commits.
+                    _parent_usage_ledger = getattr(
+                        agent, "_progress_telemetry", None
+                    )
+                    _child_usage_ledger = (
+                        _parent_usage_ledger.spawn_child(new_session_id)
+                        if _parent_usage_ledger is not None
+                        else None
+                    )
                     agent._session_db.publish_compression_child(
                         parent_session_id=old_session_id,
                         child_session_id=new_session_id,
@@ -2095,6 +2108,13 @@ def compress_context(
                         compression_lock_holder=_lock_holder,
                         require_compression_lease=_lock_holder is not None,
                     )
+                    # Freeze the exact old ledger before exposing the child. Late
+                    # receipts keep immutable parent ownership and cannot rebound
+                    # into the continuation; the child ledger starts empty.
+                    if _parent_usage_ledger is not None:
+                        _parent_usage_ledger.freeze()
+                    if _child_usage_ledger is not None:
+                        agent._progress_telemetry = _child_usage_ledger
                     agent.session_id = new_session_id
                     try:
                         from gateway.session_context import set_current_session_id
