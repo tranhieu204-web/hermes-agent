@@ -7836,14 +7836,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "logs",
                 )
                 os.makedirs(_fh_dir, exist_ok=True)
-                # Held open for the process lifetime on purpose: faulthandler
-                # writes to this handle during fatal errors.
-                self._faulthandler_stream = open(
+                # LEAK-SAFE: open into a LOCAL first and only publish it on
+                # ``self`` after enable() succeeds. If enable() raises, the
+                # handle is closed here instead of dangling unreferenced for
+                # the process lifetime with nothing able to close it.
+                _fh_stream = open(
                     os.path.join(_fh_dir, "gateway_faulthandler.log"),
                     "a",
                     encoding="utf-8",
                 )
-                faulthandler.enable(file=self._faulthandler_stream)
+                try:
+                    faulthandler.enable(file=_fh_stream)
+                except BaseException:
+                    try:
+                        _fh_stream.close()
+                    finally:
+                        raise
+                # Retained for the process lifetime on purpose: faulthandler
+                # writes to this handle during fatal errors.
+                self._faulthandler_stream = _fh_stream
         except Exception as exc:  # diagnostics must never block startup
             logger.warning("faulthandler.enable() skipped: %s", exc)
         # Also dump stacks to a rotating file for off-line analysis when
