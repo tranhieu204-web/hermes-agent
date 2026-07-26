@@ -190,11 +190,18 @@ actually run rather than inventing a command; when in doubt, read the scripts.
 ## Desktop verification process safety
 
 Desktop verification must never launch against the live Hermes profile or clean
-up by process name. Do not use `taskkill /IM`, `Stop-Process -Name`,
-`Get-Process ... | Stop-Process`, `pkill`, `killall`, WMI/CIM name-based
-termination, or an equivalent global process search. Cleanup may target only a
-child handle or PID owned by the current verifier, including its owned process
-tree.
+up by process name. Do not use `taskkill`, `Stop-Process`, a `Get-Process` kill
+pipeline, `pkill`, `killall`, WMI/CIM process-tree reconstruction, or an
+equivalent global process search.
+
+On Windows the canonical verifier launches an exact absolute target suspended,
+assigns its retained handle to a kill-on-close Job Object, and only then resumes
+it. Cleanup is authenticated over the controller's nonce-bound line protocol:
+`TerminateJobObject` must be followed by a zero-active Job accounting receipt.
+Only that acknowledgement permits deletion of the exact generated verifier
+root. Controller exit, timeout, malformed output, or a missing/uncertain
+acknowledgement fails closed and retains that root for inspection. POSIX cleanup
+continues to use only the verifier-owned process group.
 
 Use only the repository-owned isolated verifier; do not create an ad-hoc
 Desktop launcher:
