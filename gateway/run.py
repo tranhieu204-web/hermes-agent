@@ -3257,6 +3257,52 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def install_startup_faulthandler(owner) -> None:
+    """Enable faulthandler for gateway start, surviving console-less starts.
+
+    Under ``pythonw.exe`` — the Windows detached launcher,
+    ``gateway-service\\Hermes_Gateway.vbs`` — there is no console, so
+    ``sys.stderr`` is None and a bare ``faulthandler.enable()`` raises
+    ``RuntimeError("sys.stderr is None")``. That aborted every detached gateway
+    start before it could serve, so console-less starts fall back to a log file.
+
+    Leak-safe: the fallback stream is opened into a LOCAL and published on
+    ``owner._faulthandler_stream`` only after ``enable()`` succeeds. If
+    ``enable()`` raises — including ``KeyboardInterrupt``/``SystemExit`` — the
+    handle is closed rather than left dangling for the process lifetime with
+    nothing able to close it.
+
+    Diagnostics must never abort startup, so ordinary failures are logged and
+    swallowed. This is the single production path; the tests bind to it.
+    """
+    try:
+        if sys.stderr is not None:
+            faulthandler.enable()
+            return
+        fh_dir = os.path.join(
+            os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
+            "logs",
+        )
+        os.makedirs(fh_dir, exist_ok=True)
+        stream = open(
+            os.path.join(fh_dir, "gateway_faulthandler.log"),
+            "a",
+            encoding="utf-8",
+        )
+        try:
+            faulthandler.enable(file=stream)
+        except BaseException:
+            try:
+                stream.close()
+            finally:
+                raise
+        # Retained for the process lifetime on purpose: faulthandler writes to
+        # this handle during fatal errors.
+        owner._faulthandler_stream = stream
+    except Exception as exc:  # diagnostics must never block startup
+        logger.warning("faulthandler.enable() skipped: %s", exc)
+
+
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
@@ -7820,32 +7866,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Enable faulthandler at gateway start so that SIGUSR2 (or an
         # internal watchdog) can dump all thread and task stacks to stderr
         # for post-mortem diagnosis of event-loop freezes (#70344).
-        #
-        # DETACHED-SAFE (2026-07-26): under pythonw.exe — the Windows
-        # detached launcher, gateway-service\Hermes_Gateway.vbs — there is
-        # no console, so sys.stderr is None and a bare faulthandler.enable()
-        # raises RuntimeError("sys.stderr is None"), which crashed EVERY
-        # detached gateway start. Fall back to a log file, and never let a
-        # diagnostics helper abort gateway startup.
-        try:
-            if sys.stderr is not None:
-                faulthandler.enable()
-            else:
-                _fh_dir = os.path.join(
-                    os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")),
-                    "logs",
-                )
-                os.makedirs(_fh_dir, exist_ok=True)
-                # Held open for the process lifetime on purpose: faulthandler
-                # writes to this handle during fatal errors.
-                self._faulthandler_stream = open(
-                    os.path.join(_fh_dir, "gateway_faulthandler.log"),
-                    "a",
-                    encoding="utf-8",
-                )
-                faulthandler.enable(file=self._faulthandler_stream)
-        except Exception as exc:  # diagnostics must never block startup
-            logger.warning("faulthandler.enable() skipped: %s", exc)
+        # Console-less (pythonw) starts fall back to a file — see
+        # ``install_startup_faulthandler``. Tests bind to that helper, so this
+        # call site and the tested code are the same production path.
+        install_startup_faulthandler(self)
         # Also dump stacks to a rotating file for off-line analysis when
         # the gateway is running under a service manager that doesn't
         # capture stderr.
