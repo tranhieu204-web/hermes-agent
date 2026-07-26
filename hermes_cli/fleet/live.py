@@ -21,6 +21,7 @@ from .adapters.live_routes import (
     inspect_agy_subscription_receipt,
 )
 from .types import AdapterKind, LaneProfile, OverageState, Qualification
+from hermes_cli.fleet.usage_refresh import no_console_creationflags
 
 
 _FORBIDDEN_ENV = {
@@ -74,6 +75,13 @@ def _command(argv: Sequence[str]) -> tuple[int, str, str]:
             timeout=10,
             shell=False,
             check=False,
+            # Windows: the console-subsystem CLIs probed through here — grok
+            # (xai-oauth), agy, claude — allocate their own console when the
+            # gateway runs under pythonw.exe, flashing a terminal on the
+            # operator's screen on every probe. CREATE_NO_WINDOW suppresses it;
+            # stdout/stderr capture is unaffected. 0 on non-Windows.
+            # (Operator report 2026-07-26.)
+            creationflags=no_console_creationflags(),
         )
         return completed.returncode, completed.stdout, completed.stderr
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -331,6 +339,7 @@ class FleetQualificationDoctor:
                 timeout=self.probe_timeout_seconds,
                 shell=False,
                 check=False,
+                creationflags=no_console_creationflags(),
             )
         except subprocess.TimeoutExpired:
             self._delete_raw_log(log_path)

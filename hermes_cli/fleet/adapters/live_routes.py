@@ -18,6 +18,7 @@ from .base import safe_child_environment, validate_execution
 from .external_cli import ExternalCliAdapter
 from .native_provider import NativeProviderAdapter
 from ..types import AdapterKind, AdapterRequest, AdapterResult, Qualification, ReasonCode
+from hermes_cli.fleet.usage_refresh import no_console_creationflags
 
 
 _NATIVE_CHILD = Path(__file__).resolve().parents[1] / "native_child.py"
@@ -272,6 +273,7 @@ def run_native_hermes_child(**request: Any) -> Mapping[str, Any]:
         cwd=Path(request["cwd"]),
         env=safe_child_environment(),
         shell=False,
+        creationflags=no_console_creationflags(),
     )
     try:
         stdout, stderr = process.communicate(
@@ -424,6 +426,7 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                 env=safe_child_environment(),
                 timeout=request.timeout_seconds,
                 shell=False,
+                creationflags=no_console_creationflags(),
                 check=False,
             )
         except subprocess.TimeoutExpired:
@@ -573,6 +576,7 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                 timeout=request.timeout_seconds,
                 shell=False,
                 check=False,
+                creationflags=no_console_creationflags(),
             )
         except subprocess.TimeoutExpired:
             return self._failure(request, qualification, ReasonCode.EXECUTION_TIMEOUT)
