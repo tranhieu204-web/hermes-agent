@@ -548,3 +548,47 @@ def test_antigravity_pinning_overrides_explicit_effort_map():
     # Antigravity should be clamped to "high" despite explicit map
     result = resolve_effort_from_map(effort_map, provider="antigravity")
     assert result == "high", f"Antigravity should be pinned to 'high', got {result}"
+
+
+# --- Kimi provider-id / alias normalization (inspector finding 2026-07-27) -----
+# Grading applies to the kimi lane, so EVERY supported provider id must resolve
+# to it. A real dispatch carries ids like "kimi-subscription" (the lane
+# profile's provider_id) or "kimi-coding" (auth registry), not the bare lane
+# slug — before this fix those missed grading and fell back to the lane default.
+
+KIMI_PROVIDER_IDS = [
+    "kimi",
+    "kimi-subscription",
+    "kimi-coding",
+    "kimi-coding-cn",
+    "kimi-cn",
+    "moonshot",
+    "moonshot-cn",
+]
+
+
+@pytest.mark.parametrize("provider_id", KIMI_PROVIDER_IDS)
+def test_kimi_alias_normalizes_to_kimi_lane(provider_id):
+    from gateway.fleet_safety.selector import get_lane_name
+
+    assert get_lane_name(provider_id) == "kimi", (
+        f"{provider_id!r} must normalize to the kimi lane or grading silently misses it"
+    )
+
+
+@pytest.mark.parametrize("provider_id", KIMI_PROVIDER_IDS)
+@pytest.mark.parametrize(
+    "importance,expected",
+    [
+        ("normal", "medium"),
+        ("semi_critical", "high"),
+        ("critically_important", "xhigh"),
+        ("money_critical", "max"),
+    ],
+)
+def test_kimi_alias_four_tier_grading(provider_id, importance, expected):
+    """Every supported Kimi id must grade across all four tiers, not just 'kimi'."""
+    from gateway.fleet_safety.selector import get_lane_name, resolve_effort_from_map
+
+    lane = get_lane_name(provider_id)
+    assert resolve_effort_from_map({}, lane, importance=importance) == expected

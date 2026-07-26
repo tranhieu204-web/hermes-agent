@@ -95,6 +95,18 @@ _PROVIDER_TO_LANE: Dict[str, str] = {
     "gemini": "antigravity",
     "gemini-3.1-pro-high": "antigravity",
     "google": "antigravity",
+    # Kimi: the importance grading applies to this lane, so EVERY supported
+    # provider id/alias must normalize here — otherwise a real dispatch (which
+    # carries ids like "kimi-subscription", the lane profile's provider_id, or
+    # the registry's "kimi-coding") would miss grading entirely and silently
+    # fall back to the lane default. Inspector finding, 2026-07-27.
+    "kimi": "kimi",
+    "kimi-subscription": "kimi",
+    "kimi-coding": "kimi",
+    "kimi-coding-cn": "kimi",
+    "kimi-cn": "kimi",
+    "moonshot": "kimi",
+    "moonshot-cn": "kimi",
 }
 
 
