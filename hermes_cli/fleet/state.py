@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .policy import evaluate_lane, select_lane
+from .parent_models import is_sonnet_model
 from .types import (
     AdapterKind,
     CapacityRead,
@@ -884,6 +885,7 @@ class FleetStore:
         now: datetime,
         inject_failure: bool = False,
         preferred_lane_id: str | None = None,
+        preferred_provider_id: str | None = None,
         preferred_model_id: str | None = None,
     ) -> ParentAdmission:
         """Atomically select and persist one immutable Desktop parent pin."""
@@ -922,15 +924,48 @@ class FleetStore:
             )
             cursor = self._rotation(connection, RoutePurpose.DESKTOP_PARENT)
             preferred = str(preferred_lane_id or "").strip()
-            if preferred:
+            preferred_provider = str(preferred_provider_id or "").strip()
+            preferred_model = str(preferred_model_id or "").strip()
+            has_preference = bool(
+                preferred or preferred_provider or preferred_model
+            )
+            if has_preference:
+                inputs_by_lane = {
+                    item.profile.lane_id: item for item in live_inputs
+                }
                 preferred_hits = tuple(
                     item
                     for item in evaluations
-                    if item.lane_id == preferred and item.eligible
+                    if (
+                        item.lane_id == preferred
+                        and item.eligible
+                        and (
+                            not preferred_provider
+                            or item.profile.provider_id == preferred_provider
+                        )
+                        # Exact model preference binds to SERVED-model truth:
+                        # the id must be configured for the lane
+                        # (ordered_models), must never be a catalog-only Sonnet
+                        # (parent_models bars Sonnet as a Desktop parent), and
+                        # must appear in the live qualification.models receipt so
+                        # a silently substituted served model cannot satisfy the
+                        # requested id.
+                        and (
+                            not preferred_model
+                            or (
+                                preferred_model in item.profile.ordered_models
+                                and not is_sonnet_model(preferred_model)
+                                and inputs_by_lane[item.lane_id].qualification
+                                is not None
+                                and preferred_model
+                                in inputs_by_lane[
+                                    item.lane_id
+                                ].qualification.models
+                            )
+                        )
+                    )
                 )
                 if preferred_hits:
-                    from .types import RouteDecision
-
                     decision = RouteDecision(
                         lane_id=preferred_hits[0].lane_id,
                         reason=ReasonCode.MANUAL_OVERRIDE,
@@ -938,7 +973,12 @@ class FleetStore:
                         rotation_index=cursor,
                     )
                 else:
-                    decision = select_lane(evaluations, rotation_index=cursor)
+                    decision = RouteDecision(
+                        lane_id=None,
+                        reason=ReasonCode.NO_ELIGIBLE_LANE,
+                        evaluations=evaluations,
+                        rotation_index=cursor,
+                    )
             else:
                 decision = select_lane(evaluations, rotation_index=cursor)
             decision_evaluations = decision.evaluations
@@ -973,8 +1013,7 @@ class FleetStore:
             )
             assert winner.selected_model is not None
             assert winner.selected_effort is not None
-            preferred_model = str(preferred_model_id or "").strip()
-            if preferred_model and preferred_model in winner.profile.ordered_models:
+            if preferred_model:
                 from dataclasses import replace as _dc_replace
 
                 winner = _dc_replace(winner, selected_model=preferred_model)

@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from hermes_cli.fleet.adapters.live_routes import (
 )
 from hermes_cli.fleet.adapters.native_provider import NativeProviderAdapter
 from hermes_cli.fleet.capacity import BridgeUsageAdapter
-from hermes_cli.fleet.live import FleetQualificationDoctor
+from hermes_cli.fleet.live import FleetQualificationDoctor, _PROOF_CACHE_SCHEMA
 from hermes_cli.fleet.profiles import profile_map
 from hermes_cli.fleet.types import OverageState, TaskSpec
 from hermes_cli.subcommands.fleet import _default_service
@@ -318,14 +319,7 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         else:
             log_path = Path(argv[argv.index("--log-file") + 1])
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(
-                (
-                    "I0724 11:02:16.509256 40296 model_config_manager.go:272] "
-                    "Propagating selected model override to backend: "
-                    'label="Gemini 3.1 Pro (High)"'
-                ),
-                encoding="utf-8",
-            )
+            log_path.write_text(_LIVE_RECEIPT_MATCH, encoding="utf-8")
             stdout = "antigravity complete"
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
@@ -384,7 +378,7 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         assert argv[-2:] == ["--print-timeout", "1800s"]
         route_proof = result.adapter_result.metadata["route_proof"]
         assert route_proof["requested_model_id"] == "gemini-3.1-pro-high"
-        assert route_proof["model_qualification"] == "agy models"
+        assert route_proof["model_qualification"] == "agy live backend receipt"
         assert route_proof["served_model_id"] == "gemini-3.1-pro-high"
         assert route_proof["served_model_label"] == "Gemini 3.1 Pro (High)"
 
@@ -442,6 +436,138 @@ def test_live_served_model_label_mismatch_fails_closed_and_sanitized(
     assert secret not in payload
     assert MISMATCH_MODEL_LABEL not in payload
     assert not list(home.rglob("*.log"))
+
+
+def test_live_proof_cache_rejects_requested_identity_synthesized_as_served(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    evidence = home / "fleet" / "evidence" / "agy"
+    executable = str(Path("C:/tools/agy.exe").resolve())
+    evidence.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (evidence / "doctor-live-proof.json").write_text(
+        json.dumps(
+            {
+                "schema_version": _PROOF_CACHE_SCHEMA,
+                "lane_id": "antigravity",
+                "executable": executable,
+                "version": "agy 1.1.6",
+                "canonical_model_id": CANONICAL_MODEL_ID,
+                "served_model_id": "gemini-3.6-flash-high",
+                "served_model_label": MISMATCH_MODEL_LABEL,
+                "status": "matched",
+                "captured_at": NOW.isoformat(),
+                "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def process(argv, **kwargs):
+        calls.append(tuple(argv))
+        return _probe_process_factory(_LIVE_RECEIPT_MATCH)(argv, **kwargs)
+
+    doctor = FleetQualificationDoctor(
+        which=lambda _: executable,
+        command=_agy_version_models_command(),
+        run_process=process,
+        environment={},
+        now=lambda: NOW,
+        proof_cache_dir=evidence,
+    )
+
+    qualification = doctor.qualify((profile_map()["antigravity"],))["antigravity"]
+
+    assert qualification.qualified is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("auth_method", "other_auth", id="wrong-auth"),
+        pytest.param("auth_method", None, id="missing-auth"),
+        pytest.param("endpoint_kind", "other_endpoint", id="wrong-endpoint"),
+        pytest.param("endpoint_kind", None, id="missing-endpoint"),
+    ],
+)
+def test_live_proof_cache_requires_consumer_cloud_code_route(
+    tmp_path, monkeypatch, field, value
+):
+    home = tmp_path / "home"
+    evidence = home / "fleet" / "evidence" / "agy"
+    executable = str(Path("C:/tools/agy.exe").resolve())
+    evidence.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    payload = {
+        "schema_version": _PROOF_CACHE_SCHEMA,
+        "lane_id": "antigravity",
+        "executable": executable,
+        "version": "agy 1.1.6",
+        "canonical_model_id": CANONICAL_MODEL_ID,
+        "served_model_id": CANONICAL_MODEL_ID,
+        "served_model_label": DISPLAY_MODEL_LABEL,
+        "auth_method": "consumer",
+        "endpoint_kind": "antigravity_cloud_code",
+        "status": "matched",
+        "captured_at": NOW.isoformat(),
+        "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+    }
+    if value is None:
+        payload.pop(field)
+    else:
+        payload[field] = value
+    (evidence / "doctor-live-proof.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    calls = []
+
+    def process(argv, **kwargs):
+        calls.append(tuple(argv))
+        return _probe_process_factory("")(argv, **kwargs)
+
+    doctor = FleetQualificationDoctor(
+        which=lambda _: executable,
+        command=_agy_version_models_command(),
+        run_process=process,
+        environment={},
+        now=lambda: NOW,
+        proof_cache_dir=evidence,
+    )
+
+    qualification = doctor.qualify((profile_map()["antigravity"],))["antigravity"]
+
+    assert len(calls) == 1
+    assert qualification.qualified is False
+    assert qualification.subscription_only_proven is False
+
+
+def test_live_doctor_qualifies_only_the_model_proven_by_live_receipt(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    profile = replace(
+        profile_map()["antigravity"],
+        ordered_models=(CANONICAL_MODEL_ID, "gemini-3.6-flash-high"),
+    )
+    doctor = FleetQualificationDoctor(
+        which=lambda _: "C:/tools/agy.exe",
+        command=_agy_version_models_command(
+            f"{CANONICAL_MODEL_ID}\ngemini-3.6-flash-high"
+        ),
+        run_process=_probe_process_factory(_LIVE_RECEIPT_MATCH),
+        environment={},
+        now=lambda: NOW,
+        proof_cache_dir=home / "fleet" / "evidence" / "agy",
+    )
+
+    qualification = doctor.qualify((profile,))["antigravity"]
+
+    assert qualification.qualified is True
+    assert qualification.models == (CANONICAL_MODEL_ID,)
 
 
 @pytest.mark.parametrize(

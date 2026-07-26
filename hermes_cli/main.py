@@ -430,6 +430,7 @@ from typing import Optional
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
 from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.fleet import build_fleet_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -441,7 +442,6 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
-from hermes_cli.subcommands.fleet import build_fleet_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -12932,6 +12932,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "logout",
         "auth",
         "status",
+        "fleet",
         "cron",
         "doctor",
         "config",
@@ -14945,11 +14946,6 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
-    # fleet command — subscription-aware usage-headroom routing
-    # =========================================================================
-    build_fleet_parser(subparsers)
-
-    # =========================================================================
     # secrets command — external secret managers (Bitwarden, 1Password)
     # =========================================================================
     secrets_parser = subparsers.add_parser(
@@ -15139,6 +15135,11 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+    # =========================================================================
+    # fleet command (parser built in hermes_cli/subcommands/fleet.py)
+    # =========================================================================
+    build_fleet_parser(subparsers)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

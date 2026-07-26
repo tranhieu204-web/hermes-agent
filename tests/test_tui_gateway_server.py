@@ -4594,7 +4594,7 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
 
 
 def test_desktop_contract_includes_approval_mode_rpc():
-    assert server.DESKTOP_BACKEND_CONTRACT >= 3
+    assert server.DESKTOP_BACKEND_CONTRACT >= 5
 
 
 def test_config_set_approval_mode_rejects_unknown_value():
@@ -10025,6 +10025,7 @@ def test_model_options_preserves_canonical_custom_row_after_agent_init(monkeypat
     )
     monkeypatch.setattr("hermes_cli.inventory._apply_pricing", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("hermes_cli.inventory._apply_capabilities", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("hermes_cli.inventory._antigravity_parent_provider_row", lambda: None)
 
     resp = server._methods["model.options"](
         102,

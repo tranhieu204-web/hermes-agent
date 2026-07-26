@@ -45,6 +45,11 @@ _AGY_MODEL_LABELS = {
     "gemini-3.5-flash-medium": "Gemini 3.5 Flash (Medium)",
     "gemini-3.5-flash-low": "Gemini 3.5 Flash (Low)",
 }
+_AGY_MODEL_IDS_BY_LABEL = {
+    label: model_id for model_id, label in _AGY_MODEL_LABELS.items()
+}
+if len(_AGY_MODEL_IDS_BY_LABEL) != len(_AGY_MODEL_LABELS):
+    raise RuntimeError("AGY model display labels must be unique")
 _AGY_RECEIPT_RE = re.compile(
     r'Propagating selected model override to backend: label="([^"\r\n]+)"\s*$'
 )
@@ -106,11 +111,31 @@ def _inspect_agy_receipt(
         labels.append(match.group(1))
     if not labels:
         check["status"] = "malformed_receipt" if marker_seen else "missing_receipt"
-    elif any(label != expected_display_label for label in labels):
-        check["status"] = "display_label_mismatch"
+        return check
+
+    distinct_labels = set(labels)
+    if len(distinct_labels) != 1:
+        check["status"] = "ambiguous_served_model"
+        return check
+
+    served_model_label = labels[0]
+    served_model_id = _AGY_MODEL_IDS_BY_LABEL.get(served_model_label)
+    check["receipt_count"] = len(labels)
+    if served_model_id is None:
+        check["status"] = "unsupported_served_model"
+        return check
+    check.update(
+        {
+            "served_model_id": served_model_id,
+            "served_model_label": served_model_label,
+        }
+    )
+    if served_model_id != canonical_model_id:
+        check["status"] = "served_model_mismatch"
+    elif served_model_label != expected_display_label:
+        check["status"] = "expected_label_mismatch"
     else:
         check["status"] = "matched"
-        check["receipt_count"] = len(labels)
     return check
 
 
@@ -128,12 +153,20 @@ def _apply_agy_subscription_route_markers(
     if "GOOGLE_API_KEY" in text or "GEMINI_API_KEY" in text:
         check["status"] = "api_key_route_present"
         return check
+    served_model_id = check.get("served_model_id")
+    served_model_label = check.get("served_model_label")
+    if (
+        not isinstance(served_model_id, str)
+        or not isinstance(served_model_label, str)
+        or _AGY_MODEL_IDS_BY_LABEL.get(served_model_label) != served_model_id
+        or served_model_id != check.get("canonical_model_id")
+    ):
+        check["status"] = "served_model_identity_invalid"
+        return check
     check.update(
         {
             "auth_method": "consumer",
             "endpoint_kind": "antigravity_cloud_code",
-            "served_model_id": check.get("canonical_model_id"),
-            "served_model_label": check.get("expected_display_label"),
             "fallback_enabled": False,
         }
     )
@@ -426,7 +459,7 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                 receipt_check=receipt_check,
             )
 
-        receipt_check = _inspect_agy_receipt(
+        receipt_check = inspect_agy_subscription_receipt(
             log_path,
             canonical_model_id=request.model,
             expected_display_label=display_label,
@@ -446,7 +479,13 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
         if receipt_check["status"] != "matched":
             reason = (
                 ReasonCode.MODEL_MISMATCH
-                if receipt_check["status"] == "display_label_mismatch"
+                if receipt_check["status"]
+                in {
+                    "display_label_mismatch",
+                    "expected_label_mismatch",
+                    "served_model_mismatch",
+                    "unsupported_served_model",
+                }
                 else ReasonCode.MALFORMED_OUTPUT
             )
             return self._finish_agy_failure(
@@ -497,13 +536,13 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                     "executable": str(executable),
                     "version": qualification.version,
                     "requested_model_id": request.model,
-                    "served_model_id": request.model,
-                    "served_model_label": display_label,
+                    "served_model_id": receipt_check["served_model_id"],
+                    "served_model_label": receipt_check["served_model_label"],
                     "effort": request.effort,
                     "auth_kind": qualification.auth_kind,
                     "fast_mode": False,
                     "fallback_enabled": False,
-                    "model_qualification": "agy models",
+                    "model_qualification": "agy live backend receipt",
                 },
             },
         )

@@ -1,5 +1,7 @@
 """Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
 
+import pytest
+
 from hermes_cli.fallback_config import resolve_entry_api_key
 
 
@@ -40,8 +42,11 @@ class TestResolveEntryApiKey:
         assert resolve_entry_api_key(entry) == "env-key"
 
 
-class TestGetFallbackChainOrder:
-    def test_get_fallback_chain_preserves_configured_order(self, monkeypatch):
+class TestGetFallbackChainRanking:
+    @pytest.mark.parametrize("fleet_config", [None, {"enabled": False}])
+    def test_inactive_fleet_preserves_configured_order(
+        self, monkeypatch, fleet_config
+    ):
         from hermes_cli.fallback_config import get_fallback_chain
 
         monkeypatch.setattr(
@@ -56,8 +61,61 @@ class TestGetFallbackChainOrder:
                 {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},
             ]
         }
+        if fleet_config is not None:
+            cfg["fleet"] = fleet_config
         chain = get_fallback_chain(cfg)
         assert [entry["provider"] for entry in chain] == [
             "grok",
             "chatgpt_codex",
+        ]
+
+    def test_enabled_fleet_ranker_exception_fails_closed(self, monkeypatch):
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        monkeypatch.setattr(
+            "gateway.fleet_safety.selector.rank_fallback_chain",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("safety engine unavailable")
+            ),
+        )
+
+        assert get_fallback_chain(
+            {
+                "fleet": {"enabled": True},
+                "fallback_providers": [
+                    {"provider": "paid-provider", "model": "paid-model"},
+                ],
+            }
+        ) == []
+
+    def test_enabled_fleet_routes_through_live_usage_ranker(self, monkeypatch):
+        from gateway.fleet_safety.usage_verify import VerifiedUsage
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        def fake_verified(provider, **_kwargs):
+            used_percent = 15.0 if provider == "chatgpt_codex" else 50.0
+            return VerifiedUsage(
+                provider=provider,
+                used_percent=used_percent,
+                source="cache",
+                stale=False,
+                suspect=False,
+            )
+
+        monkeypatch.setattr(
+            "gateway.fleet_safety.selector.verified_usage_for", fake_verified
+        )
+        chain = get_fallback_chain(
+            {
+                "fleet": {"enabled": True},
+                "fallback_providers": [
+                    {"provider": "grok", "model": "grok-4.5"},
+                    {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},
+                ],
+            }
+        )
+
+        assert [entry["provider"] for entry in chain] == [
+            "chatgpt_codex",
+            "grok",
         ]

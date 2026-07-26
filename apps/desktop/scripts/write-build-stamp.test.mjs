@@ -13,8 +13,8 @@ import {
 
 test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.deepEqual(
-    fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release' }),
-    { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci' }
+    fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release' }, '/repo'),
+    { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci', repoRoot: '/repo' }
   )
   assert.equal(fromCI({}), null)
 })
@@ -37,17 +37,19 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
     commit: 'b'.repeat(40),
     branch: 'main',
     dirty: true,
-    source: 'local'
+    source: 'local',
+    repoRoot: '/repo'
   })
   assert.ok(calls.includes('git rev-parse HEAD'))
 })
 
 test('fromFallback uses the all-zero placeholder commit', () => {
-  assert.deepEqual(fromFallback(), {
+  assert.deepEqual(fromFallback(FALLBACK_BRANCH, '/repo'), {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
     dirty: false,
-    source: 'fallback'
+    source: 'fallback',
+    repoRoot: '/repo'
   })
   assert.equal(isFallbackCommit(FALLBACK_COMMIT), true)
   assert.equal(isFallbackCommit('a'.repeat(40)), false)
@@ -56,13 +58,15 @@ test('fromFallback uses the all-zero placeholder commit', () => {
 test('resolveStamp prefers CI over local git over fallback', () => {
   const ci = resolveStamp({
     env: { GITHUB_SHA: 'c'.repeat(40), GITHUB_REF_NAME: 'main' },
-    execFn: () => 'should-not-run'
+    execFn: () => 'should-not-run',
+    repoRoot: '/repo'
   })
   assert.equal(ci.source, 'ci')
   assert.equal(ci.commit, 'c'.repeat(40))
 
   const local = resolveStamp({
     env: {},
+    repoRoot: '/repo',
     execFn: (cmd) => {
       if (cmd === 'git rev-parse HEAD') return 'd'.repeat(40)
       if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
@@ -73,14 +77,16 @@ test('resolveStamp prefers CI over local git over fallback', () => {
   assert.equal(local.source, 'local')
   assert.equal(local.commit, 'd'.repeat(40))
   assert.equal(local.dirty, false)
+  assert.equal(local.repoRoot, '/repo')
 })
 
 test('resolveStamp falls back when neither CI nor git is available', () => {
-  const stamp = resolveStamp({ env: {}, execFn: () => null })
+  const stamp = resolveStamp({ env: {}, execFn: () => null, repoRoot: '/repo' })
   assert.deepEqual(stamp, {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
     dirty: false,
-    source: 'fallback'
+    source: 'fallback',
+    repoRoot: '/repo'
   })
 })

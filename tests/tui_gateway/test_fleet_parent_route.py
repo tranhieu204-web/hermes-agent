@@ -49,6 +49,7 @@ def _pin(
     lane_id: str = "grok",
     provider_id: str = "xai-oauth",
     model_id: str = "grok-4.5",
+    adapter_kind: AdapterKind = AdapterKind.NATIVE_PROVIDER,
 ) -> ParentPin:
     return ParentPin(
         profile_id="default",
@@ -56,7 +57,7 @@ def _pin(
         session_id="stored-root",
         purpose=RoutePurpose.DESKTOP_PARENT,
         lane_id=lane_id,
-        adapter_kind=AdapterKind.NATIVE_PROVIDER,
+        adapter_kind=adapter_kind,
         provider_id=provider_id,
         model_id=model_id,
         effort="max",
@@ -119,6 +120,123 @@ def test_session_create_fleet_auto_admits_before_deferred_build_and_returns_grok
         "provider": "xai-oauth",
     }
     assert session["create_service_tier_override"] == ""
+
+
+def test_session_create_passes_exact_fleet_preference_and_returns_route_truth(
+    monkeypatch,
+):
+    captured: dict = {}
+    events: list[str] = []
+
+    def admit(**kwargs):
+        captured.update(kwargs)
+        events.append("admit")
+        pin = _pin(
+            lane_id="antigravity",
+            provider_id="antigravity-subscription",
+            model_id="gemini-3.1-pro-high",
+            adapter_kind=AdapterKind.EXTERNAL_CLI,
+        )
+        return ParentAdmission(
+            reason=ReasonCode.MET,
+            pin=ParentPin(
+                **{
+                    **pin.__dict__,
+                    "lineage_root_id": kwargs["lineage_root_id"],
+                    "session_id": kwargs["session_id"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(server, "_admit_fleet_parent_session", admit)
+    monkeypatch.setattr(
+        server,
+        "_schedule_agent_build",
+        lambda sid: events.append("build"),
+    )
+
+    response = server._methods["session.create"](
+        "request-antigravity",
+        {
+            "cols": 80,
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "fleet_lane_id": "antigravity",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert events == ["admit", "build"]
+    assert captured["preferred_lane_id"] == "antigravity"
+    assert captured["preferred_provider_id"] == "antigravity-subscription"
+    assert captured["preferred_model_id"] == "gemini-3.1-pro-high"
+    assert "error" not in response
+    info = response["result"]["info"]
+    assert info["model_source"] == "fleet_auto"
+    assert info["fleet_lane_id"] == "antigravity"
+    assert info["provider"] == "antigravity-subscription"
+    assert info["model"] == "gemini-3.1-pro-high"
+    assert info["fleet_adapter_kind"] == "external_cli"
+    assert info["display_label"] == "Antigravity · Gemini 3.1 Pro High · external CLI"
+
+
+def test_session_create_rejects_preferred_route_substitution_before_build(
+    monkeypatch,
+):
+    built: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "_admit_fleet_parent_session",
+        lambda **kwargs: ParentAdmission(reason=ReasonCode.MET, pin=_pin()),
+    )
+    monkeypatch.setattr(
+        server,
+        "_schedule_agent_build",
+        lambda sid: built.append(sid),
+    )
+
+    response = server._methods["session.create"](
+        "request-substitution",
+        {
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "fleet_lane_id": "antigravity",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert response["error"]["code"] == 5033
+    assert "preferred Fleet route" in response["error"]["message"]
+    assert server._sessions == {}
+    assert built == []
+
+
+def test_session_create_rejects_partial_fleet_preference_before_admission(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        server,
+        "_admit_fleet_parent_session",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("partial preference must not reach admission")
+        ),
+    )
+
+    response = server._methods["session.create"](
+        "request-partial-preference",
+        {
+            "source": "desktop",
+            "model_source": "fleet_auto",
+            "provider": "antigravity-subscription",
+            "model": "gemini-3.1-pro-high",
+        },
+    )
+
+    assert response["error"]["code"] == 4004
+    assert "exact lane, provider, and model" in response["error"]["message"]
+    assert server._sessions == {}
 
 
 def test_session_create_manual_model_bypasses_auto_admission(monkeypatch):
@@ -491,6 +609,85 @@ def test_parent_turn_guard_releases_lease_and_cools_future_admissions_on_failure
     assert calls[0] == ("release", lease, "failed")
     assert calls[1][:3] == ("cooldown", "grok", "PARENT_PROVIDER_FAILURE")
     assert calls[1][3] is True
+
+
+def test_fleet_pinned_session_rejects_mid_session_model_switch():
+    session = {"fleet_parent_route": fleet_parent.parent_route_metadata(_pin())}
+
+    with pytest.raises(ValueError, match="Fleet-pinned session"):
+        server._apply_model_switch("sid", session, "gpt-5")
+
+
+def test_prompt_submit_uses_parent_turn_guard_and_skips_config_swap(
+    monkeypatch, tmp_path
+):
+    class InlineThread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    events: list[tuple] = []
+    sync_calls: list[str] = []
+
+    class Guard:
+        def release(self, *, outcome, provider_failure):
+            events.append(("release", outcome, provider_failure))
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(
+        server,
+        "_sync_agent_model_with_config",
+        lambda sid, session: sync_calls.append(sid),
+    )
+    monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(
+        fleet_parent,
+        "acquire_parent_turn_guard",
+        lambda route, cwd: events.append(("acquire", route["model"], cwd))
+        or Guard(),
+    )
+
+    agent = types.SimpleNamespace(
+        session_id="stored-root",
+        model="grok-4.5",
+        provider="xai-oauth",
+        clear_interrupt=lambda: None,
+        run_conversation=lambda *args, **kwargs: {"final_response": "ok"},
+    )
+    session = {
+        "agent": agent,
+        "session_key": "stored-root",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "inflight_turn": None,
+        "fleet_parent_route": fleet_parent.parent_route_metadata(_pin()),
+    }
+
+    server._run_prompt_submit("rid", "sid", session, "hello")
+
+    assert events[0] == ("acquire", "grok-4.5", tmp_path)
+    assert events[-1] == ("release", "complete", False)
+    assert sync_calls == []
 
 
 def test_no_eligible_parent_fails_closed_without_session_or_build(monkeypatch):

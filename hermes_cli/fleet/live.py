@@ -36,7 +36,7 @@ _FORBIDDEN_ENV = {
 # - raw logs always deleted on success and failure
 # - ordinary status/doctor rendering reuses the cache and must not re-fire
 #   unlimited inference while the proof is fresh
-_PROOF_CACHE_SCHEMA = "1"
+_PROOF_CACHE_SCHEMA = "2"
 _PROOF_CACHE_TTL = timedelta(minutes=5)
 _PROBE_TIMEOUT_SECONDS = 60
 _PROBE_PROMPT = "Reply with exactly: pong"
@@ -44,6 +44,11 @@ _PROOF_CACHE_NAME = "doctor-live-proof.json"
 
 _RECEIPT_STATUS_DETAIL = {
     "display_label_mismatch": "live served-model receipt mismatch",
+    "served_model_mismatch": "live served-model receipt mismatch",
+    "expected_label_mismatch": "live served-model receipt mismatch",
+    "ambiguous_served_model": "live served-model receipt mismatch (ambiguous)",
+    "unsupported_served_model": "live served-model receipt unsupported model",
+    "served_model_identity_invalid": "live served-model receipt identity invalid",
     "missing_receipt": "live served-model receipt missing",
     "missing_log": "live served-model receipt missing",
     "malformed_receipt": "live served-model receipt malformed",
@@ -209,6 +214,13 @@ class FleetQualificationDoctor:
         status = payload.get("status")
         if not isinstance(status, str) or not status:
             return None
+        if status == "matched" and (
+            payload.get("served_model_id") != model_id
+            or payload.get("served_model_label") != _AGY_MODEL_LABELS.get(model_id)
+            or payload.get("auth_method") != "consumer"
+            or payload.get("endpoint_kind") != "antigravity_cloud_code"
+        ):
+            return None
         return payload
 
     def _write_proof_cache(self, payload: Mapping[str, object]) -> None:
@@ -346,7 +358,8 @@ class FleetQualificationDoctor:
         if status == "matched":
             proof.update(
                 {
-                    "served_model_label": display_label,
+                    "served_model_id": receipt.get("served_model_id"),
+                    "served_model_label": receipt.get("served_model_label"),
                     "auth_method": receipt.get("auth_method"),
                     "endpoint_kind": receipt.get("endpoint_kind"),
                     "log_sha256": receipt.get("log_sha256"),
@@ -396,7 +409,7 @@ class FleetQualificationDoctor:
         )
         if error:
             return None, (), error
-        return version, qualified_models, None
+        return version, (model_id,), None
 
     def _external_executable(self, profile: LaneProfile) -> str | None:
         executable = self.which(profile.executable or "")

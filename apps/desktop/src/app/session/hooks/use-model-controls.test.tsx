@@ -7,6 +7,7 @@ import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
+  $currentFleetLaneId,
   $currentModel,
   $currentProvider,
   getCurrentModelSource,
@@ -84,6 +85,7 @@ describe('useModelControls', () => {
   beforeEach(() => {
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $currentFleetLaneId.set('')
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
@@ -94,6 +96,7 @@ describe('useModelControls', () => {
     vi.restoreAllMocks()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $currentFleetLaneId.set('')
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
@@ -185,6 +188,7 @@ describe('useModelControls', () => {
   })
 
   it('stores a no-session pick as UI state with no gateway or global write', async () => {
+    $currentFleetLaneId.set('antigravity')
     const requestGateway = vi.fn()
     let controls!: Controls
 
@@ -202,8 +206,36 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
     expect($currentProvider.get()).toBe('anthropic')
     expect(getCurrentModelSource()).toBe('manual')
+    expect($currentFleetLaneId.get()).toBe('')
     expect(requestGateway).not.toHaveBeenCalled()
     expect(setGlobalModel).not.toHaveBeenCalled()
+  })
+
+  it('classifies a draft Fleet-parent selection as exact Fleet intent, not manual', async () => {
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    await expect(
+      result.current.selectModel({
+        fleetLaneId: 'antigravity',
+        model: 'gemini-3.1-pro-high',
+        provider: 'antigravity-subscription',
+        selectionKind: 'fleet_parent',
+        sessionId: null
+      })
+    ).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('gemini-3.1-pro-high')
+    expect($currentProvider.get()).toBe('antigravity-subscription')
+    expect($currentFleetLaneId.get()).toBe('antigravity')
+    expect(getCurrentModelSource()).toBe('fleet_auto')
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('never mutates a live Fleet-pinned parent through the ordinary model picker', async () => {
@@ -350,6 +382,31 @@ describe('useModelControls', () => {
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
     expect($currentProvider.get()).toBe('anthropic')
     expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('does not let a later lifecycle refresh overwrite exact draft Fleet intent', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'gpt-5.5',
+      provider: 'openai-codex'
+    })
+    setCurrentModel('gemini-3.1-pro-high')
+    setCurrentProvider('antigravity-subscription')
+    $currentFleetLaneId.set('antigravity')
+    setCurrentModelSource('fleet_auto')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('gemini-3.1-pro-high')
+    expect($currentProvider.get()).toBe('antigravity-subscription')
+    expect($currentFleetLaneId.get()).toBe('antigravity')
+    expect(getCurrentModelSource()).toBe('fleet_auto')
   })
 
   it('does not let an older profile refresh overwrite a newer profile', async () => {

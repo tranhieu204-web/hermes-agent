@@ -78,13 +78,30 @@ def test_profiles_are_fixed_order_and_truthful_for_current_live_lanes():
     assert profiles[2].supported_efforts[-2:] == ("max", "ultra")
     assert profiles[2].selected_effort == "max"
     assert profiles[2].supports_parent_session
-    assert profiles[3].implemented
-    assert profiles[3].executable == "agy"
-    assert profiles[3].ordered_models[0] == "gemini-3.1-pro-high"
-    assert profiles[3].supported_efforts == ("low", "medium", "high")
-    assert profiles[3].selected_effort == "medium"
-    assert profiles[3].supports_task_worker
-    assert profiles[3].supports_parent_session
+    antigravity = profiles[3]
+    allowed_gemini_models = {
+        "gemini-3.1-pro-high",
+        "gemini-3.1-pro-low",
+        "gemini-3.6-flash-high",
+        "gemini-3.6-flash-medium",
+        "gemini-3.6-flash-low",
+        "gemini-3.5-flash-high",
+        "gemini-3.5-flash-medium",
+        "gemini-3.5-flash-low",
+    }
+    assert antigravity.lane_id == "antigravity"
+    assert antigravity.provider_id == "antigravity-subscription"
+    assert antigravity.adapter_kind is AdapterKind.EXTERNAL_CLI
+    assert antigravity.implemented
+    assert antigravity.executable == "agy"
+    assert antigravity.ordered_models
+    assert antigravity.ordered_models[0] == "gemini-3.1-pro-high"
+    assert set(antigravity.ordered_models) <= allowed_gemini_models
+    assert antigravity.supported_efforts == ("low", "medium", "high")
+    assert antigravity.selected_effort == "medium"
+    assert antigravity.allowed_auth_kinds == frozenset({"cli_subscription"})
+    assert antigravity.supports_task_worker
+    assert antigravity.supports_parent_session
     assert not profiles[4].implemented
     assert not profiles[4].supports_task_worker
     assert not profiles[4].supports_parent_session

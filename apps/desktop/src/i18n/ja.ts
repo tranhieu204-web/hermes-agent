@@ -2246,7 +2246,8 @@ export const ja = defineLocale({
       editModels: 'モデルを編集…',
       refreshModels: 'モデルを更新',
       fast: '高速',
-      medium: '中'
+      medium: '中',
+      newSessionOnly: '新しいセッション'
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

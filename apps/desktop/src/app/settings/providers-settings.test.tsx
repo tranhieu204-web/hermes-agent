@@ -135,6 +135,30 @@ describe('ProvidersSettings', () => {
     expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
+  it('groups connected Antigravity and opens its external provider flow', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('anthropic', false, { name: 'Anthropic API Key' }),
+        provider('antigravity-subscription', true, {
+          cli_command: 'agy',
+          disconnectable: false,
+          flow: 'external',
+          name: 'Antigravity · Gemini 3.1 Pro High'
+        }),
+        provider('xai-oauth', false, { name: 'xAI Grok OAuth' })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    const row = await screen.findByText('Antigravity · Gemini 3.1 Pro High')
+    expect(screen.getAllByText('Connected').length).toBeGreaterThanOrEqual(2)
+    fireEvent.click(row)
+
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('antigravity-subscription')
+    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
+  })
+
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
     // A provider the backend catalog tags (provider/provider_label) but that has
     // no desktop PROVIDER_GROUPS prefix row must still render its own card —

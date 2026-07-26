@@ -25,6 +25,7 @@ import {
   $activeSessionStoredIdRotation,
   $currentCwd,
   $currentFastMode,
+  $currentFleetLaneId,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
@@ -166,12 +167,22 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
+    fleetLaneId: $currentFleetLaneId.get().trim(),
     model: $currentModel.get().trim(),
     provider: $currentProvider.get().trim(),
     source: getCurrentModelSource()
   }
 
   const fleetAuto = selection.source === 'fleet_auto'
+
+  const preferredFleetRoute =
+    fleetAuto && selection.fleetLaneId && selection.model && selection.provider
+      ? {
+          fleet_lane_id: selection.fleetLaneId,
+          model: selection.model,
+          provider: selection.provider
+        }
+      : null
 
   const profile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
   await ensureGatewayProfile(profile)
@@ -182,6 +193,7 @@ async function desktopSessionCreateParams(cwd: string): Promise<Record<string, u
     model_source: fleetAuto ? 'fleet_auto' : selection.source === 'manual' ? 'manual' : 'default',
     ...(cwd && { cwd }),
     ...(profile ? { profile } : {}),
+    ...(preferredFleetRoute ?? {}),
     ...(!fleetAuto && selection.model
       ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
       : {}),

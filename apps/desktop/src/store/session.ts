@@ -450,6 +450,8 @@ export const setCurrentModelSource = (source: ComposerModelSource) => {
 export const setFleetAutoComposerEnabled = (enabled: boolean) => {
   const current = getCurrentModelSource()
 
+  setCurrentFleetLaneId('')
+
   if (enabled) {
     if (current !== 'fleet_auto') {
       persistString(
@@ -480,7 +482,14 @@ export const getComposerSelectionGeneration = (): number => composerSelectionGen
 
 export const markComposerSelectionManual = (): void => {
   composerSelectionGeneration += 1
+  setCurrentFleetLaneId('')
   setCurrentModelSource('manual')
+}
+
+export const markComposerSelectionFleet = (laneId: string): void => {
+  composerSelectionGeneration += 1
+  setCurrentFleetLaneId(laneId.trim())
+  setCurrentModelSource('fleet_auto')
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

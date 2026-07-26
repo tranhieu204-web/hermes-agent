@@ -13,6 +13,7 @@ import {
   $activeSessionStoredIdRotation,
   $currentCwd,
   $currentFastMode,
+  $currentFleetLaneId,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
@@ -437,6 +438,7 @@ describe('createBackendSessionForSend profile routing', () => {
     $projectTree.set([])
     $currentCwd.set('')
     $currentFastMode.set(false)
+    $currentFleetLaneId.set('')
     $currentModel.set('')
     $currentProvider.set('')
     $currentReasoningEffort.set('')
@@ -498,6 +500,25 @@ describe('createBackendSessionForSend profile routing', () => {
     })
     expect(params).not.toHaveProperty('model')
     expect(params).not.toHaveProperty('provider')
+    expect(params).not.toHaveProperty('reasoning_effort')
+  })
+
+  it('preserves an exact draft Fleet-parent preference in session.create', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('gemini-3.1-pro-high')
+      setCurrentProvider('antigravity-subscription')
+      $currentFleetLaneId.set('antigravity')
+      setCurrentModelSource('fleet_auto')
+    })
+
+    expect(params).toMatchObject({
+      fast: false,
+      fleet_lane_id: 'antigravity',
+      model: 'gemini-3.1-pro-high',
+      model_source: 'fleet_auto',
+      provider: 'antigravity-subscription',
+      source: 'desktop'
+    })
     expect(params).not.toHaveProperty('reasoning_effort')
   })
 

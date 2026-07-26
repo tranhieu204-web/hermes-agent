@@ -11,7 +11,8 @@
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
- *     "source":        "ci" | "local" | "fallback"
+ *     "source":        "ci" | "local" | "fallback",
+ *     "repoRoot":      "<absolute source worktree root>"
  *   }
  *
  * Source preference order:
@@ -51,7 +52,7 @@ function tryExec(cmd, opts) {
   }
 }
 
-export function fromCI(env = process.env) {
+export function fromCI(env = process.env, repoRoot = REPO_ROOT) {
   const sha = env.GITHUB_SHA
   if (!sha) return null
   const branch = env.GITHUB_REF_NAME || env.GITHUB_HEAD_REF || null
@@ -59,7 +60,8 @@ export function fromCI(env = process.env) {
     commit: sha,
     branch: branch,
     dirty: false, // CI builds from a checkout-of-ref by definition
-    source: "ci"
+    source: "ci",
+    repoRoot
   }
 }
 
@@ -79,11 +81,12 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
     dirty: dirty,
-    source: "local"
+    source: "local",
+    repoRoot
   }
 }
 
-export function fromFallback(branch = FALLBACK_BRANCH) {
+export function fromFallback(branch = FALLBACK_BRANCH, repoRoot = REPO_ROOT) {
   // Non-git builds (ZIP download, bootstrap installer without a resolvable
   // HEAD) cannot determine a real commit.  Use a placeholder so local /
   // personal builds can still complete.  The desktop bootstrap treats the
@@ -93,7 +96,8 @@ export function fromFallback(branch = FALLBACK_BRANCH) {
     commit: FALLBACK_COMMIT,
     branch: branch || FALLBACK_BRANCH,
     dirty: false,
-    source: "fallback"
+    source: "fallback",
+    repoRoot
   }
 }
 
@@ -107,7 +111,11 @@ export function resolveStamp({
   execFn = tryExec,
   fallbackBranch = FALLBACK_BRANCH
 } = {}) {
-  return fromCI(env) || fromLocalGit(repoRoot, execFn) || fromFallback(fallbackBranch)
+  return (
+    fromCI(env, repoRoot) ||
+    fromLocalGit(repoRoot, execFn) ||
+    fromFallback(fallbackBranch, repoRoot)
+  )
 }
 
 export function isFallbackCommit(commit) {
@@ -155,7 +163,8 @@ function main() {
     branch: stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source
+    source: stamp.source,
+    repoRoot: stamp.repoRoot
   }
 
   mkdirSync(OUT_DIR, { recursive: true })

@@ -10,12 +10,17 @@ import {
   assertExistingDesktopInspectionAllowed,
   isCredentialEnvVar
 } from './desktop-verifier-lib.mjs'
+import { validatePackageProvenance } from './package-provenance.mjs'
 
 const MODE = process.argv[2] || 'help'
 const ARCH = process.arch === 'arm64' ? 'arm64' : 'x64'
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const RELEASE_ROOT = path.join(DESKTOP_ROOT, 'release')
+const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
+const RELEASE_ROOT = process.env.HERMES_DESKTOP_RELEASE_ROOT
+  ? path.resolve(process.env.HERMES_DESKTOP_RELEASE_ROOT)
+  : path.join(DESKTOP_ROOT, 'release')
 const PLATFORM = process.platform
+const REQUIRED_ANTIGRAVITY_MARKER = 'Antigravity · Gemini 3.1 Pro High'
 
 // Platform-specific packaged-app layout. The thin installer ships an Electron
 // app shell plus extraResources (install-stamp.json + native-deps/) -- it
@@ -86,6 +91,18 @@ function run(command, args, options = {}) {
 
 function exists(target) {
   return fs.existsSync(target)
+}
+
+function currentHead() {
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    shell: false
+  })
+  if (result.status !== 0) {
+    die(`Unable to resolve package validation HEAD for worktree: ${REPO_ROOT}`)
+  }
+  return String(result.stdout || '').trim()
 }
 
 // Match node-pty native binding location to what the bundled electron-main.cjs
@@ -332,21 +349,32 @@ function validateBundle() {
   }
 
   // Renderer payload check (either unpacked or in the asar)
-  if (exists(APP.unpackedDistIndex)) {
-    return { stamp, nodeBinaries }
-  }
-  if (!exists(APP.asarPath)) {
+  if (!exists(APP.unpackedDistIndex) && !exists(APP.asarPath)) {
     die(`Missing renderer payload: neither ${APP.unpackedDistIndex} nor ${APP.asarPath} exists`)
   }
-  const files = listPackage(APP.asarPath)
-  // Normalize separators because @electron/asar's listPackage returns
-  // backslash-prefixed entries on Windows ('\\dist\\index.html') and
-  // forward-slash on Unix.
-  const normalized = files.map(f => f.replace(/\\/g, '/').replace(/^\/+/, ''))
-  if (!normalized.includes('dist/index.html')) {
-    die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
+  if (!exists(APP.unpackedDistIndex)) {
+    const files = listPackage(APP.asarPath)
+    // Normalize separators because @electron/asar's listPackage returns
+    // backslash-prefixed entries on Windows ('\\dist\\index.html') and
+    // forward-slash on Unix.
+    const normalized = files.map(f => f.replace(/\\/g, '/').replace(/^\/+/, ''))
+    if (!normalized.includes('dist/index.html')) {
+      die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
+    }
   }
-  return { stamp, nodeBinaries }
+  let provenance
+  try {
+    provenance = validatePackageProvenance({
+      candidateRoot: APP.appPath,
+      expectedCandidateRoot: APP.appPath,
+      expectedHead: currentHead(),
+      expectedRepoRoot: REPO_ROOT,
+      requiredMarker: REQUIRED_ANTIGRAVITY_MARKER
+    })
+  } catch (error) {
+    die(`Package provenance validation failed: ${error.message}`)
+  }
+  return { stamp, nodeBinaries, provenance }
 }
 
 function printArtifacts(options = {}) {

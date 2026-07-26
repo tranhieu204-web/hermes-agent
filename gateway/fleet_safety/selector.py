@@ -318,7 +318,9 @@ def rank_fallback_chain(
     lanes_cfg = fleet_cfg.get("lanes") or {}
 
     pool = list(chain) if chain else []
-    if not pool and fleet_cfg.get("enabled", True):
+    if not pool and fleet_cfg.get("enabled", False):
+        # Generate the standard safety net only after Fleet is explicitly
+        # commissioned. An absent fleet section must not create silent routes.
         for def_lane in DEFAULT_LANES.values():
             pool.append({"provider": def_lane.provider, "model": def_lane.model})
 

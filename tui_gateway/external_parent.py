@@ -56,8 +56,8 @@ def _parent_receipt(
     log_path: Path,
     *,
     expected_conversation_id: str | None,
-    canonical_model_id: str = _MODEL_ID,
-    expected_display_label: str = self.model_label,
+    canonical_model_id: str,
+    expected_display_label: str,
 ) -> dict[str, object]:
     check = inspect_agy_subscription_receipt(
         log_path,
@@ -118,8 +118,6 @@ def _parent_receipt(
             "endpoint_kind": "antigravity_cloud_code",
             "conversation_id": conversation_id,
             "continued": continued,
-            "served_model_id": canonical_model_id,
-            "served_model_label": expected_display_label,
             "fallback_enabled": False,
         }
     )

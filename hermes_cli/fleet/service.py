@@ -219,6 +219,7 @@ class FleetService:
         session_id: str,
         task: TaskSpec,
         preferred_lane_id: str | None = None,
+        preferred_provider_id: str | None = None,
         preferred_model_id: str | None = None,
     ) -> ParentAdmission:
         existing = self.store.read_parent_pin(profile_id, lineage_root_id)
@@ -237,6 +238,7 @@ class FleetService:
             ),
             now=at,
             preferred_lane_id=preferred_lane_id,
+            preferred_provider_id=preferred_provider_id,
             preferred_model_id=preferred_model_id,
         )
 
