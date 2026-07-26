@@ -34,10 +34,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+_ROOT_SCRIPT_EXTENSIONS = {
+    ".bash", ".bat", ".cjs", ".cmd", ".html", ".js", ".mjs", ".ps1", ".py",
+    ".sh", ".ts", ".tsx",
+}
+_ROOT_SCRIPT_RELEVANCE_RE = re.compile(
+    r"(?:desktop|verif|^dev(?:[-_.]|$))",
+    re.IGNORECASE,
+)
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
@@ -90,6 +99,18 @@ def _is_ci_review(p: str) -> bool:
     return os.path.basename(p).startswith("eslint.config.")
 
 
+def _is_frontend_root_script(p: str) -> bool:
+    """Mirror the Desktop safety scanner's root-script relevance predicate."""
+    normalized = p.replace("\\", "/")
+    if not normalized.startswith("scripts/"):
+        return False
+    filename = normalized.rsplit("/", 1)[-1]
+    return (
+        os.path.splitext(filename)[1].lower() in _ROOT_SCRIPT_EXTENSIONS
+        and _ROOT_SCRIPT_RELEVANCE_RE.search(filename) is not None
+    )
+
+
 def ci_review_files(files: list[str]) -> list[str]:
     """Return the CI-sensitive paths that need maintainer review."""
     return sorted({f.strip() for f in files if f.strip() and _is_ci_review(f.strip())})
@@ -101,7 +122,10 @@ def classify(files: list[str]) -> dict[str, bool]:
     ret = {
         "python": any(not _py_irrelevant(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
-        "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
+        "frontend": any(
+            f.startswith(_FRONTEND) or f in _ROOT_NPM or _is_frontend_root_script(f)
+            for f in files
+        ),
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),

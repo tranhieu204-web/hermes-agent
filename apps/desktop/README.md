@@ -173,6 +173,25 @@ npm run test:desktop:platforms
 Run `npm run test:desktop:all` for install, boot, update, packaging, or other
 release-path changes.
 
+For a Desktop executable already built in the current worktree, the canonical
+isolated smoke verifier is:
+
+```bash
+npm run verify:desktop:isolated -- --exe <absolute-path-to-worktree-build> --smoke --fake-boot
+```
+
+It creates one throwaway root containing isolated Electron user data,
+`HERMES_HOME`, and workspace paths; discovers the run's loopback CDP port from
+that root; strips credential-shaped environment variables; prints a JSON
+receipt; and tears down only the child tree/process group it launched.
+`--fake-boot` only enables deterministic fake boot. Do not pass the installed
+production Desktop executable.
+
+`test:desktop:existing` is operator deployment inspection only, never
+verification. It intentionally uses the existing installation and live profile,
+so it refuses to run unless the operator explicitly sets
+`HERMES_DESKTOP_ALLOW_EXISTING=1`.
+
 ### Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.

@@ -167,6 +167,7 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  repositoryScopeKey: string
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
@@ -191,11 +192,12 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
+  repositoryScopeKey,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
   const storeMessages = useStore(useSessionView().$messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
-  const runtimeMessageRepository = useRuntimeMessageRepository(messages)
+  const runtimeMessageRepository = useRuntimeMessageRepository(messages, repositoryScopeKey)
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -364,6 +366,14 @@ export function ChatView({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
+  // Renderer-id reservations are historical transcript state, so scope them to
+  // the durable lineage root rather than this long-lived boundary. The intro
+  // seed is an explicit fresh-draft generation; tiles always resolve through
+  // their own stored id. Prefixes keep draft and backend id namespaces apart.
+  const repositoryScopeKey = queueSessionKey
+    ? `lineage:${queueSessionKey}`
+    : `draft:${isPrimary ? 'primary' : composerScope.target}:${introSeed}`
+
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
     queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
     queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
@@ -471,6 +481,7 @@ export function ChatView({
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
+        repositoryScopeKey={repositoryScopeKey}
         suppressMessages={routeSessionMismatch}
       >
         <div
