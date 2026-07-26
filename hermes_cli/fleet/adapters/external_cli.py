@@ -16,6 +16,7 @@ from ..types import (
     Qualification,
     ReasonCode,
 )
+from ..usage_refresh import no_console_creationflags
 
 
 class ExternalCliAdapter:
@@ -96,6 +97,7 @@ class ExternalCliAdapter:
                 timeout=request.timeout_seconds,
                 shell=False,
                 check=False,
+                creationflags=no_console_creationflags(),
             )
         except subprocess.TimeoutExpired:
             return self._failure(

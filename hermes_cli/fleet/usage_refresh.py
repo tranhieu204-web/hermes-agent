@@ -104,6 +104,23 @@ def _is_attestation_stale(checked_at_str: str | None, *, max_age_hours: int = 24
         return True
 
 
+def no_console_creationflags() -> int:
+    """subprocess creationflags that keep a console probe off the screen.
+
+    On Windows a console-subsystem child (``agy.exe``) allocates its own
+    console when the parent has none — the gateway runs under ``pythonw.exe``
+    — so every probe flashes a terminal on the operator's screen. The
+    pre-dispatch usage refresh runs on each ~60s dispatcher tick, which made
+    the flash continuous (reported by the operator 2026-07-26).
+
+    ``CREATE_NO_WINDOW`` suppresses it without affecting stdout/stderr capture.
+    Returns 0 on non-Windows, where the flag does not exist.
+    """
+    import subprocess
+
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _resolve_agy_executable() -> str | None:
     """Resolve absolute path to agy executable.
 
@@ -150,6 +167,7 @@ def _probe_agy_health() -> tuple[bool | None, str]:
             text=True,
             timeout=5.0,
             check=False,
+            creationflags=no_console_creationflags(),
         )
     except FileNotFoundError:
         return None, f"agy executable not found: {agy_exe}"

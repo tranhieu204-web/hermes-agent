@@ -74,7 +74,7 @@ class UsageRefreshHook:
         self,
         *,
         refresh_fn: Callable[[], Any] | None = None,
-        min_interval_seconds: float = 60.0,
+        min_interval_seconds: float = 900.0,
         timeout_seconds: float = 10.0,
         usage_path: Path | None = None,
     ) -> None:
@@ -83,9 +83,14 @@ class UsageRefreshHook:
         Args:
             refresh_fn: Callable that performs the actual refresh (sync function).
                 Defaults to refresh_usage_document if not provided.
-            min_interval_seconds: Minimum seconds between successful refreshes (default 60s).
-                Clamped to minimum 60s for safety. Concurrent calls within this window
-                return throttled result without invoking refresh_fn.
+            min_interval_seconds: Minimum seconds between successful refreshes
+                (default 900s = 15 minutes, Chairman cadence 2026-07-26).
+                The hook is still consulted BEFORE EVERY routing/dispatch decision —
+                it is never bypassed — but within this window callers reuse the last
+                timestamped result instead of re-probing. This keeps live-usage
+                evidence fresh for routing while avoiding a probe storm: at the old
+                60s default the agy console probe ran on every ~60s dispatcher tick.
+                Clamped to a 60s floor for safety.
             timeout_seconds: Maximum seconds to wait for a refresh to complete (default 10s).
                 Calls waiting on an in-flight refresh will timeout after this duration.
                 The underlying task is shielded and continues; other waiters can still await.
