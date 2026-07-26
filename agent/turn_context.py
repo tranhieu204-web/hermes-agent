@@ -459,6 +459,11 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Checkpoint evidence is turn-scoped.  Without this reset, a terminal event
+    # from a prior user turn could renew a fresh turn's outer iteration budget.
+    _progress_telemetry = getattr(agent, "_progress_telemetry", None)
+    if _progress_telemetry is not None:
+        _progress_telemetry.reset_for_turn()
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):
         _reset_consol()

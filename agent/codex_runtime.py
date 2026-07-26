@@ -59,8 +59,35 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     """
     agent.session_api_calls += 1
 
+    telemetry = getattr(agent, "_progress_telemetry", None)
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if telemetry is not None and session_id:
+        if not getattr(telemetry, "session_id", ""):
+            telemetry.bind_session_id(session_id)
+        elif telemetry.session_id != session_id:
+            raise RuntimeError(
+                "codex usage producer session does not match telemetry binding"
+            )
+    turn_id = str(getattr(turn, "turn_id", "") or "").strip()
+    if not turn_id:
+        thread_id = str(getattr(turn, "thread_id", "") or "").strip()
+        turn_id = f"{thread_id or 'unknown'}:{agent.session_api_calls}"
+    usage_component_id = f"codex-app-server-response:{turn_id}"
+
     usage = getattr(turn, "token_usage_last", None)
     if not isinstance(usage, dict) or not usage:
+        if telemetry is not None and session_id:
+            telemetry.record_usage_component(
+                component_id=usage_component_id,
+                source="codex_app_server_response",
+                session_id=session_id,
+                provenance="unknown",
+                authority="provider_response",
+                authoritative=False,
+                accepted_event_id=turn_id,
+                details={"api_mode": "codex_app_server"},
+                reason="provider_usage_missing",
+            )
         compressor = getattr(agent, "context_compressor", None)
         if (
             compressor is not None
@@ -108,6 +135,31 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens
     total_tokens = reported_total or canonical_usage.total_tokens
+    if telemetry is not None and session_id:
+        telemetry.record_usage_component(
+            component_id=usage_component_id,
+            source="codex_app_server_response",
+            session_id=session_id,
+            provenance="measured",
+            authority="provider_response",
+            authoritative=True,
+            accepted_event_id=turn_id,
+            input_tokens=canonical_usage.input_tokens,
+            output_tokens=canonical_usage.output_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=canonical_usage.cache_read_tokens,
+            cache_write_tokens=canonical_usage.cache_write_tokens,
+            reasoning_tokens=canonical_usage.reasoning_tokens,
+            details={
+                "api_mode": "codex_app_server",
+                "input_tokens": canonical_usage.input_tokens,
+                "output_tokens": canonical_usage.output_tokens,
+                "total_tokens": total_tokens,
+                "cache_read_tokens": canonical_usage.cache_read_tokens,
+                "cache_write_tokens": canonical_usage.cache_write_tokens,
+                "reasoning_tokens": canonical_usage.reasoning_tokens,
+            },
+        )
     usage_dict = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -505,7 +557,9 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                     "tool_start_callback raised for %s", name, exc_info=True,
                 )
 
-    def _fire_tool_completed(item: dict) -> None:
+    def _fire_tool_completed(
+        item: dict, event_sequence: int | None = None,
+    ) -> None:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
         prior = started.pop(item_id, None)
@@ -520,11 +574,54 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         elif prior is not None:
             duration = time.monotonic() - prior[2]
         result, is_error = _codex_item_completion_payload(item)
+        args = prior[1] if prior is not None else _codex_item_to_args(item)
+        completion = None
+        observe = getattr(agent, "_observe_guardrail_completion", None)
+        if item_id and observe is not None:
+            try:
+                completion = observe(
+                    name,
+                    args,
+                    result,
+                    failed=is_error,
+                    event_id=f"codex:item/completed:{item_id}",
+                    event_sequence=event_sequence,
+                    call_id=_stable_call_id(item, name),
+                    adapter="codex_app_server",
+                    source="codex_app_server",
+                )
+            except Exception:
+                logger.debug(
+                    "terminal completion observation raised for %s",
+                    name,
+                    exc_info=True,
+                )
+            if completion is not None:
+                if getattr(completion, "replayed", False):
+                    return
+                result = getattr(completion, "result", result)
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
-                cb("tool.completed", name, None, None,
-                   duration=duration, is_error=is_error, result=result)
+                terminal_metadata = {}
+                snapshot = getattr(completion, "snapshot", None)
+                if snapshot:
+                    terminal_metadata = {
+                        "event_id": getattr(completion, "event_id", None),
+                        "event_sequence": getattr(completion, "event_sequence", None),
+                        "call_id": _stable_call_id(item, name),
+                        "adapter": snapshot.get("last_adapter"),
+                        "source": snapshot.get("last_source"),
+                        "status": snapshot.get("last_status"),
+                        "retryability": snapshot.get("last_retryability"),
+                        "error_code": snapshot.get("last_error_code"),
+                        "activity_snapshot": snapshot,
+                    }
+                cb(
+                    "tool.completed", name, None, None,
+                    duration=duration, is_error=is_error, result=result,
+                    **terminal_metadata,
+                )
             except Exception:
                 logger.debug(
                     "tool_progress_callback raised on tool.completed for %s",
@@ -532,7 +629,6 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                 )
         complete_cb = getattr(agent, "tool_complete_callback", None)
         if complete_cb is not None:
-            args = prior[1] if prior is not None else _codex_item_to_args(item)
             try:
                 complete_cb(_stable_call_id(item, name), name, args, result)
             except Exception:
@@ -605,7 +701,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             return
         if method == "item/completed":
             if item_type in _CODEX_TOOL_ITEM_TYPES:
-                _fire_tool_completed(item)
+                _fire_tool_completed(item, note.get("sequence"))
             elif item_type == "agentMessage":
                 _fire_agent_message_completed(item)
 

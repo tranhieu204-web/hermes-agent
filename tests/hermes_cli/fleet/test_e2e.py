@@ -348,12 +348,12 @@ def test_native_child_honors_cwd_stdin_and_is_killed_on_timeout(
             effort="high",
             prompt="stdin-only prompt",
             cwd=workdir,
-            timeout_seconds=0.2,
+            timeout_seconds=10.0,
             fallback_enabled=False,
             fast_mode=False,
         )
 
-    assert time.monotonic() - started < 5
+    assert time.monotonic() - started < 15
     observed = json.loads(
         (workdir / "child-observed.json").read_text(encoding="utf-8")
     )

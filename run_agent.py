@@ -114,6 +114,10 @@ from agent.process_bootstrap import (
     _get_proxy_for_base_url,
 )
 from agent.iteration_budget import IterationBudget
+from agent.progress_telemetry import (
+    RecordedTerminalEvent,
+    Retryability,
+)
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -215,6 +219,79 @@ from agent.tool_dispatch_helpers import (
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+
+
+def _observe_guardrail_completion(
+    agent: Any,
+    tool_name: str,
+    function_args: dict,
+    function_result: Any,
+    *,
+    failed: bool,
+    event_id: str | None = None,
+    event_sequence: int | None = None,
+    call_id: str | None = None,
+    adapter: str | None = None,
+    source: str = "conversation_guardrail",
+    retryability: Retryability | str | None = None,
+    error_code: int | None = None,
+    failure_signature: str | None = None,
+    usage: dict | None = None,
+    session_id: str | None = None,
+) -> RecordedTerminalEvent:
+    """Record and classify one completion for full agents and protocol fakes."""
+
+    recorded = agent._progress_telemetry.record_attempt_completion(
+        tool_name,
+        function_args,
+        function_result,
+        is_failure=failed,
+        failure_sig=failure_signature,
+        retryability=retryability,
+        error_code=error_code,
+        event_id=event_id,
+        event_sequence=event_sequence,
+        call_id=call_id,
+        adapter=(
+            adapter
+            or getattr(agent, "api_mode", None)
+            or getattr(agent, "provider", None)
+            or "unknown"
+        ),
+        source=source,
+        usage=usage,
+        session_id=session_id or getattr(agent, "session_id", None),
+    )
+    if recorded.replayed:
+        return recorded
+
+    snapshot = dict(recorded.snapshot or {})
+    decision = agent._tool_guardrails.after_call(
+        tool_name,
+        function_args,
+        function_result,
+        failed=failed,
+        retryability=snapshot.get("last_retryability"),
+        error_code=snapshot.get("last_error_code"),
+        event_id=recorded.event_id,
+        event_sequence=recorded.event_sequence,
+        status=snapshot.get("last_status"),
+        failure_signature=failure_signature,
+        count_unknown_for_loop_safety=True,
+    )
+    if decision.action in {"warn", "halt"}:
+        function_result = append_toolguard_guidance(function_result, decision)
+    if decision.should_halt and getattr(
+        agent, "_tool_guardrail_halt_decision", None
+    ) is None:
+        agent._tool_guardrail_halt_decision = decision
+    return RecordedTerminalEvent(
+        event_id=recorded.event_id,
+        outcome=recorded.outcome,
+        result=function_result,
+        event_sequence=recorded.event_sequence,
+        snapshot=recorded.snapshot,
+    )
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -769,6 +846,20 @@ class AIAgent:
         # so rebind it when the active session changed but no full start hook ran.
         engine = getattr(self, "context_compressor", None)
         target_session_id = getattr(self, "session_id", "") or ""
+        telemetry = getattr(self, "_progress_telemetry", None)
+        if (
+            target_session_id
+            and telemetry is not None
+            and getattr(telemetry, "session_id", "") != target_session_id
+        ):
+            # A new session gets a new immutable usage ledger. Never rebind or
+            # rewrite receipts emitted under the prior final session.
+            from agent.progress_telemetry import ProgressTelemetry
+
+            self._progress_telemetry = ProgressTelemetry(
+                session_id=target_session_id,
+                context_id=target_session_id,
+            )
         bound_session_id = getattr(engine, "_session_id", "") if engine is not None else ""
         if (
             engine is not None
@@ -3655,7 +3746,7 @@ class AIAgent:
         when it was killed, and by the periodic "still working" notifications.
         """
         elapsed = time.time() - self._last_activity_ts
-        return {
+        summary = {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,
             "seconds_since_activity": round(elapsed, 1),
@@ -3665,6 +3756,12 @@ class AIAgent:
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
         }
+        telemetry = getattr(self, "_progress_telemetry", None)
+        if telemetry is not None:
+            # The telemetry snapshot already carries the cumulative, sanitized
+            # usage receipt. Never replace it with one terminal event's payload.
+            summary.update(telemetry.get_activity_snapshot())
+        return summary
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
@@ -6484,25 +6581,77 @@ class AIAgent:
             "to change strategy instead of repeating the same call."
         )
 
-    def _append_guardrail_observation(
+    def _observe_guardrail_completion(
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: Any,
         *,
         failed: bool,
-    ) -> str:
-        decision = self._tool_guardrails.after_call(
+        event_id: str | None = None,
+        event_sequence: int | None = None,
+        call_id: str | None = None,
+        adapter: str | None = None,
+        source: str = "conversation_guardrail",
+        retryability: Retryability | str | None = None,
+        error_code: int | None = None,
+        failure_signature: str | None = None,
+        usage: dict | None = None,
+        session_id: str | None = None,
+    ) -> RecordedTerminalEvent:
+        return _observe_guardrail_completion(
+            self,
             tool_name,
             function_args,
             function_result,
             failed=failed,
+            event_id=event_id,
+            event_sequence=event_sequence,
+            call_id=call_id,
+            adapter=adapter,
+            source=source,
+            retryability=retryability,
+            error_code=error_code,
+            failure_signature=failure_signature,
+            usage=usage,
+            session_id=session_id,
         )
-        if decision.action in {"warn", "halt"}:
-            function_result = append_toolguard_guidance(function_result, decision)
-        if decision.should_halt:
-            self._set_tool_guardrail_halt(decision)
-        return function_result
+
+    def _append_guardrail_observation(
+        self,
+        tool_name: str,
+        function_args: dict,
+        function_result: Any,
+        *,
+        failed: bool,
+        event_id: str | None = None,
+        event_sequence: int | None = None,
+        call_id: str | None = None,
+        adapter: str | None = None,
+        source: str = "conversation_guardrail",
+        retryability: Retryability | str | None = None,
+        error_code: int | None = None,
+        failure_signature: str | None = None,
+        usage: dict | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        return _observe_guardrail_completion(
+            self,
+            tool_name,
+            function_args,
+            function_result,
+            failed=failed,
+            event_id=event_id,
+            event_sequence=event_sequence,
+            call_id=call_id,
+            adapter=adapter,
+            source=source,
+            retryability=retryability,
+            error_code=error_code,
+            failure_signature=failure_signature,
+            usage=usage,
+            session_id=session_id,
+        ).result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:
         self._set_tool_guardrail_halt(decision)

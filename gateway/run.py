@@ -3482,6 +3482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._completion_delivery_lock = threading.Lock()
         self._completion_deliveries_inflight: set[tuple[str, str, object]] = set()
         self._completion_deliveries_delivered: "OrderedDict[tuple[str, str, object], None]" = OrderedDict()
+        self._completion_delivery_sequences: "OrderedDict[str, int]" = OrderedDict()
         self._completion_delivery_retention = 2048
 
         # Cache AIAgent instances per session to preserve prompt caching.
@@ -17946,6 +17947,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            terminal_event = self._completion_terminal_event(evt)
+            if terminal_event is not None:
+                metadata["terminal_event"] = terminal_event
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -17967,15 +17971,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
     @staticmethod
-    def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
-        """Return a producer-stable identity when one is available.
+    def _completion_terminal_event(evt: dict) -> Optional[dict]:
+        event_id = str(evt.get("event_id") or "").strip()
+        if not event_id:
+            return None
+        event_seq = evt.get("event_seq", evt.get("event_sequence"))
+        try:
+            event_seq = int(event_seq) if event_seq is not None else None
+        except (TypeError, ValueError):
+            event_seq = None
+        return {
+            "event_id": event_id,
+            "event_seq": event_seq,
+            "event_sequence": event_seq,
+            "event_stream_id": str(evt.get("event_stream_id") or "").strip() or None,
+            "call_id": str(
+                evt.get("call_id") or evt.get("session_id") or evt.get("delegation_id") or ""
+            ).strip(),
+            "adapter": str(evt.get("adapter") or "gateway").strip(),
+            "source": str(evt.get("source") or evt.get("type") or "gateway").strip(),
+            "status": evt.get("status") or (
+                "failure" if evt.get("exit_code") not in (None, 0) else "success"
+            ),
+            "result": evt.get("result", evt.get("output")),
+            "retryability": evt.get("retryability", "unknown"),
+            "error_code": evt.get("error_code"),
+            "usage": evt.get("usage"),
+            "session_id": evt.get("session_id"),
+        }
 
-        Delegation UUIDs identify one producer completion. Process session IDs
-        are normally unique too, but include the persisted spawn epoch so an
-        explicitly reused ID represents a distinct process incarnation. Legacy
-        process events without ``started_at`` are delivered without deduplication
-        rather than risking suppression of a real completion.
+    @staticmethod
+    def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:
+        """Return a stable terminal-event identity when one is available.
+
+        Explicit event IDs own replay identity. Legacy producers retain their
+        prior identity only when they have not adopted terminal events yet.
         """
+        event_id = str(evt.get("event_id") or "").strip()
+        if event_id:
+            return ("terminal_event", event_id, "")
         evt_type = str(evt.get("type") or "")
         if evt_type == "async_delegation":
             producer_id = str(evt.get("delegation_id") or "")
@@ -18052,6 +18086,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         guarantee is claimed.
         """
         identity = self._completion_delivery_identity(evt)
+        terminal_event = self._completion_terminal_event(evt)
+        event_stream_id = ""
+        event_sequence = None
+        if terminal_event is not None:
+            event_stream_id = str(terminal_event.get("event_stream_id") or "")
+            event_sequence = terminal_event.get("event_sequence")
         durable_claim_id = ""
         durable_delegation_id = ""
         if evt.get("type") == "async_delegation":
@@ -18121,6 +18161,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or identity in self._completion_deliveries_delivered
                 ):
                     return None
+                sequences = getattr(self, "_completion_delivery_sequences", None)
+                if sequences is None:
+                    sequences = OrderedDict()
+                    self._completion_delivery_sequences = sequences
+                if event_stream_id and event_sequence is not None:
+                    highwater = sequences.get(event_stream_id)
+                    if highwater is not None and event_sequence < highwater:
+                        return None
                 self._completion_deliveries_inflight.add(identity)
 
         accepted = False
@@ -18134,11 +18182,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 with self._completion_delivery_lock:
                     self._completion_deliveries_inflight.discard(identity)
                     self._completion_deliveries_delivered[identity] = None
+                    if event_stream_id and event_sequence is not None:
+                        sequences = self._completion_delivery_sequences
+                        highwater = sequences.get(event_stream_id)
+                        sequences[event_stream_id] = (
+                            event_sequence
+                            if highwater is None
+                            else max(highwater, event_sequence)
+                        )
+                        sequences.move_to_end(event_stream_id)
                     while (
                         len(self._completion_deliveries_delivered)
                         > self._completion_delivery_retention
                     ):
                         self._completion_deliveries_delivered.popitem(last=False)
+                    while (
+                        len(self._completion_delivery_sequences)
+                        > self._completion_delivery_retention
+                    ):
+                        self._completion_delivery_sequences.popitem(last=False)
 
             # If the durable async-delegation producer branch is present, its
             # SQLite row remains the authoritative replay state. Acknowledge it

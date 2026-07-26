@@ -10,6 +10,7 @@ Grafted from PR #65412 (@HaiderSultanArc) onto the merged bridge.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from agent.codex_runtime import (
     _codex_item_completion_payload,
@@ -145,6 +146,42 @@ def test_failed_command_result_and_error_flag_are_preserved():
     assert is_error is True
     assert calls["tool_progress"][0][1]["is_error"] is True
     assert calls["tool_complete"][0][3] == "[exit 2]\nboom"
+
+
+def test_completed_item_threads_stable_terminal_metadata_and_replay_is_noop():
+    agent, calls = _recording_agent()
+    accepted = SimpleNamespace(replayed=False, result="ok")
+    replayed = SimpleNamespace(replayed=True, result="ok")
+    agent._observe_guardrail_completion = MagicMock(side_effect=[accepted, replayed])
+    first_bridge = make_codex_app_server_event_bridge(agent)
+    reconnected_bridge = make_codex_app_server_event_bridge(agent)
+    note = {
+        "method": "item/completed",
+        "sequence": 17,
+        "params": {
+            "item": {
+                "type": "commandExecution",
+                "id": "stable-item",
+                "command": "echo ok",
+                "aggregatedOutput": "ok",
+                "exitCode": 0,
+            }
+        },
+    }
+
+    first_bridge(note)
+    reconnected_bridge(note)
+
+    assert agent._observe_guardrail_completion.call_count == 2
+    kwargs = agent._observe_guardrail_completion.call_args_list[0].kwargs
+    assert kwargs["call_id"] == "codex_exec_stable-item"
+    assert kwargs["event_id"] == "codex:item/completed:stable-item"
+    assert kwargs["event_sequence"] == 17
+    assert kwargs["adapter"] == "codex_app_server"
+    assert len(calls["tool_complete"]) == 1
+    assert len(
+        [e for e in calls["tool_progress"] if e[0][0] == "tool.completed"]
+    ) == 1
 
 
 def test_non_tool_events_and_malformed_payloads_are_ignored():

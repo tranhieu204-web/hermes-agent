@@ -68,8 +68,8 @@ def _async_event(delegation_id="deleg_duplicate"):
     }
 
 
-def _completion_event(*, started_at, session_id="proc_reused"):
-    return {
+def _completion_event(*, started_at, session_id="proc_reused", **metadata):
+    event = {
         "type": "completion",
         "session_id": session_id,
         "session_key": "agent:main:telegram:dm:123",
@@ -82,6 +82,8 @@ def _completion_event(*, started_at, session_id="proc_reused"):
         "completion_reason": "exited",
         "output": "done\n",
     }
+    event.update(metadata)
+    return event
 
 
 def _stop_after_sleeps(monkeypatch, runner, count):
@@ -361,6 +363,47 @@ def test_distinct_process_incarnations_are_not_deduplicated():
     assert asyncio.run(_exercise()) == (True, True)
 
     assert adapter.handle_message.await_count == 2
+
+
+def test_explicit_terminal_event_identity_and_sequence_gate_delivery():
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    newest = _completion_event(
+        started_at=10.0,
+        event_id="gateway-event-2",
+        event_seq=2,
+        event_stream_id="process:proc_reused:10.0",
+    )
+    replay = dict(newest)
+    stale_distinct = _completion_event(
+        started_at=10.0,
+        event_id="gateway-event-1",
+        event_seq=1,
+        event_stream_id="process:proc_reused:10.0",
+    )
+    distinct_same_sequence = _completion_event(
+        started_at=10.0,
+        event_id="gateway-event-2b",
+        event_seq=2,
+        event_stream_id="process:proc_reused:10.0",
+    )
+
+    async def _exercise():
+        return (
+            await runner._deliver_completion_notification("newest", newest),
+            await runner._deliver_completion_notification("replay", replay),
+            await runner._deliver_completion_notification("stale", stale_distinct),
+            await runner._deliver_completion_notification(
+                "distinct", distinct_same_sequence
+            ),
+        )
+
+    assert asyncio.run(_exercise()) == (True, None, None, True)
+    assert adapter.handle_message.await_count == 2
+    delivered = adapter.handle_message.await_args_list[0].args[0]
+    assert delivered.metadata["terminal_event"]["event_id"] == "gateway-event-2"
+    assert delivered.metadata["terminal_event"]["call_id"] == "proc_reused"
+    assert delivered.metadata["terminal_event"]["event_seq"] == 2
 
 
 def test_delivered_identity_retention_is_bounded():

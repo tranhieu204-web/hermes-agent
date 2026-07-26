@@ -55,8 +55,13 @@ class EnforcementResult:
 
     @property
     def killed(self) -> bool:
-        """The loop was actually stopped (interrupt or lease-release landed)."""
-        return self.interrupted or self.lease_released
+        """Whether the running loop accepted the interrupt signal.
+
+        Releasing a turn lease only makes the slot reusable; it does not stop
+        generation and therefore must never manufacture a successful-kill
+        claim.
+        """
+        return self.interrupted
 
 
 class GuardEnforcer:

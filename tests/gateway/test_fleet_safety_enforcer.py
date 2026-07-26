@@ -76,11 +76,12 @@ def test_enforce_never_raises_on_notify_failure():
     assert any("notify failed" in e for e in result.errors)
 
 
-def test_killed_true_if_only_lease_released():
+def test_killed_false_if_only_lease_released():
     actions = _FakeActions(interrupt=False, lease=True)
     result = GuardEnforcer(actions).enforce(_trip())
     assert result.interrupted is False
-    assert result.killed is True
+    assert result.lease_released is True
+    assert result.killed is False
 
 
 def test_notify_receives_the_formatted_report():
@@ -94,15 +95,19 @@ def test_notify_receives_the_formatted_report():
 # -- report formatter ---------------------------------------------------------
 
 
-def test_report_contains_all_key_facts():
+def test_report_contains_all_key_facts_without_claiming_enforcement_side_effects():
     r = format_kill_report(_trip())
-    assert "HARD-STOPPED" in r
+    assert "HARD-STOP REQUIRED" in r
     assert "20260725_001655_7eff2a" in r
     assert "wall_clock_runtime_exceeded" in r
-    assert "288.0M tokens" in r          # humanized spend
+    assert "288.0M tokens" in r          # humanized detector counter
     assert "1800 model calls" in r
     assert "xai" in r and "grok-4.5" in r and "effort=max" in r
-    assert "No human action required" in r
+    assert "provenance: unknown" in r
+    assert "enforcement outcome: not asserted" in r
+    assert "turn aborted" not in r
+    assert "lease released" not in r
+    assert "No human action required" not in r
 
 
 def test_report_humanizes_token_scales():

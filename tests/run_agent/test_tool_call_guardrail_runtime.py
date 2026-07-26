@@ -153,6 +153,45 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
+def test_sequential_production_completion_threads_identity_retryability_and_dedupes_replay():
+    """The real standard tool path owns stable terminal-event metadata."""
+    agent = _make_agent("web_search")
+    completed = []
+    agent.tool_progress_callback = lambda event, name, preview, args, **kw: (
+        completed.append((event, name, kw)) if event == "tool.completed" else None
+    )
+
+    retryable = _mock_tool_call(
+        "web_search", json.dumps({"query": "same"}), "call-rate-limit"
+    )
+    distinct = _mock_tool_call(
+        "web_search", json.dumps({"query": "same"}), "call-auth"
+    )
+    result_429 = json.dumps({"error": {"status_code": 429, "message": "busy"}})
+    result_401 = json.dumps({"error": {"status": 401, "message": "auth failed"}})
+
+    with patch(
+        "run_agent.handle_function_call", side_effect=[result_429, result_429, result_401]
+    ):
+        for tc in (retryable, retryable, distinct):
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(content="", tool_calls=[tc]), [], "task-1"
+            )
+
+    snapshot = agent._progress_telemetry.get_activity_snapshot()
+    assert snapshot["attempt_seq"] == 2
+    assert snapshot["failure_seq"] == 2
+    assert snapshot["failure_streak"] == 1
+    assert snapshot["last_call_id"] == "call-auth"
+    assert snapshot["last_retryability"] == "non_retryable"
+    assert [event[2]["call_id"] for event in completed] == [
+        "call-rate-limit",
+        "call-auth",
+    ]
+    assert completed[0][2]["retryability"] == "retryable"
+    assert completed[1][2]["retryability"] == "non_retryable"
+
+
 def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     agent = _make_agent("terminal")
     guardrails = getattr(agent, "_tool_guardrails")

@@ -42,6 +42,51 @@ from tools.terminal_tool import set_approval_callback as _set_subagent_approval_
 from utils import base_url_hostname, is_truthy_value
 
 
+def _record_delegated_child_usage(
+    parent_agent: Any,
+    *,
+    task_index: int,
+    child_session_id: str,
+    child_subagent_id: str = "",
+    child_usage: Any = None,
+):
+    """Merge one child completion into the parent's shared usage ledger.
+
+    Child aggregates are consumed through the provider-neutral provenance
+    helper.  Missing terminal-child usage therefore remains UNKNOWN, while a
+    session-matched fully backend-measured child can be authoritative.  The
+    stable completion identity makes replay a no-op.
+    """
+
+    from agent.usage_provenance import delegated_child_usage_receipt
+
+    telemetry = getattr(parent_agent, "_progress_telemetry", None)
+    parent_session_id = str(getattr(parent_agent, "session_id", "") or "").strip()
+    if telemetry is None or not parent_session_id:
+        return None
+    if not getattr(telemetry, "session_id", ""):
+        telemetry.bind_session_id(parent_session_id)
+    elif telemetry.session_id != parent_session_id:
+        raise RuntimeError(
+            "delegated child usage session does not match parent telemetry binding"
+        )
+
+    identity = (
+        str(child_subagent_id or "").strip()
+        or str(child_session_id or "").strip()
+        or f"task-{int(task_index)}"
+    )
+    receipt = delegated_child_usage_receipt(
+        parent_session_id=parent_session_id,
+        component_id=f"delegated-child:{identity}",
+        accepted_event_id=f"delegated-child:{identity}:complete",
+        child_session_id=str(child_session_id or "").strip(),
+        child_usage=child_usage,
+    )
+    telemetry.record_usage_receipt(receipt)
+    return receipt
+
+
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
     [
@@ -2194,6 +2239,15 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        _child_session_id = str(getattr(child, "session_id", "") or "").strip()
+        _child_subagent_id = str(getattr(child, "_subagent_id", "") or "").strip()
+        _child_usage = None
+        try:
+            _child_activity = child.get_activity_summary() or {}
+            if isinstance(_child_activity, dict):
+                _child_usage = _child_activity.get("usage")
+        except Exception:
+            logger.debug("Child usage snapshot failed", exc_info=True)
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -2229,6 +2283,11 @@ def _run_single_child(
                 )
                 else 0.0
             ),
+            # Private sanitized provenance fields.  The parent consumes and
+            # removes them before serializing the delegate result to the model.
+            "_child_session_id": _child_session_id,
+            "_child_subagent_id": _child_subagent_id,
+            "_child_usage": _child_usage,
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2832,6 +2891,38 @@ def delegate_task(
         for entry in results:
             child_role = entry.pop("_child_role", None)
             child_cost = entry.pop("_child_cost_usd", 0.0)
+            _child_index = entry.get("task_index", -1)
+            _child_agent = (
+                children[_child_index][2]
+                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                else None
+            )
+            _child_session_id = entry.pop("_child_session_id", "") or str(
+                getattr(_child_agent, "session_id", "") or ""
+            )
+            _child_subagent_id = entry.pop("_child_subagent_id", "") or str(
+                getattr(_child_agent, "_subagent_id", "") or ""
+            )
+            _child_usage = entry.pop("_child_usage", None)
+            if _child_usage is None and _child_agent is not None:
+                try:
+                    _child_activity = _child_agent.get_activity_summary() or {}
+                    if isinstance(_child_activity, dict):
+                        _child_usage = _child_activity.get("usage")
+                except Exception:
+                    logger.debug("Child usage fallback snapshot failed", exc_info=True)
+            try:
+                _record_delegated_child_usage(
+                    parent_agent,
+                    task_index=(
+                        _child_index if isinstance(_child_index, int) else -1
+                    ),
+                    child_session_id=_child_session_id,
+                    child_subagent_id=_child_subagent_id,
+                    child_usage=_child_usage,
+                )
+            except Exception:
+                logger.debug("Delegated child usage merge failed", exc_info=True)
             try:
                 if child_cost:
                     _children_cost_total += float(child_cost)
@@ -2840,12 +2931,6 @@ def delegate_task(
             if _invoke_hook is None:
                 continue
             try:
-                _child_index = entry.get("task_index", -1)
-                _child_agent = (
-                    children[_child_index][2]
-                    if isinstance(_child_index, int) and 0 <= _child_index < len(children)
-                    else None
-                )
                 _invoke_hook(
                     "subagent_stop",
                     parent_session_id=_parent_session_id,
