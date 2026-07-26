@@ -748,19 +748,93 @@ def redeem_codex_reset_credit(
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    """Fetch Anthropic OAuth usage — DISABLED for CLI-based lanes.
+def _fetch_anthropic_usage_window() -> Optional[AccountUsageSnapshot]:
+    """Fetch Anthropic OAuth usage windows only (no inference API calls).
 
-    Claude Code (claude_code lane) uses the CLI executable path, not the OAuth API.
-    The OAuth usage endpoint (api.anthropic.com/api/oauth/usage) is policy-restricted
-    and not available for third-party tools. Usage qualification for claude_code is
-    determined by the CLI executable's own health check instead.
+    Queries the public usage/window measurement endpoint
+    (api.anthropic.com/api/oauth/usage) to report weekly usage for capacity
+    routing. This is the ONLY Anthropic API call enabled for claude_code lane —
+    all inference is routed through the CLI executable (see _fetch_anthropic_account_usage).
 
-    Returns None to defer the usage decision to the lane's CLI health probe.
+    Returns an AccountUsageSnapshot with window % measurements (five_hour,
+    seven_day, seven_day_opus, seven_day_sonnet), or None if unauthorized or
+    not an OAuth token.
     """
-    # API path is disabled entirely per GOAL A requirements.
-    # All Anthropic usage qualification flows through the CLI executable.
-    return None
+    token = (resolve_anthropic_token() or "").strip()
+    if not token:
+        return None
+    if not _is_oauth_token(token):
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=_utc_now(),
+            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+        )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "claude-code/2.1.0",
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    windows: list[AccountUsageWindow] = []
+    mapping = (
+        ("five_hour", "Current session"),
+        ("seven_day", "Current week"),
+        ("seven_day_opus", "Opus week"),
+        ("seven_day_sonnet", "Sonnet week"),
+    )
+    for key, label in mapping:
+        window = payload.get(key) or {}
+        util = window.get("utilization")
+        if util is None:
+            continue
+        used = float(util) * 100 if float(util) <= 1 else float(util)
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=used,
+                reset_at=_parse_dt(window.get("resets_at")),
+            )
+        )
+    details: list[str] = []
+    extra = payload.get("extra_usage") or {}
+    if extra.get("is_enabled"):
+        used_credits = extra.get("used_credits")
+        monthly_limit = extra.get("monthly_limit")
+        currency = extra.get("currency") or "USD"
+        if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
+            details.append(
+                f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
+            )
+    return AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=_utc_now(),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
+def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch Anthropic account usage — routes through usage-only endpoint.
+
+    Claude Code (claude_code lane) uses the CLI executable path for inference,
+    not the OAuth API. Usage qualification (window measurement only) is fetched
+    via _fetch_anthropic_usage_window(); all inference is disabled entirely.
+
+    Returns the usage window snapshot from _fetch_anthropic_usage_window(), or
+    None if unauthorized. The inference decision is deferred to the CLI health probe.
+    """
+    # GOAL A: Anthropic inference API is policy-restricted and disabled entirely.
+    # Only the usage/window measurement endpoint (_fetch_anthropic_usage_window)
+    # is enabled for capacity routing; inference calls are routed through the
+    # CLI executable instead.
+    return _fetch_anthropic_usage_window()
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:

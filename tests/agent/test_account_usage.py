@@ -436,3 +436,206 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+# ── Anthropic OAuth usage window (claude_code lane capacity measurement) ───
+
+
+@pytest.fixture
+def anthropic_oauth_usage_payload():
+    """Sample OAuth usage endpoint response with windows and extra_usage."""
+    return {
+        "five_hour": {
+            "utilization": 0.15,
+            "resets_at": "2026-07-26T22:00:00Z",
+        },
+        "seven_day": {
+            "utilization": 0.35,
+            "resets_at": "2026-08-02T00:00:00Z",
+        },
+        "seven_day_opus": {
+            "utilization": 0.20,
+            "resets_at": "2026-08-02T00:00:00Z",
+        },
+        "seven_day_sonnet": {
+            "utilization": 0.45,
+            "resets_at": "2026-08-02T00:00:00Z",
+        },
+        "extra_usage": {
+            "is_enabled": True,
+            "used_credits": 125.50,
+            "monthly_limit": 500.00,
+            "currency": "USD",
+        },
+    }
+
+
+def test_anthropic_oauth_usage_window_fetch(monkeypatch, anthropic_oauth_usage_payload):
+    """Verify Anthropic usage window fetch via OAuth endpoint."""
+    calls = []
+
+    class _AnthropicFakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            return _FakeResponse(anthropic_oauth_usage_payload)
+
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _AnthropicFakeClient(),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: "oauth-token-example",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert snapshot.source == "oauth_usage_api"
+    # Verify windows were parsed correctly
+    assert len(snapshot.windows) == 4
+    labels = [w.label for w in snapshot.windows]
+    assert labels == ["Current session", "Current week", "Opus week", "Sonnet week"]
+    # Verify utilization was converted to percentage (0.15 -> 15%)
+    assert snapshot.windows[0].used_percent == 15.0
+    assert snapshot.windows[1].used_percent == 35.0
+    assert snapshot.windows[2].used_percent == 20.0
+    assert snapshot.windows[3].used_percent == 45.0
+    # Verify extra_usage details
+    assert "Extra usage: 125.50 / 500.00 USD" in snapshot.details
+    # Verify endpoint and authorization header
+    assert calls[0]["url"] == "https://api.anthropic.com/api/oauth/usage"
+    assert calls[0]["headers"]["Authorization"] == "Bearer oauth-token-example"
+
+
+def test_anthropic_oauth_usage_returns_none_when_no_token(monkeypatch):
+    """Usage fetch returns None when no token is available."""
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: None,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is None
+
+
+def test_anthropic_oauth_usage_returns_unavailable_for_non_oauth_token(monkeypatch):
+    """Usage fetch returns unavailable message for non-OAuth tokens (e.g., API keys)."""
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: "sk-ant-v1-non-oauth-key",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: False,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert snapshot.unavailable_reason is not None
+    assert "OAuth-backed" in snapshot.unavailable_reason
+
+
+def test_anthropic_account_usage_calls_usage_window(monkeypatch, anthropic_oauth_usage_payload):
+    """Verify _fetch_anthropic_account_usage delegates to _fetch_anthropic_usage_window."""
+    calls = []
+
+    class _AnthropicFakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            return _FakeResponse(anthropic_oauth_usage_payload)
+
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _AnthropicFakeClient(),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: "oauth-token-example",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    # Call through the public entry point
+    snapshot = account_usage._fetch_anthropic_account_usage()
+
+    # Should have called the usage endpoint (delegated to usage_window)
+    assert snapshot is not None
+    assert snapshot.provider == "anthropic"
+    assert len(snapshot.windows) == 4
+    assert calls[0]["url"] == "https://api.anthropic.com/api/oauth/usage"
+
+
+def test_anthropic_oauth_usage_with_percentage_already_scaled(monkeypatch):
+    """Verify that utilization values already scaled as percentages (0-100) are handled."""
+    payload = {
+        "five_hour": {
+            "utilization": 85.0,  # Already a percentage, not 0-1
+            "resets_at": "2026-07-26T22:00:00Z",
+        },
+    }
+    calls = []
+
+    class _AnthropicFakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            return _FakeResponse(payload)
+
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _AnthropicFakeClient(),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: "oauth-token-example",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is not None
+    # Utilization is already > 1, so it's used as-is
+    assert snapshot.windows[0].used_percent == 85.0
