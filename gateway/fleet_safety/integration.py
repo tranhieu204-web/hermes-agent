@@ -464,10 +464,17 @@ def select_best_lane_for(
     *,
     is_heavy: bool = True,
     now: Optional[float] = None,
+    importance: str = "normal",
 ) -> SelectedLane:
-    """Select the best fallback routing lane using usage-headroom rules."""
+    """Select the best fallback routing lane using usage-headroom rules.
+
+    Args:
+        importance: Task importance level. One of "money_critical", "critically_important",
+                   "semi_critical", "normal" (default). Applies importance-based grading
+                   to Claude/Codex/Kimi; Grok and Antigravity always pin to "high".
+    """
     cfg = _load_full_config()
-    return select_best_lane(cfg, current_provider=current_provider, is_heavy=is_heavy, now=now)
+    return select_best_lane(cfg, current_provider=current_provider, is_heavy=is_heavy, now=now, importance=importance)
 
 
 def decide_routing(
