@@ -1007,6 +1007,13 @@ class TestSubagentCostRollup(unittest.TestCase):
         parent.session_estimated_cost_usd = starting_cost
         parent.session_cost_status = "unknown"
         parent.session_cost_source = "none"
+        parent.session_input_tokens = 100
+        parent.session_output_tokens = 20
+        parent.session_cache_read_tokens = 30
+        parent.session_cache_write_tokens = 4
+        parent.session_reasoning_tokens = 5
+        parent.session_usage_quality = "measured"
+        parent._api_call_count = 1
         return parent
 
     def test_single_child_cost_folded_into_parent(self):
@@ -1017,6 +1024,12 @@ class TestSubagentCostRollup(unittest.TestCase):
             mock_child.model = "claude-sonnet-4-6"
             mock_child.session_prompt_tokens = 1000
             mock_child.session_completion_tokens = 200
+            mock_child.session_input_tokens = 1000
+            mock_child.session_output_tokens = 200
+            mock_child.session_cache_read_tokens = 300
+            mock_child.session_cache_write_tokens = 40
+            mock_child.session_reasoning_tokens = 50
+            mock_child.session_usage_quality = "measured"
             mock_child.session_estimated_cost_usd = 0.42
             mock_child.run_conversation.return_value = {
                 "final_response": "done",
@@ -1029,10 +1042,18 @@ class TestSubagentCostRollup(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="do stuff", parent_agent=parent))
 
-        # Parent footer must reflect parent_cost + child_cost.
+        # Parent footer and guard telemetry must reflect parent + child usage.
         self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.52, places=6)
-        # Rollup must strip the internal field before serialising to the model.
+        self.assertEqual(parent.session_input_tokens, 1100)
+        self.assertEqual(parent.session_output_tokens, 220)
+        self.assertEqual(parent.session_cache_read_tokens, 330)
+        self.assertEqual(parent.session_cache_write_tokens, 44)
+        self.assertEqual(parent.session_reasoning_tokens, 55)
+        self.assertEqual(parent._api_call_count, 3)
+        self.assertEqual(parent.session_usage_quality, "measured")
+        # Rollup must strip internal fields before serialising to the model.
         self.assertNotIn("_child_cost_usd", result["results"][0])
+        self.assertNotIn("_child_usage", result["results"][0])
         self.assertNotIn("_child_role", result["results"][0])
 
     def test_batch_children_costs_sum_into_parent(self):
@@ -1048,6 +1069,15 @@ class TestSubagentCostRollup(unittest.TestCase):
                     "duration_seconds": 1.0,
                     "_child_role": "leaf",
                     "_child_cost_usd": 0.15,
+                    "_child_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "cache_read_tokens": 3,
+                        "cache_write_tokens": 1,
+                        "reasoning_tokens": 4,
+                        "model_requests": 2,
+                        "quality": "measured",
+                    },
                 },
                 {
                     "task_index": 1,
@@ -1057,6 +1087,15 @@ class TestSubagentCostRollup(unittest.TestCase):
                     "duration_seconds": 1.0,
                     "_child_role": "leaf",
                     "_child_cost_usd": 0.27,
+                    "_child_usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 4,
+                        "cache_read_tokens": 6,
+                        "cache_write_tokens": 2,
+                        "reasoning_tokens": 8,
+                        "model_requests": 2,
+                        "quality": "estimated",
+                    },
                 },
                 {
                     "task_index": 2,
@@ -1067,6 +1106,15 @@ class TestSubagentCostRollup(unittest.TestCase):
                     "duration_seconds": 0.1,
                     "_child_role": "leaf",
                     "_child_cost_usd": 0.03,
+                    "_child_usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 1,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_tokens": 1,
+                        "model_requests": 0,
+                        "quality": "measured",
+                    },
                 },
             ]
             result = json.loads(
@@ -1079,12 +1127,20 @@ class TestSubagentCostRollup(unittest.TestCase):
         # 0.15 + 0.27 + 0.03 even though one child failed — the API calls it
         # made before failing still cost money.
         self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.45, places=6)
+        self.assertEqual(parent.session_input_tokens, 135)
+        self.assertEqual(parent.session_output_tokens, 27)
+        self.assertEqual(parent.session_cache_read_tokens, 39)
+        self.assertEqual(parent.session_cache_write_tokens, 7)
+        self.assertEqual(parent.session_reasoning_tokens, 18)
+        self.assertEqual(parent._api_call_count, 5)
+        self.assertEqual(parent.session_usage_quality, "estimated")
         # cost_source promoted from "none" since the parent had no direct spend.
         self.assertEqual(parent.session_cost_source, "subagent")
         self.assertEqual(parent.session_cost_status, "estimated")
         # All internal fields stripped from results.
         for entry in result["results"]:
             self.assertNotIn("_child_cost_usd", entry)
+            self.assertNotIn("_child_usage", entry)
             self.assertNotIn("_child_role", entry)
 
     def test_zero_cost_children_leave_parent_source_untouched(self):

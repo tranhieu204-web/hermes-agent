@@ -2190,9 +2190,23 @@ def _run_single_child(
         else:
             exit_reason = "max_iterations"
 
-        # Extract token counts (safe for mock objects)
-        _input_tokens = getattr(child, "session_prompt_tokens", 0)
-        _output_tokens = getattr(child, "session_completion_tokens", 0)
+        # Extract provider-neutral usage (safe for mock/legacy objects).
+        def _numeric_attr(name, fallback=0):
+            value = getattr(child, name, fallback)
+            return value if isinstance(value, (int, float)) else fallback
+
+        _legacy_input_tokens = _numeric_attr("session_prompt_tokens", 0)
+        _legacy_output_tokens = _numeric_attr("session_completion_tokens", 0)
+        _input_tokens = _numeric_attr("session_input_tokens", _legacy_input_tokens)
+        _output_tokens = _numeric_attr("session_output_tokens", _legacy_output_tokens)
+        _cache_read_tokens = _numeric_attr("session_cache_read_tokens", 0)
+        _cache_write_tokens = _numeric_attr("session_cache_write_tokens", 0)
+        _reasoning_tokens = _numeric_attr("session_reasoning_tokens", 0)
+        _usage_quality = str(
+            getattr(child, "session_usage_quality", "measured") or "unknown"
+        ).lower()
+        if _usage_quality not in {"measured", "estimated", "unknown"}:
+            _usage_quality = "unknown"
         _model = getattr(child, "model", None)
 
         entry: Dict[str, Any] = {
@@ -2229,6 +2243,15 @@ def _run_single_child(
                 )
                 else 0.0
             ),
+            "_child_usage": {
+                "input_tokens": int(_input_tokens),
+                "output_tokens": int(_output_tokens),
+                "cache_read_tokens": int(_cache_read_tokens),
+                "cache_write_tokens": int(_cache_write_tokens),
+                "reasoning_tokens": int(_reasoning_tokens),
+                "model_requests": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+                "quality": _usage_quality,
+            },
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2272,7 +2295,6 @@ def _run_single_child(
         # pane + accordion rollups (features 1, 2, 4).  All fields are
         # optional — missing data degrades gracefully on the client.
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
-        _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
         try:
             _files_read = list(file_state.known_reads(child_task_id))[:40]
         except Exception:
@@ -2829,9 +2851,39 @@ def delegate_task(
         # closed; we fold them into the parent in one pass alongside the
         # subagent_stop hook loop so we don't walk `results` twice.
         _children_cost_total = 0.0
+        _usage_fields = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "model_requests",
+        )
+        _children_usage_total = {field: 0 for field in _usage_fields}
+        _children_usage_qualities = []
         for entry in results:
             child_role = entry.pop("_child_role", None)
             child_cost = entry.pop("_child_cost_usd", 0.0)
+            child_usage = entry.pop("_child_usage", None)
+            if isinstance(child_usage, dict):
+                for field in _usage_fields:
+                    value = child_usage.get(field, 0)
+                    if isinstance(value, (int, float)) and value > 0:
+                        _children_usage_total[field] += int(value)
+                if any(
+                    isinstance(child_usage.get(field, 0), (int, float))
+                    and child_usage.get(field, 0) > 0
+                    for field in _usage_fields[:-1]
+                ):
+                    quality = str(child_usage.get("quality", "unknown") or "unknown").lower()
+                    if quality not in {"measured", "estimated", "unknown"}:
+                        quality = "unknown"
+                    _children_usage_qualities.append(quality)
+            else:
+                # Older/fabricated entries still expose model-call count.
+                legacy_calls = entry.get("api_calls", 0)
+                if isinstance(legacy_calls, (int, float)) and legacy_calls > 0:
+                    _children_usage_total["model_requests"] += int(legacy_calls)
             try:
                 if child_cost:
                     _children_cost_total += float(child_cost)
@@ -2880,6 +2932,49 @@ def delegate_task(
                     parent_agent.session_cost_status = "estimated"
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
+
+        # Roll up provider-neutral child token dimensions and model calls so
+        # delegated/internal work cannot evade the parent's fleet-safety view.
+        if any(_children_usage_total.values()):
+            try:
+                counter_map = {
+                    "input_tokens": "session_input_tokens",
+                    "output_tokens": "session_output_tokens",
+                    "cache_read_tokens": "session_cache_read_tokens",
+                    "cache_write_tokens": "session_cache_write_tokens",
+                    "reasoning_tokens": "session_reasoning_tokens",
+                    "model_requests": "_api_call_count",
+                }
+                parent_had_tokens = any(
+                    isinstance(getattr(parent_agent, attr, 0), (int, float))
+                    and getattr(parent_agent, attr, 0) > 0
+                    for attr in tuple(counter_map.values())[:-1]
+                )
+                for field, attr in counter_map.items():
+                    increment = _children_usage_total[field]
+                    if increment <= 0:
+                        continue
+                    current = getattr(parent_agent, attr, 0)
+                    current = current if isinstance(current, (int, float)) else 0
+                    setattr(parent_agent, attr, current + increment)
+
+                if _children_usage_qualities:
+                    qualities = list(_children_usage_qualities)
+                    if parent_had_tokens:
+                        parent_quality = str(
+                            getattr(parent_agent, "session_usage_quality", "measured")
+                            or "unknown"
+                        ).lower()
+                        qualities.append(
+                            parent_quality
+                            if parent_quality in {"measured", "estimated", "unknown"}
+                            else "unknown"
+                        )
+                    quality_rank = {"unknown": 0, "estimated": 1, "measured": 2}
+                    combined_quality = min(qualities, key=quality_rank.get)
+                    parent_agent.session_usage_quality = combined_quality
+            except Exception:
+                logger.debug("Subagent usage rollup failed", exc_info=True)
 
         total_duration = round(time.monotonic() - overall_start, 2)
 

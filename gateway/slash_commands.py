@@ -1068,24 +1068,32 @@ class GatewaySlashCommandsMixin:
         return "\n".join(lines)
 
     async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /stop command - interrupt a running agent.
+        """Handle /stop command - request interruption and release the session guard.
 
-        When an agent is truly hung (blocked thread that never checks
-        _interrupt_requested), the early intercept in _handle_message()
-        handles /stop before this method is reached.  This handler fires
-        only through normal command dispatch (no running agent) or as a
-        fallback.  Force-clean the session lock in all cases for safety.
+        The early intercept in ``_handle_message()`` handles active sessions
+        before this fallback. This handler covers normal dispatch, pending
+        sentinels, and authorized sibling-thread runs. It invalidates the run
+        generation and releases gateway state without claiming provider-process
+        termination that has not been independently confirmed.
 
         The session is preserved so the user can continue the conversation.
         """
+        from gateway.fleet_safety.integration import deny_active_extensions
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
 
+        def _deny_for(session_key_to_stop, running_agent=None):
+            session_ids = [session_key_to_stop]
+            agent_session_id = getattr(running_agent, "session_id", None)
+            if agent_session_id:
+                session_ids.append(str(agent_session_id))
+            return deny_active_extensions(self, session_ids)
+
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
-            # Force-clean the sentinel so the session is unlocked.
+            _deny_for(session_key)
             await self._interrupt_and_clear_session(
                 session_key,
                 source,
@@ -1095,8 +1103,7 @@ class GatewaySlashCommandsMixin:
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:
-            # Force-clean the session lock so a truly hung agent doesn't
-            # keep it locked forever.
+            _deny_for(session_key, agent)
             await self._interrupt_and_clear_session(
                 session_key,
                 source,
@@ -1114,6 +1121,8 @@ class GatewaySlashCommandsMixin:
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
         if sibling_keys and self._is_user_authorized(source):
             for sibling_key in sibling_keys:
+                sibling_agent = self._running_agents.get(sibling_key)
+                _deny_for(sibling_key, sibling_agent)
                 await self._interrupt_and_clear_session(
                     sibling_key,
                     source,

@@ -377,6 +377,7 @@ class ProgressTelemetry:
         model_requests: Optional[int] = None,
         cost_status: str = "unknown",
         cost_source: str = "none",
+        usage_quality: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return an atomic turn-scoped snapshot separating liveness from progress."""
         if current_usage is None:
@@ -388,6 +389,12 @@ class ProgressTelemetry:
                 current_usage,
                 model_requests=model_requests or 0,
             )
+        if usage_quality is not None and not usage.is_empty:
+            try:
+                explicit_quality = UsageSourceQuality(str(usage_quality).lower())
+            except ValueError:
+                explicit_quality = UsageSourceQuality.UNKNOWN
+            usage = replace(usage, quality=explicit_quality)
         return {
             "session_id": self.session_id,
             "context_id": self.context_id,

@@ -3700,6 +3700,7 @@ class AIAgent:
                 cost_source=str(
                     getattr(self, "session_cost_source", "none") or "none"
                 ),
+                usage_quality=getattr(self, "session_usage_quality", None),
             )
         else:
             snapshot = {}
@@ -3712,6 +3713,7 @@ class AIAgent:
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
+            "last_error_code": getattr(self, "_last_provider_error_code", None),
         }
         res.update(snapshot)
         return res

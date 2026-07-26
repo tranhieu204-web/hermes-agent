@@ -1,4 +1,4 @@
-"""Orchestration for guard evaluation results (continuation vs hard stop)."""
+"""Orchestration for checkpoint notices and verified safety-stop requests."""
 
 from __future__ import annotations
 
@@ -6,21 +6,25 @@ from dataclasses import dataclass, field
 from typing import List, Protocol
 
 from gateway.fleet_safety.deadloop_guard import GuardOutcome, GuardEvaluationResult, Trip
-from gateway.fleet_safety.report import format_continuation_report, format_kill_report
+from gateway.fleet_safety.report import (
+    format_continuation_report,
+    format_safety_stop_report,
+)
 
 
 def is_stop_command(user_text: str) -> bool:
     """Exact trimmed standalone STOP or /stop matching."""
     if not user_text:
         return False
-    s = str(user_text).strip().lower()
-    return s in {"stop", "/stop"}
+    return str(user_text).strip().casefold() in {"stop", "/stop"}
 
 
 class KillActions(Protocol):
     def interrupt(self, session_id: str, reason: str) -> bool:
         ...
 
+    # Retained for adapter compatibility only. GuardEnforcer deliberately never
+    # calls this: the gateway's generation-owned finally path releases leases.
     def release_lease(self, session_id: str) -> bool:
         ...
 
@@ -32,7 +36,9 @@ class KillActions(Protocol):
 class EnforcementResult:
     session_id: str
     reason: str
-    interrupted: bool = False
+    stop_requested: bool = False
+    interrupted: bool = False  # compatibility: cooperative request accepted
+    terminated: bool = False
     lease_released: bool = False
     notified: bool = False
     report: str = ""
@@ -40,8 +46,8 @@ class EnforcementResult:
 
     @property
     def killed(self) -> bool:
-        """True only if the loop was actually stopped (interrupt or lease-release landed)."""
-        return self.interrupted or self.lease_released
+        """True only with explicit confirmation that execution terminated."""
+        return self.terminated
 
 
 class GuardEnforcer:
@@ -49,49 +55,60 @@ class GuardEnforcer:
         self._actions = actions
 
     def enforce(self, trip: GuardEvaluationResult | Trip) -> EnforcementResult:
-        session_id = getattr(trip, "session_id", "")
+        session_id = str(getattr(trip, "session_id", "") or "")
         outcome = getattr(trip, "outcome", None)
-        is_hard_stop = getattr(trip, "is_hard_stop", outcome == GuardOutcome.VERIFIED_HARD_STOP)
-        reason_str = getattr(getattr(trip, "trip_reason", None), "value", getattr(getattr(trip, "reason", None), "value", "runaway"))
+        is_hard_stop = bool(
+            getattr(
+                trip,
+                "is_hard_stop",
+                outcome == GuardOutcome.VERIFIED_HARD_STOP,
+            )
+        )
+        reason_obj = getattr(trip, "trip_reason", None) or getattr(trip, "reason", None)
+        reason_str = str(getattr(reason_obj, "value", reason_obj) or "runaway")
 
-        # Continuation notice path — NEVER interrupts, releases lease, or claims a stop
         if not is_hard_stop or outcome == GuardOutcome.CONTINUATION_NOTICE:
-            report_text = format_continuation_report(trip)
+            report = format_continuation_report(trip)
             result = EnforcementResult(
                 session_id=session_id,
                 reason=reason_str,
-                interrupted=False,
-                lease_released=False,
-                report=report_text,
+                report=report,
             )
             try:
-                result.notified = bool(self._actions.notify(report_text))
-            except Exception as e:
-                result.errors.append(f"notify failed: {e}")
+                result.notified = bool(self._actions.notify(report))
+            except Exception as exc:
+                result.errors.append(f"notify failed: {exc}")
             return result
 
-        # Hard stop path — only for verified no-progress or non-recoverable error streaks
-        report_text = format_kill_report(trip)
-        result = EnforcementResult(
-            session_id=session_id,
-            reason=reason_str,
-            report=report_text,
+        result = EnforcementResult(session_id=session_id, reason=reason_str)
+        request_reason = (
+            f"fleet-safety stop request: {reason_str} — "
+            f"{str(getattr(trip, 'detail', '') or '')}"
         )
-        kill_reason = f"fleet-safety hard stop: {reason_str} — {getattr(trip, 'detail', '')}"
-
         try:
-            result.interrupted = bool(self._actions.interrupt(session_id, kill_reason))
-        except Exception as e:
-            result.errors.append(f"interrupt failed: {e}")
+            result.stop_requested = bool(
+                self._actions.interrupt(session_id, request_reason)
+            )
+            result.interrupted = result.stop_requested
+        except Exception as exc:
+            result.errors.append(f"interrupt failed: {exc}")
 
-        try:
-            result.lease_released = bool(self._actions.release_lease(session_id))
-        except Exception as e:
-            result.errors.append(f"release_lease failed: {e}")
-
+        # The report is intentionally constructed after the effect attempt so it
+        # can state the actual request result. No direct lease release occurs.
+        result.report = format_safety_stop_report(
+            trip,
+            interrupt_request_accepted=result.stop_requested,
+        )
         try:
             result.notified = bool(self._actions.notify(result.report))
-        except Exception as e:
-            result.errors.append(f"notify failed: {e}")
-
+        except Exception as exc:
+            result.errors.append(f"notify failed: {exc}")
         return result
+
+
+__all__ = [
+    "EnforcementResult",
+    "GuardEnforcer",
+    "KillActions",
+    "is_stop_command",
+]

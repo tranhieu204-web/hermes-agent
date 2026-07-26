@@ -1883,21 +1883,22 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
-    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+    """Rewrite exact operational plaintext into existing slash-command paths.
 
-    This keeps high-impact operational phrases like ``restart gateway`` out of
-    the LLM/tool path, where they can trigger a self-restart from inside the
-    currently running agent and leave the gateway stuck in ``draining`` while it
-    waits for that same agent to finish.
-
-    Scope is intentionally narrow: DM text messages only, exact restart-style
-    phrases only. Group chats keep natural-language semantics.
+    ``STOP`` is intentionally exact, trimmed, and case-insensitive. It becomes
+    ``/stop`` before both active-session guards, then follows the ordinary slash
+    authorization and generation-safe interruption path. Embedded or qualified
+    text remains ordinary user input. Restart phrases retain their narrow DM-only
+    behavior.
     """
     try:
         if event is None or event.message_type != MessageType.TEXT:
             return
         text = (event.text or "").strip()
         if not text or text.startswith("/"):
+            return
+        if text.casefold() == "stop":
+            event.text = "/stop"
             return
         source = getattr(event, "source", None)
         if getattr(source, "chat_type", None) != "dm":

@@ -877,6 +877,151 @@ def _notify_context_engine_turn_complete(
         )
 
 
+def _configured_no_progress_limit(agent) -> int:
+    """Resolve the shared verified-no-progress stop threshold.
+
+    A per-agent override supports tests and embedded runtimes. Otherwise read the
+    same live config key as the gateway guard. Invalid values preserve the
+    historical default of three distinct no-progress attempts.
+    """
+    override = getattr(agent, "_fleet_safety_no_progress_samples", None)
+    try:
+        if override is not None and int(override) > 0:
+            return int(override)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        value = (
+            cfg.get("fleet_safety", {})
+            .get("deadloop_guard", {})
+            .get("no_progress_samples", 3)
+        )
+        value = int(value)
+        return value if value > 0 else 3
+    except Exception:
+        return 3
+
+
+def _checkpoint_snapshot(agent, api_call_count: int) -> Dict[str, Any]:
+    telemetry = getattr(agent, "_progress_telemetry", None)
+    if telemetry is None:
+        return {}
+    try:
+        from agent.progress_telemetry import CanonicalUsage
+
+        return telemetry.get_activity_snapshot(
+            current_usage=CanonicalUsage(
+                input_tokens=int(getattr(agent, "session_input_tokens", 0) or 0),
+                output_tokens=int(getattr(agent, "session_output_tokens", 0) or 0),
+                cache_read_tokens=int(
+                    getattr(agent, "session_cache_read_tokens", 0) or 0
+                ),
+                cache_write_tokens=int(
+                    getattr(agent, "session_cache_write_tokens", 0) or 0
+                ),
+                reasoning_tokens=int(
+                    getattr(agent, "session_reasoning_tokens", 0) or 0
+                ),
+                cost=float(
+                    getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0
+                ),
+            ),
+            model_requests=int(api_call_count),
+            cost_status=str(
+                getattr(agent, "session_cost_status", "unknown") or "unknown"
+            ),
+            cost_source=str(
+                getattr(agent, "session_cost_source", "none") or "none"
+            ),
+        )
+    except TypeError:
+        # Minimal test doubles and older telemetry implementations expose the
+        # zero-argument form. They remain conservative rather than fabricated.
+        try:
+            return telemetry.get_activity_snapshot()
+        except Exception:
+            return {}
+    except Exception:
+        return {}
+
+
+def _handle_iteration_checkpoint(
+    agent,
+    api_call_count: int,
+    block_size: int,
+    no_progress_limit: int,
+) -> str:
+    """Renew a productive/unknown turn or stop verified no-progress work.
+
+    Resource volume and elapsed work only open this checkpoint. They never prove
+    a loop. The sole automatic stop here is producer-verified no progress across
+    the configured number of distinct attempts. Exact STOP follows the existing
+    cooperative interrupt path and wins before any grant.
+    """
+    if bool(getattr(agent, "_interrupt_requested", False)):
+        return "stop_interrupted"
+
+    snapshot = _checkpoint_snapshot(agent, api_call_count)
+    try:
+        no_progress = max(0, int(snapshot.get("no_progress_streak", 0) or 0))
+    except (TypeError, ValueError):
+        no_progress = 0
+    limit = max(1, int(no_progress_limit))
+
+    if no_progress >= limit:
+        agent._emit_status(
+            "Safety stop requested\n"
+            f"Cause: verified no progress across {no_progress} distinct attempts\n"
+            "Action: stopping before another provider call; no summary call will run."
+        )
+        return "stop_verified_no_progress"
+
+    grant = int(block_size)
+    if grant <= 0:
+        raise ValueError("block_size must be a positive integer")
+    agent.iteration_budget.extend_grant(grant)
+    agent.max_iterations = max(int(agent.max_iterations), int(api_call_count)) + grant
+
+    usage = snapshot.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    quality = str(usage.get("quality") or "unknown").lower()
+    if quality not in {"measured", "estimated", "unknown"}:
+        quality = "unknown"
+    progress_kind = snapshot.get("last_progress_kind")
+    progress_seq = int(snapshot.get("progress_seq", 0) or 0)
+    progress = "confirmed" if progress_seq > 0 and progress_kind else "unknown"
+    cost_status = str(usage.get("cost_status") or "unknown")
+    cost_source = str(usage.get("cost_source") or "none")
+    cost = float(usage.get("cost", 0.0) or 0.0)
+    if cost_status == "unknown":
+        cost_line = "Cost: unknown"
+    else:
+        cost_line = f"Cost: {cost:.6f} ({cost_status}; {cost_source})"
+
+    lines = [
+        "Extension checkpoint",
+        f"Progress: {progress}",
+        f"Evidence: {progress_kind or 'none confirmed'}",
+        f"Model calls: {int(api_call_count)}/{int(agent.max_iterations)}",
+        f"Usage provenance: {quality}",
+        f"Input tokens: {int(usage.get('input_tokens', 0) or 0)}",
+        f"Output tokens: {int(usage.get('output_tokens', 0) or 0)}",
+        f"Cache read tokens: {int(usage.get('cache_read_tokens', 0) or 0)}",
+        f"Cache write tokens: {int(usage.get('cache_write_tokens', 0) or 0)}",
+        f"Reasoning tokens: {int(usage.get('reasoning_tokens', 0) or 0)}",
+        cost_line,
+        "Work remaining: unknown",
+        f"Extension granted: {grant} model calls",
+        "Continuing by default. Send STOP or /stop to cancel.",
+    ]
+    agent._emit_status("\n".join(lines))
+    return "extend"
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1020,6 +1165,8 @@ def run_conversation(
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    _iteration_block_size = max(1, int(getattr(agent, "max_iterations", 1) or 1))
+    _no_progress_limit = _configured_no_progress_limit(agent)
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
     # user-facing result available; it must not be confused with error or
@@ -1064,7 +1211,7 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while True:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -1078,13 +1225,40 @@ def run_conversation(
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
-        # Check for interrupt request (e.g., user sent new message)
+        # Check for interrupt request (e.g., user sent new message). Exact STOP
+        # and /stop both reach this existing cooperative path before any grant.
         if agent._interrupt_requested:
             interrupted = True
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
+
+        if not agent._budget_grace_call and (
+            api_call_count >= int(agent.max_iterations)
+            or agent.iteration_budget.remaining <= 0
+        ):
+            _checkpoint_action = _handle_iteration_checkpoint(
+                agent,
+                api_call_count,
+                _iteration_block_size,
+                _no_progress_limit,
+            )
+            if _checkpoint_action == "stop_interrupted":
+                interrupted = True
+                _turn_exit_reason = "interrupted_by_user"
+                break
+            if _checkpoint_action == "stop_verified_no_progress":
+                # Mark as a controlled interruption so finalization never makes
+                # the old extra full-context max-iteration summary call.
+                interrupted = True
+                _turn_exit_reason = "verified_no_progress_safety_stop"
+                final_response = (
+                    "Safety stop requested\n"
+                    "Cause: producer-verified no progress reached the configured limit.\n"
+                    "No additional provider or summary call was made."
+                )
+                break
 
         api_call_count += 1
         agent._api_call_count = api_call_count
@@ -1096,10 +1270,12 @@ def run_conversation(
         if agent._budget_grace_call:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
-            _turn_exit_reason = "budget_exhausted"
-            if not agent.quiet_mode:
-                agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
-            break
+            # A shared child may consume the final slot between the checkpoint
+            # and this atomic consume. Roll back the display counter and retry
+            # the checkpoint; do not treat the race as task exhaustion.
+            api_call_count -= 1
+            agent._api_call_count = api_call_count
+            continue
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -2245,6 +2421,7 @@ def run_conversation(
                                 _resp_error_code = int(_code_raw)
                             except (TypeError, ValueError):
                                 pass
+                    agent._last_provider_error_code = _resp_error_code
 
                     # Build a human-readable failure hint from the error code
                     # and response time, instead of always assuming rate limiting.
@@ -2332,6 +2509,7 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
+                agent._last_provider_error_code = None
                 agent._turn_received_provider_response = True
 
                 # Check finish_reason before proceeding
@@ -6627,19 +6805,13 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops.
-            # Local processing errors are deterministic — stop immediately
-            # rather than retrying until the budget is exhausted.
-            if (
-                _is_local_processing_error
-                or api_call_count >= agent.max_iterations - 1
-            ):
-                if _is_local_processing_error:
-                    _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
-                    final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
-                else:
-                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-                    final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
+            # Deterministic local processing errors stop immediately. Retryable
+            # provider/network failures do not become non-recoverable merely
+            # because the current call block is nearly exhausted; the next loop
+            # boundary checkpoints and renews them under the same policy.
+            if _is_local_processing_error:
+                _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
+                final_response = f"I apologize, but I encountered an error while processing the model response: {error_msg}"
                 # Append as assistant so the history stays valid for
                 # session resume (avoids consecutive user messages).
                 messages.append({"role": "assistant", "content": final_response})
@@ -6649,23 +6821,28 @@ def run_conversation(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from agent.turn_finalizer import finalize_turn
-    return finalize_turn(
-        agent,
-        final_response=final_response,
-        api_call_count=api_call_count,
-        interrupted=interrupted,
-        failed=failed,
-        messages=messages,
-        conversation_history=conversation_history,
-        effective_task_id=effective_task_id,
-        turn_id=turn_id,
-        user_message=user_message,
-        original_user_message=original_user_message,
-        _should_review_memory=_should_review_memory,
-        _turn_exit_reason=_turn_exit_reason,
-        _pending_verification_response=_pending_verification_response,
-        _pending_verification_response_previewed=_pending_verification_response_previewed,
-    )
+    try:
+        return finalize_turn(
+            agent,
+            final_response=final_response,
+            api_call_count=api_call_count,
+            interrupted=interrupted,
+            failed=failed,
+            messages=messages,
+            conversation_history=conversation_history,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            _should_review_memory=_should_review_memory,
+            _turn_exit_reason=_turn_exit_reason,
+            _pending_verification_response=_pending_verification_response,
+            _pending_verification_response_previewed=_pending_verification_response_previewed,
+        )
+    finally:
+        # Gateway agents are cached. Extension ceilings are turn-local and must
+        # never enlarge the next user turn's initial block.
+        agent.max_iterations = _iteration_block_size
 
 
 

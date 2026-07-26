@@ -116,18 +116,24 @@ async def test_stop_interrupts_sibling_thread_run_when_authorized(monkeypatch):
     runner.session_store = _FakeStore(key_a)
 
     interrupted = []
+    denied = []
 
     async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
         interrupted.append((session_key, interrupt_reason, invalidation_reason))
 
     runner._interrupt_and_clear_session = _fake_interrupt
     runner._is_user_authorized = lambda source: True
+    monkeypatch.setattr(
+        "gateway.fleet_safety.integration.deny_active_extensions",
+        lambda _runner, session_ids: denied.append(list(session_ids)) or len(session_ids),
+    )
 
     event = MessageEvent(
         text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
     )
     result = await runner._handle_stop_command(event)
 
+    assert denied == [[key_b]]
     assert interrupted == [(key_b, _INTERRUPT_REASON_STOP, "stop_command_thread_sibling")]
     # EphemeralReply or str — both carry the "stopped" message, not "no_active".
     assert "no active" not in str(getattr(result, "text", result)).lower()

@@ -32,6 +32,7 @@ from gateway.fleet_safety.deadloop_guard import (
     GuardOutcome,
 )
 from gateway.fleet_safety.enforcer import GuardEnforcer, KillActions
+from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
 from gateway.fleet_safety.wallet_cap import (
     RoutingRequest,
     WalletCap,
@@ -68,7 +69,18 @@ def _load_fleet_safety_config() -> dict:
 def _get_or_create_guard(runner: Any, thresholds: GuardThresholds) -> RunawayGuard:
     guard = getattr(runner, "_deadloop_guard", None)
     if guard is None:
-        guard = RunawayGuard(thresholds)
+        state_path = getattr(runner, "_deadloop_extension_registry_path", None)
+        if state_path is None:
+            try:
+                from hermes_constants import get_hermes_home
+
+                state_path = get_hermes_home() / "fleet_safety" / "extensions.json"
+            except Exception:
+                state_path = None
+        guard = RunawayGuard(
+            thresholds,
+            extension_registry=ExtensionRegistry(state_path),
+        )
         try:
             runner._deadloop_guard = guard
         except Exception:
@@ -76,6 +88,28 @@ def _get_or_create_guard(runner: Any, thresholds: GuardThresholds) -> RunawayGua
     else:
         guard.thresholds = thresholds  # pick up live config changes each tick
     return guard
+
+
+def deny_active_extensions(
+    runner: Any,
+    session_ids: List[str],
+    *,
+    now: Optional[float] = None,
+) -> int:
+    """Persist STOP denial for all matching active extension records."""
+    guard = getattr(runner, "_deadloop_guard", None)
+    registry = getattr(guard, "extension_registry", None)
+    if registry is None:
+        return 0
+    when = time.time() if now is None else float(now)
+    denied_ids = set()
+    for session_id in dict.fromkeys(str(value) for value in session_ids if value):
+        try:
+            for record in registry.deny_active_for_session(session_id, now=when):
+                denied_ids.add(record.event_id)
+        except Exception as exc:  # pragma: no cover - defensive command path
+            logger.debug("fleet-safety extension denial failed: %s", exc)
+    return len(denied_ids)
 
 
 def _collect_observations(
@@ -128,6 +162,8 @@ def _collect_observations(
             cwrite = int(u.get("cache_write_tokens") or 0)
             reasoning = int(u.get("reasoning_tokens") or 0)
             cost_val = float(u.get("cost") or 0.0)
+            cost_status = str(u.get("cost_status") or "unknown")
+            cost_source = str(u.get("cost_source") or "none")
             quality = str(u.get("quality") or "unknown").lower()
             if quality not in {"measured", "estimated", "unknown"}:
                 quality = "unknown"
@@ -140,6 +176,8 @@ def _collect_observations(
             cwrite = 0
             reasoning = 0
             cost_val = 0.0
+            cost_status = "unknown"
+            cost_source = "none"
             quality = "estimated" if api_calls > 0 else "unknown"
 
         # State hash from progress telemetry
@@ -179,6 +217,8 @@ def _collect_observations(
                 cache_write_tokens=cwrite,
                 reasoning_tokens=reasoning,
                 cost=cost_val,
+                cost_status=cost_status,
+                cost_source=cost_source,
             )
         )
         mapping[effective_session_id] = (session_key, agent)
@@ -232,13 +272,13 @@ class _LiveKillActions(KillActions):
         return released
 
     def notify(self, text: str) -> bool:
-        logger.info("FLEET-SAFETY NOTICE / KILL\n%s", text)
+        logger.info("FLEET-SAFETY NOTICE\n%s", text)
         delivered = False
         try:
             delivered = self._broadcast_home_channels(text)
         except Exception as e:  # pragma: no cover - defensive
             logger.debug("fleet-safety guard: home-channel broadcast failed: %s", e)
-        return True
+        return bool(delivered)
 
     def _broadcast_home_channels(self, text: str) -> bool:
         runner = self._runner
@@ -286,9 +326,12 @@ class _LiveKillActions(KillActions):
 
 
 def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -> None:
-    """Sample running agents, evaluate the guard, and enforce continuation notice or hard-stop.
+    """Sample active agents and enforce checkpoint or safety-stop decisions.
 
-    Safe to call from the housekeeping thread every tick. Never raises.
+    Safe to call from the housekeeping thread every tick. Never raises. A
+    tripped session remains latched until it disappears from the live registry,
+    preventing repeated interrupt/notification effects while gateway unwind is
+    still in progress.
     """
     if now is None:
         now = time.time()
@@ -321,14 +364,22 @@ def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -
             if eval_res is None:
                 continue
             result = enforcer.enforce(eval_res)
+            if (
+                result.notified
+                and getattr(eval_res, "outcome", None) == GuardOutcome.CONTINUATION_NOTICE
+                and getattr(eval_res, "extension_event_id", "")
+            ):
+                guard.mark_extension_notice_delivered(eval_res.extension_event_id)
             logger.info(
-                "fleet-safety guard evaluated %s (%s): outcome=%s interrupted=%s lease_released=%s "
-                "notified=%s errors=%s",
-                eval_res.session_id, getattr(eval_res, "reason", None), getattr(eval_res, "outcome", None),
-                result.interrupted, result.lease_released, result.notified, result.errors,
+                "fleet-safety guard evaluated %s (%s): outcome=%s "
+                "stop_requested=%s notified=%s errors=%s",
+                eval_res.session_id,
+                getattr(eval_res, "reason", None),
+                getattr(eval_res, "outcome", None),
+                result.stop_requested,
+                result.notified,
+                result.errors,
             )
-            if getattr(eval_res, "is_hard_stop", False):
-                guard.forget(eval_res.session_id)
     except Exception as e:  # pragma: no cover - defensive top-level guard
         logger.debug("fleet-safety guard tick error: %s", e)
 

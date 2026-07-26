@@ -18,6 +18,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, Optional
 
+from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
+
 
 class TripReason(str, enum.Enum):
     """Why a session was flagged or tripped."""
@@ -27,6 +29,7 @@ class TripReason(str, enum.Enum):
     CALL_RATE = "model_call_rate_exceeded"
     REPEATED_ERROR = "repeated_non_retryable_error"
     NO_PROGRESS = "huge_context_no_forward_progress"
+    EXTENSION_DENIED = "extension_denied_by_user"
 
 
 class GuardOutcome(str, enum.Enum):
@@ -100,6 +103,8 @@ class SessionObservation:
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
     cost: float = 0.0
+    cost_status: str = "unknown"
+    cost_source: str = "none"
 
 
 @dataclass
@@ -116,9 +121,22 @@ class GuardEvaluationResult:
     model: str = ""
     effort: str = ""
     last_state: Optional[str] = None
+    usage_quality: str = "unknown"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost: float = 0.0
+    cost_status: str = "unknown"
+    cost_source: str = "none"
     outcome: GuardOutcome = GuardOutcome.VERIFIED_HARD_STOP
     is_hard_stop: bool = True
     notice_text: str = ""
+    extension_event_id: str = ""
+    extension_grant_size: int = 0
+    extension_expires_at: float = 0.0
+    extension_revision: int = 0
     trip_reason: Optional[TripReason] = None
 
     def __post_init__(self) -> None:
@@ -149,9 +167,19 @@ class _SessionState:
 class RunawayGuard:
     """Stateful, deterministic runaway detector across sessions."""
 
-    def __init__(self, thresholds: Optional[GuardThresholds] = None) -> None:
+    def __init__(
+        self,
+        thresholds: Optional[GuardThresholds] = None,
+        *,
+        extension_registry: Optional[ExtensionRegistry] = None,
+    ) -> None:
         self.thresholds = thresholds or GuardThresholds()
+        self.extension_registry = extension_registry
         self._sessions: Dict[str, _SessionState] = {}
+
+    def mark_extension_notice_delivered(self, event_id: str) -> None:
+        if self.extension_registry is not None and event_id:
+            self.extension_registry.mark_notice_delivered(event_id)
 
     def forget(self, session_id: str) -> None:
         """Drop tracking for a session that has ended (or after a kill)."""
@@ -262,6 +290,15 @@ class RunawayGuard:
                 model=obs.model,
                 effort=obs.effort,
                 last_state=obs.state_hash,
+                usage_quality=obs.usage_quality,
+                input_tokens=obs.input_tokens,
+                output_tokens=obs.output_tokens,
+                cache_read_tokens=obs.cache_read_tokens,
+                cache_write_tokens=obs.cache_write_tokens,
+                reasoning_tokens=obs.reasoning_tokens,
+                cost=obs.cost,
+                cost_status=obs.cost_status,
+                cost_source=obs.cost_source,
             )
 
         if st.stalled_samples >= t.no_progress_samples:
@@ -283,9 +320,19 @@ class RunawayGuard:
                 model=obs.model,
                 effort=obs.effort,
                 last_state=obs.state_hash,
+                usage_quality=obs.usage_quality,
+                input_tokens=obs.input_tokens,
+                output_tokens=obs.output_tokens,
+                cache_read_tokens=obs.cache_read_tokens,
+                cache_write_tokens=obs.cache_write_tokens,
+                reasoning_tokens=obs.reasoning_tokens,
+                cost=obs.cost,
+                cost_status=obs.cost_status,
+                cost_source=obs.cost_source,
             )
 
-        # 2. CONTINUATION NOTICES — for rate, runtime, call threshold crossings (latched once per episode)
+        # 2. RESOURCE CHECKPOINTS — continue by default and persist the
+        # extension/notice lifecycle when a registry is available.
         threshold_crossed = False
         reasons = []
         if runtime > t.max_runtime_seconds:
@@ -299,34 +346,98 @@ class RunawayGuard:
             reasons.append(f"calls {calls_in_window} > {t.max_calls_per_window}/15m")
 
         if threshold_crossed:
-            if not st.notice_latched:
-                st.notice_latched = True
-                reason_str = ", ".join(reasons)
-                notice = (
-                    f"⚠️ Session threshold notice: {reason_str}.\n"
-                    f"Usage: input={obs.input_tokens:,}, output={obs.output_tokens:,}, "
-                    f"cache_read={obs.cache_read_tokens:,}, cache_write={obs.cache_write_tokens:,}, "
-                    f"reasoning={obs.reasoning_tokens:,}, quality={obs.usage_quality}.\n"
-                    "Continuing by default. Reply STOP or /stop to cancel."
-                )
-                primary_reason = TripReason.WALL_CLOCK if runtime > t.max_runtime_seconds else (
-                    TripReason.TOKEN_RATE if tokens_in_window > t.max_tokens_per_window else TripReason.CALL_RATE
-                )
-                return GuardEvaluationResult(
+            reason_str = ", ".join(reasons)
+            primary_reason = TripReason.WALL_CLOCK if runtime > t.max_runtime_seconds else (
+                TripReason.TOKEN_RATE if tokens_in_window > t.max_tokens_per_window else TripReason.CALL_RATE
+            )
+            extension_event_id = ""
+            extension_grant_size = 0
+            extension_expires_at = 0.0
+            extension_revision = 0
+            if self.extension_registry is not None:
+                record, should_notify = self.extension_registry.request(
                     session_id=obs.session_id,
-                    reason=primary_reason,
-                    trip_reason=primary_reason,
-                    outcome=GuardOutcome.CONTINUATION_NOTICE,
-                    is_hard_stop=False,
-                    notice_text=notice,
-                    detail=reason_str,
-                    estimated_tokens=int(obs.tokens_used),
-                    estimated_calls=int(obs.api_call_count),
-                    runtime_seconds=runtime,
-                    provider=obs.provider,
-                    model=obs.model,
-                    effort=obs.effort,
-                    last_state=obs.state_hash,
+                    checkpoint_key=f"{obs.started_at:.6f}:{primary_reason.value}",
+                    now=now,
+                    duration_seconds=t.window_seconds,
+                    grant_size=t.max_calls_per_window,
                 )
+                extension_event_id = record.event_id
+                extension_grant_size = record.grant_size
+                extension_expires_at = record.expires_at
+                extension_revision = record.revision
+                if not record.should_continue:
+                    st.tripped = True
+                    return GuardEvaluationResult(
+                        session_id=obs.session_id,
+                        reason=TripReason.EXTENSION_DENIED,
+                        trip_reason=TripReason.EXTENSION_DENIED,
+                        outcome=GuardOutcome.VERIFIED_HARD_STOP,
+                        is_hard_stop=True,
+                        extension_event_id=extension_event_id,
+                        extension_grant_size=extension_grant_size,
+                        extension_expires_at=extension_expires_at,
+                        extension_revision=extension_revision,
+                        detail="extension denied by user; cooperative interruption requested",
+                        estimated_tokens=int(obs.tokens_used),
+                        estimated_calls=int(obs.api_call_count),
+                        runtime_seconds=runtime,
+                        provider=obs.provider,
+                        model=obs.model,
+                        effort=obs.effort,
+                        last_state=obs.state_hash,
+                        usage_quality=obs.usage_quality,
+                        input_tokens=obs.input_tokens,
+                        output_tokens=obs.output_tokens,
+                        cache_read_tokens=obs.cache_read_tokens,
+                        cache_write_tokens=obs.cache_write_tokens,
+                        reasoning_tokens=obs.reasoning_tokens,
+                        cost=obs.cost,
+                        cost_status=obs.cost_status,
+                        cost_source=obs.cost_source,
+                    )
+                if not should_notify:
+                    return None
+            else:
+                if st.notice_latched:
+                    return None
+                st.notice_latched = True
+
+            notice = (
+                f"Session threshold notice: {reason_str}.\n"
+                f"Usage: input={obs.input_tokens:,}, output={obs.output_tokens:,}, "
+                f"cache_read={obs.cache_read_tokens:,}, cache_write={obs.cache_write_tokens:,}, "
+                f"reasoning={obs.reasoning_tokens:,}, quality={obs.usage_quality}.\n"
+                "Continuing by default. Reply STOP or /stop to cancel."
+            )
+            return GuardEvaluationResult(
+                session_id=obs.session_id,
+                reason=primary_reason,
+                trip_reason=primary_reason,
+                outcome=GuardOutcome.CONTINUATION_NOTICE,
+                is_hard_stop=False,
+                notice_text=notice,
+                extension_event_id=extension_event_id,
+                extension_grant_size=extension_grant_size,
+                extension_expires_at=extension_expires_at,
+                extension_revision=extension_revision,
+                detail=reason_str,
+                estimated_tokens=int(obs.tokens_used),
+                estimated_calls=int(obs.api_call_count),
+                runtime_seconds=runtime,
+                provider=obs.provider,
+                model=obs.model,
+                effort=obs.effort,
+                last_state=obs.state_hash,
+                usage_quality=obs.usage_quality,
+                input_tokens=obs.input_tokens,
+                output_tokens=obs.output_tokens,
+                cache_read_tokens=obs.cache_read_tokens,
+                cache_write_tokens=obs.cache_write_tokens,
+                reasoning_tokens=obs.reasoning_tokens,
+                cost=obs.cost,
+                cost_status=obs.cost_status,
+                cost_source=obs.cost_source,
+            )
 
         return None

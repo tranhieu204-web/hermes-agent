@@ -101,6 +101,50 @@ def test_turn_start_snapshots_cumulative_usage_and_resets_turn_telemetry(monkeyp
 
 
 @pytest.mark.parametrize("provider", ["codex", "antigravity"])
+def test_provider_error_code_propagates_into_guard_observation(provider):
+    from run_agent import AIAgent
+
+    agent = _activity_agent(provider=provider)
+    agent._last_provider_error_code = 429
+    agent.get_activity_summary = lambda: AIAgent.get_activity_summary(agent)
+    summary = agent.get_activity_summary()
+    runner = SimpleNamespace(
+        _running_agents={"conversation": agent},
+        _running_agents_ts={"conversation": 100.0},
+    )
+
+    observations, _mapping = _collect_observations(
+        runner,
+        now=120.0,
+        assumed_context_tokens=160_000,
+    )
+
+    assert summary["last_error_code"] == 429
+    assert observations[0].error_code == 429
+
+
+def test_child_usage_quality_override_remains_unknown_in_guard_observation():
+    from run_agent import AIAgent
+
+    agent = _activity_agent(provider="codex")
+    agent.session_usage_quality = "unknown"
+    agent.get_activity_summary = lambda: AIAgent.get_activity_summary(agent)
+    runner = SimpleNamespace(
+        _running_agents={"conversation": agent},
+        _running_agents_ts={"conversation": 100.0},
+    )
+
+    observations, _mapping = _collect_observations(
+        runner,
+        now=120.0,
+        assumed_context_tokens=160_000,
+    )
+
+    assert agent.get_activity_summary()["usage"]["quality"] == "unknown"
+    assert observations[0].usage_quality == "unknown"
+
+
+@pytest.mark.parametrize("provider", ["codex", "antigravity"])
 def test_live_observation_uses_exact_measured_turn_deltas_for_every_provider(provider, monkeypatch):
     from agent import conversation_loop
     from run_agent import AIAgent

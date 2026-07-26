@@ -29,9 +29,14 @@ class IterationBudget:
                 self._used -= 1
 
     def extend_grant(self, grant_size: int) -> int:
-        """Thread-safely extend the iteration budget by grant_size."""
+        """Thread-safely extend the budget by a strictly positive grant."""
+        try:
+            amt = int(grant_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("grant_size must be a positive integer") from exc
+        if amt <= 0:
+            raise ValueError("grant_size must be a positive integer")
         with self._lock:
-            amt = max(1, int(grant_size))
             self.max_total += amt
             self.extensions_count += 1
             return self.max_total
