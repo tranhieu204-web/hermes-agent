@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process'
+import { spawn as nodeSpawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import {
   existsSync,
   mkdirSync,
@@ -17,6 +18,75 @@ const LOOPBACK_ADDRESS = '127.0.0.1'
 const DESKTOP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const REPO_ROOT = resolve(DESKTOP_ROOT, '..', '..')
 const OWNED_SPEC = Symbol('desktop-verifier-owned-spec')
+const WINDOWS_JOB_BOOTSTRAP = fileURLToPath(
+  new URL('./windows-verifier-job-host.ps1', import.meta.url)
+)
+export const WINDOWS_JOB_PROTOCOL_VERSION = 1
+const WINDOWS_MAX_UINT32 = 0xFFFFFFFF
+const WINDOWS_MAX_UINT64 = 18_446_744_073_709_551_615n
+const WINDOWS_JOB_ERROR_STAGES = new Set(['cleanup', 'controller', 'protocol'])
+const WINDOWS_JOB_RECORD_SCHEMAS = {
+  cleaned: {
+    fields: new Set([
+      'activeProcesses',
+      'activeProcessesBeforeTerminate',
+      'cleanupRequestCount',
+      'nonce',
+      'terminationCount',
+      'totalProcesses',
+      'type',
+      'v'
+    ]),
+    validate(record) {
+      for (const field of [
+        'activeProcesses',
+        'activeProcessesBeforeTerminate',
+        'cleanupRequestCount',
+        'terminationCount',
+        'totalProcesses'
+      ]) {
+        requireWindowsUint32(record[field], field)
+      }
+      if (record.activeProcesses !== 0 ||
+          record.terminationCount !== 1 ||
+          record.cleanupRequestCount !== 1 ||
+          record.totalProcesses < 1 ||
+          record.totalProcesses < record.activeProcessesBeforeTerminate) {
+        throw new Error(
+          'Windows Job controller cleanup acknowledgement was not zero-active, bounded, and idempotent'
+        )
+      }
+    }
+  },
+  error: {
+    fields: new Set(['message', 'nonce', 'stage', 'type', 'v']),
+    validate(record) {
+      requireWindowsString(record.message, 'message', { maxLength: 8192 })
+      if (typeof record.stage !== 'string' || !WINDOWS_JOB_ERROR_STAGES.has(record.stage)) {
+        throw new Error('Windows Job controller error stage is invalid')
+      }
+    }
+  },
+  launched: {
+    fields: new Set(['nonce', 'target', 'type', 'v']),
+    validate(record) {
+      validateWindowsTargetRecord(record.target)
+    }
+  },
+  status: {
+    fields: new Set(['activeProcesses', 'nonce', 'target', 'type', 'v']),
+    validate(record) {
+      requireWindowsUint32(record.activeProcesses, 'activeProcesses')
+      validateWindowsTargetRecord(record.target)
+    }
+  },
+  target_exit: {
+    fields: new Set(['nonce', 'targetPid', 'type', 'v']),
+    validate(record) {
+      requireWindowsPid(record.targetPid, 'targetPid')
+    }
+  }
+}
 const DEFAULT_PORT_TIMEOUT_MS = 30_000
 const DEFAULT_PAGE_TIMEOUT_MS = 30_000
 const DEFAULT_POLL_INTERVAL_MS = 100
@@ -26,6 +96,7 @@ const CREDENTIAL_ENV_SUFFIXES = [
   '_API_KEY',
   '_BASE_URL',
   '_TOKEN',
+  '_TOKEN_FILE',
   '_SECRET',
   '_PASSWORD',
   '_CREDENTIALS',
@@ -48,9 +119,26 @@ const CREDENTIAL_ENV_NAMES = new Set([
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
   'AWS_SHARED_CREDENTIALS_FILE',
+  'ALL_PROXY',
+  'AZURE_CONFIG_DIR',
+  'BASH_ENV',
   'BASE_URL',
   'CLOUDSDK_CONFIG',
   'CREDENTIALS',
+  'CURL_CA_BUNDLE',
+  'CURL_HOME',
+  'DATABASE_URL',
+  'DOCKER_CONFIG',
+  'DOCKER_AUTH_CONFIG',
+  'ELECTRON_RUN_AS_NODE',
+  'ENV',
+  'GH_CONFIG_DIR',
+  'GIT_ASKPASS',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GNUPGHOME',
   'GOOGLE_APPLICATION_CREDENTIALS',
   'HERMES_CONFIG',
   'HERMES_DESKTOP_CONNECTION_MODE',
@@ -59,15 +147,125 @@ const CREDENTIAL_ENV_NAMES = new Set([
   'HERMES_PROFILE',
   'HERMES_PROFILE_NAME',
   'HERMES_ENV',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'KUBECONFIG',
+  'KRB5CCNAME',
+  'KRB5_CONFIG',
+  'LD_PRELOAD',
+  'NETRC',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NO_PROXY',
+  'NPM_CONFIG_USERCONFIG',
+  'PIP_CONFIG_FILE',
+  'PIP_EXTRA_INDEX_URL',
+  'PIP_INDEX_URL',
+  'PGPASSFILE',
+  'PROMPT_COMMAND',
+  'REDIS_URL',
+  'REGISTRY_AUTH_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+  'SSLKEYLOGFILE',
   'PASSWORD',
   'PRIVATE_KEY',
   'PROFILE',
-  'SECRET'
+  'SECRET',
+  'SSH_ASKPASS',
+  'SSH_ASKPASS_REQUIRE',
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'UV_CONFIG_FILE',
+  'WGETRC',
+  'XDG_CONFIG_HOME',
+  'YARN_RC_FILENAME'
+])
+const CREDENTIAL_ENV_PREFIXES = [
+  'DYLD_',
+  'GIT_CONFIG_',
+  'HERMES_',
+  'NPM_CONFIG_',
+  'UV_INDEX_',
+  'YARN_NPM_'
+]
+const ISOLATED_RUNTIME_ENV_NAMES = new Set([
+  'APPDATA',
+  'COMSPEC',
+  'HOME',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'LOCALAPPDATA',
+  'PATH',
+  'PATHEXT',
+  'PROGRAMDATA',
+  'SYSTEMROOT',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'USERPROFILE',
+  'WINDIR'
 ])
 const nodeKill = process.kill.bind(process)
 
 function isPositivePid(pid) {
   return Number.isSafeInteger(pid) && pid > 0
+}
+
+function requireWindowsUint32(value, field) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > WINDOWS_MAX_UINT32) {
+    throw new Error(
+      `Windows Job controller emitted malformed protocol field ${field}: ` +
+      `expected an unsigned 32-bit integer`
+    )
+  }
+
+  return value
+}
+
+function requireWindowsPid(value, field) {
+  requireWindowsUint32(value, field)
+  if (value === 0) {
+    throw new Error(
+      `Windows Job controller emitted invalid process identity field ${field}: expected a positive PID`
+    )
+  }
+
+  return value
+}
+
+function requireWindowsString(value, field, { maxLength = 32_767 } = {}) {
+  if (typeof value !== 'string' || value.length === 0 ||
+      value.length > maxLength || value.includes('\0')) {
+    throw new Error(
+      `Windows Job controller emitted malformed protocol field ${field}: ` +
+      `expected a bounded non-empty NUL-free string`
+    )
+  }
+
+  return value
+}
+
+function validateWindowsTargetRecord(target) {
+  const expectedFields = ['creationTime100ns', 'executable', 'pid']
+
+  if (!target || typeof target !== 'object' || Array.isArray(target) ||
+      Object.keys(target).length !== expectedFields.length ||
+      !expectedFields.every(field => Object.hasOwn(target, field))) {
+    throw new Error('Windows Job controller target identity must use the exact schema')
+  }
+
+  requireWindowsPid(target.pid, 'target.pid')
+  requireWindowsString(target.executable, 'target.executable')
+  requireWindowsString(target.creationTime100ns, 'target.creationTime100ns', { maxLength: 20 })
+
+  if (!/^[1-9]\d*$/.test(target.creationTime100ns) ||
+      BigInt(target.creationTime100ns) > WINDOWS_MAX_UINT64) {
+    throw new Error('Windows Job controller creation-time identity is invalid')
+  }
 }
 
 function assertOwnedSpec(spec) {
@@ -81,7 +279,7 @@ function assertOwnedSpec(spec) {
 }
 
 function childHasExited(child) {
-  return child.exitCode !== null || child.signalCode !== null
+  return child.exited === true || child.exitCode !== null || child.signalCode !== null
 }
 
 function childExitDescription(child) {
@@ -91,6 +289,10 @@ function childExitDescription(child) {
 
   if (child.signalCode !== null) {
     return `signal ${child.signalCode}`
+  }
+
+  if (child.exited === true) {
+    return 'an authenticated target-exit notification'
   }
 
   return 'an unknown exit state'
@@ -158,16 +360,21 @@ export function isCredentialEnvVar(name) {
   const normalized = String(name).toUpperCase()
 
   return CREDENTIAL_ENV_NAMES.has(normalized) ||
-    normalized.startsWith('HERMES_DESKTOP_REMOTE_') ||
+    CREDENTIAL_ENV_PREFIXES.some(prefix => normalized.startsWith(prefix)) ||
     CREDENTIAL_ENV_SUFFIXES.some(suffix => normalized.endsWith(suffix))
 }
 
 export function stripCredentialEnvironment(baseEnv) {
   const env = {}
+  const included = new Set()
 
   for (const [name, value] of Object.entries(baseEnv ?? {})) {
-    if (value !== undefined && value !== null && !isCredentialEnvVar(name)) {
+    const normalized = name.toUpperCase()
+
+    if (value !== undefined && value !== null &&
+        ISOLATED_RUNTIME_ENV_NAMES.has(normalized) && !included.has(normalized)) {
       env[name] = String(value)
+      included.add(normalized)
     }
   }
 
@@ -312,6 +519,7 @@ export function createDesktopLaunchSpec({
 
   Object.defineProperty(spec, OWNED_SPEC, {
     value: {
+      launchAttempted: false,
       launched: false,
       removed: false,
       root
@@ -339,6 +547,12 @@ function removeGeneratedRoot(spec) {
 
 export function cleanupUnlaunchedDesktopSpec(spec) {
   const ownership = assertOwnedSpec(spec)
+
+  if (ownership.launchAttempted) {
+    throw new Error(
+      `desktop verifier launch outcome is uncertain; retained generated root: ${ownership.root}`
+    )
+  }
 
   if (ownership.launched) {
     throw new Error('cannot use unlaunched cleanup after the owned desktop child started')
@@ -485,177 +699,637 @@ export async function waitForCdpPage({
   throw new Error(`timed out waiting for a CDP page on ${endpoint}${detail}`)
 }
 
-export function buildWindowsCleanupPlan(ownedPid, requestedPid = ownedPid) {
-  if (!isPositivePid(ownedPid)) {
-    throw new Error('Windows desktop cleanup requires a valid owned PID')
-  }
+function createWindowsTarget(receipt) {
+  const target = new EventEmitter()
 
-  if (!isPositivePid(requestedPid)) {
-    throw new Error('Windows desktop cleanup rejected an invalid requested PID')
-  }
+  target.pid = receipt.target.pid
+  target.exitCode = null
+  target.signalCode = null
+  target.exited = false
 
-  if (requestedPid !== ownedPid) {
-    throw new Error(`Windows desktop cleanup rejected unowned PID ${requestedPid}`)
-  }
-
-  return {
-    command: 'taskkill.exe',
-    args: ['/PID', String(ownedPid), '/T', '/F']
-  }
+  return target
 }
 
-export function discoverWindowsDescendantPids(ownedPid, {
-  spawnSyncImpl = nodeSpawnSync,
-  timeoutMs = DEFAULT_TERMINATION_TIMEOUT_MS
-} = {}) {
-  if (!isPositivePid(ownedPid)) {
-    throw new Error('Windows descendant discovery requires a valid owned PID')
-  }
-
-  const script = [
-    'Get-CimInstance Win32_Process',
-    'Select-Object ProcessId,ParentProcessId',
-    'ConvertTo-Json -Compress'
-  ].join(' | ')
-  const result = spawnSyncImpl(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    {
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      windowsHide: true
-    }
-  )
-
-  if (result.error) {
-    throw new Error(`owned Windows descendant discovery failed: ${result.error.message}`)
-  }
-
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim()
-    throw new Error(
-      `owned Windows descendant discovery exited ${result.status}` +
-      (detail ? `: ${detail}` : '')
-    )
-  }
-
-  let records
-
-  try {
-    const parsed = JSON.parse(String(result.stdout || '[]'))
-    records = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
-  } catch (error) {
-    throw new Error('owned Windows descendant discovery returned invalid JSON', { cause: error })
-  }
-
-  const childrenByParent = new Map()
-
-  for (const record of records) {
-    const pid = Number(record?.ProcessId)
-    const parentPid = Number(record?.ParentProcessId)
-
-    if (!isPositivePid(pid) || !isPositivePid(parentPid) || pid === ownedPid) {
-      continue
-    }
-
-    const children = childrenByParent.get(parentPid) ?? []
-    children.push(pid)
-    childrenByParent.set(parentPid, children)
-  }
-
-  const descendants = []
-  const visited = new Set([ownedPid])
-  const pending = [ownedPid]
-
-  while (pending.length) {
-    const parentPid = pending.shift()
-
-    for (const pid of childrenByParent.get(parentPid) ?? []) {
-      if (visited.has(pid)) {
-        continue
-      }
-
-      visited.add(pid)
-      descendants.push(pid)
-      pending.push(pid)
-    }
-  }
-
-  return descendants
-}
-
-async function terminateOwnedChild({
-  child,
-  discoverWindowsDescendantPidsImpl,
-  killImpl,
-  ownedPid,
-  platform,
-  spawnSyncImpl,
-  terminationTimeoutMs
-}) {
-  if (platform === 'win32') {
-    if (childHasExited(child)) {
-      const discover = discoverWindowsDescendantPidsImpl ??
-        (pid => discoverWindowsDescendantPids(pid, {
-          spawnSyncImpl,
-          timeoutMs: terminationTimeoutMs
-        }))
-      const descendants = await discover(ownedPid)
-
-      for (const descendantPid of [...descendants].reverse()) {
-        if (!isPositivePid(descendantPid) || descendantPid === ownedPid) {
-          throw new Error(`Windows cleanup rejected invalid descendant PID ${descendantPid}`)
-        }
-
-        const plan = buildWindowsCleanupPlan(descendantPid, descendantPid)
-        spawnSyncImpl(plan.command, plan.args, {
-          encoding: 'utf8',
-          timeout: terminationTimeoutMs,
-          windowsHide: true
-        })
-      }
-
-      const remaining = await discover(ownedPid)
-
-      if (remaining.length) {
-        throw new Error(
-          `owned Windows cleanup left descendant PIDs: ${remaining.join(', ')}`
-        )
-      }
-
-      return
-    }
-
-    const plan = buildWindowsCleanupPlan(ownedPid, child.pid)
-    const result = spawnSyncImpl(plan.command, plan.args, {
-      encoding: 'utf8',
-      timeout: terminationTimeoutMs,
-      windowsHide: true
-    })
-
-    if (result.error) {
-      throw new Error(`owned Windows cleanup failed for PID ${ownedPid}: ${result.error.message}`)
-    }
-
-    if (result.status !== 0 && !childHasExited(child)) {
-      const detail = String(result.stderr || result.stdout || '').trim()
-      throw new Error(
-        `owned Windows cleanup failed for PID ${ownedPid} with status ${result.status}` +
-        (detail ? `: ${detail}` : '')
-      )
-    }
-
-    await waitForChildExit(child, terminationTimeoutMs)
-
+function markWindowsTargetExited(target) {
+  if (target.exited) {
     return
   }
 
-  await terminateOwnedProcessGroup({
-    child,
-    killImpl,
-    ownedPid,
-    terminationTimeoutMs
+  target.exited = true
+  target.exitCode = 0
+  target.emit('exit', 0, null)
+}
+
+function windowsControllerError(record, root) {
+  const stage = typeof record.stage === 'string' ? ` ${record.stage}` : ''
+  const detail = typeof record.message === 'string' ? record.message : 'unknown controller error'
+
+  return new Error(
+    `Windows Job controller${stage} failed: ${detail}; retained generated root: ${root}`
+  )
+}
+
+function createWindowsProtocolSession(controller, nonce, root) {
+  const records = []
+  const waiters = []
+  const terminalWaiters = []
+  const targetHolder = { target: null }
+  const pendingTargetExitPids = []
+  let buffer = ''
+  let cleanupAcknowledgement = null
+  let cleanupAcknowledgementCount = 0
+  let controllerExit = null
+  let failure = null
+  let launchRecordSeen = false
+  let stderr = ''
+  let stderrClosed = false
+  let stderrEnded = false
+  let stdoutClosed = false
+  let stdoutEnded = false
+  let targetExitSeen = false
+  let terminalState = 'open'
+
+  const retainedError = (message, cause) => new Error(
+    message.includes(root) ? message : `${message}; retained generated root: ${root}`,
+    cause ? { cause } : undefined
+  )
+  const closeInput = () => {
+    if (!controller.stdin.destroyed && !controller.stdin.writableEnded) {
+      controller.stdin.end()
+    }
+  }
+  const rejectWaiters = error => {
+    while (waiters.length) {
+      const waiter = waiters.shift()
+      clearTimeout(waiter.timer)
+      waiter.reject(error)
+    }
+  }
+  const rejectTerminalWaiters = error => {
+    while (terminalWaiters.length) {
+      const waiter = terminalWaiters.shift()
+      clearTimeout(waiter.timer)
+      waiter.reject(error)
+    }
+  }
+  const fail = error => {
+    if (failure) {
+      return failure
+    }
+
+    const source = error instanceof Error ? error : new Error(String(error))
+    failure = retainedError(source.message, source)
+    terminalState = 'failed'
+    rejectWaiters(failure)
+    rejectTerminalWaiters(failure)
+    closeInput()
+
+    return failure
+  }
+  const settleTerminal = () => {
+    if (failure || terminalState !== 'ack-provisional') {
+      return
+    }
+
+    if (controllerExit &&
+        (controllerExit.code !== 0 || controllerExit.signal !== null)) {
+      fail(new Error(
+        `Windows Job controller cleanup acknowledgement was invalidated by ` +
+        `controller exit (code=${controllerExit.code}, signal=${controllerExit.signal ?? 'none'})`
+      ))
+      return
+    }
+
+    if (!controllerExit || !stdoutEnded || !stdoutClosed ||
+        !stderrEnded || !stderrClosed) {
+      return
+    }
+
+    if (buffer.length !== 0 || cleanupAcknowledgementCount !== 1 ||
+        !cleanupAcknowledgement) {
+      fail(new Error(
+        'Windows Job controller cleanup acknowledgement did not reach one clean terminal state'
+      ))
+      return
+    }
+
+    terminalState = 'closed'
+    while (terminalWaiters.length) {
+      const waiter = terminalWaiters.shift()
+      clearTimeout(waiter.timer)
+      waiter.resolve(cleanupAcknowledgement)
+    }
+  }
+  const validateRecord = record => {
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      throw new Error('Windows Job controller protocol record must be a JSON object')
+    }
+
+    if (record.v !== WINDOWS_JOB_PROTOCOL_VERSION || typeof record.type !== 'string') {
+      throw new Error('Windows Job controller emitted a malformed protocol record')
+    }
+
+    if (typeof record.nonce !== 'string' || record.nonce !== nonce) {
+      throw new Error('Windows Job controller emitted a record with an unauthenticated nonce')
+    }
+
+    const schema = WINDOWS_JOB_RECORD_SCHEMAS[record.type]
+    const actualFields = Object.keys(record)
+    if (!schema ||
+        actualFields.length !== schema.fields.size ||
+        actualFields.some(field => !schema.fields.has(field))) {
+      throw new Error('Windows Job controller emitted a malformed protocol record with unsupported fields')
+    }
+
+    schema.validate(record)
+
+    if (record.type === 'launched' && launchRecordSeen) {
+      throw new Error('Windows Job controller emitted a duplicate launch receipt')
+    }
+    if (record.type === 'launched' && terminalState !== 'open') {
+      throw new Error('Windows Job controller emitted a launch receipt in a terminal state')
+    }
+    if (['cleaned', 'status', 'target_exit'].includes(record.type) && !launchRecordSeen) {
+      throw new Error(`Windows Job controller emitted ${record.type} before launch identity`)
+    }
+    if (record.type === 'target_exit' && targetExitSeen) {
+      throw new Error('Windows Job controller emitted a duplicate target-exit record')
+    }
+    if (record.type === 'cleaned' && cleanupAcknowledgementCount !== 0) {
+      throw new Error('Windows Job controller emitted a duplicate cleanup acknowledgement')
+    }
+  }
+  const deliverToWaiter = record => {
+    if (!waiters.length) {
+      records.push(record)
+      return
+    }
+
+    const waiter = waiters.shift()
+    clearTimeout(waiter.timer)
+    if (!waiter.types.includes(record.type)) {
+      const error = fail(new Error(
+        `Windows Job controller emitted unexpected ${record.type} while waiting for ${waiter.label}`
+      ))
+      waiter.reject(error)
+      return
+    }
+    waiter.resolve(record)
+  }
+  const deliver = record => {
+    if (record.type === 'launched') {
+      launchRecordSeen = true
+    } else if (record.type === 'target_exit') {
+      targetExitSeen = true
+      const target = targetHolder.target
+
+      if (!target) {
+        pendingTargetExitPids.push(record.targetPid)
+        return
+      }
+
+      if (record.targetPid !== target.pid) {
+        throw new Error('Windows Job controller emitted an invalid target-exit identity')
+      }
+
+      markWindowsTargetExited(target)
+      return
+    } else if (record.type === 'cleaned') {
+      cleanupAcknowledgement = record
+      cleanupAcknowledgementCount++
+      terminalState = 'ack-provisional'
+    }
+
+    deliverToWaiter(record)
+  }
+  const processLine = line => {
+    if (line === '') {
+      throw new Error('Windows Job controller emitted an empty protocol line')
+    }
+
+    let record
+
+    try {
+      record = JSON.parse(line)
+    } catch (error) {
+      throw new Error(`Windows Job controller emitted malformed JSON: ${error.message}`, {
+        cause: error
+      })
+    }
+
+    validateRecord(record)
+    deliver(record)
+  }
+
+  controller.stdout.setEncoding('utf8')
+  controller.stderr.setEncoding('utf8')
+  controller.stdout.on('data', chunk => {
+    if (failure) {
+      return
+    }
+
+    if (terminalState === 'ack-provisional' && chunk.length !== 0) {
+      fail(new Error('Windows Job controller emitted trailing bytes after cleanup acknowledgement'))
+      return
+    }
+
+    buffer += chunk
+
+    while (buffer.includes('\n')) {
+      const newline = buffer.indexOf('\n')
+      const line = buffer.slice(0, newline).replace(/\r$/, '')
+      buffer = buffer.slice(newline + 1)
+
+      try {
+        processLine(line)
+      } catch (error) {
+        fail(error)
+        return
+      }
+
+      if (terminalState === 'ack-provisional' && buffer.length !== 0) {
+        fail(new Error('Windows Job controller emitted trailing bytes after cleanup acknowledgement'))
+        return
+      }
+    }
   })
+  controller.stdout.once('end', () => {
+    stdoutEnded = true
+    if (buffer.length !== 0 && !failure) {
+      fail(new Error('Windows Job controller closed stdout with an incomplete protocol line'))
+      return
+    }
+    if (terminalState === 'open' && !failure) {
+      fail(new Error('Windows Job controller closed stdout before authenticated cleanup'))
+      return
+    }
+    settleTerminal()
+  })
+  controller.stdout.once('close', () => {
+    stdoutClosed = true
+    if (!stdoutEnded && !failure) {
+      fail(new Error('Windows Job controller closed stdout before the protocol stream ended'))
+      return
+    }
+    settleTerminal()
+  })
+  controller.stderr.on('data', chunk => {
+    stderr = `${stderr}${chunk}`.slice(-8192)
+    if (`${chunk}`.length !== 0 && !failure) {
+      fail(new Error('Windows Job controller emitted a stderr protocol error'))
+    }
+  })
+  controller.stderr.once('end', () => {
+    stderrEnded = true
+    settleTerminal()
+  })
+  controller.stderr.once('close', () => {
+    stderrClosed = true
+    if (!stderrEnded && !failure) {
+      fail(new Error('Windows Job controller closed stderr before the protocol stream ended'))
+      return
+    }
+    settleTerminal()
+  })
+  controller.once('error', error => {
+    fail(new Error(`Windows Job controller failed to start: ${error.message}`, { cause: error }))
+  })
+  controller.once('exit', (code, signal) => {
+    controllerExit = { code, signal }
+    if (terminalState === 'open' && !failure) {
+      const detail = stderr.trim()
+      fail(new Error(
+        `Windows Job controller exited before authenticated cleanup ` +
+        `(code=${code}, signal=${signal ?? 'none'})` +
+        (detail ? `: ${detail}` : '')
+      ))
+      return
+    }
+    settleTerminal()
+  })
+
+  return {
+    bindTarget(target) {
+      if (targetHolder.target) {
+        throw retainedError('Windows Job controller target identity was already bound')
+      }
+
+      targetHolder.target = target
+      for (const targetPid of pendingTargetExitPids) {
+        if (targetPid !== target.pid) {
+          throw fail(new Error('Windows Job controller emitted an invalid target-exit identity'))
+        }
+        markWindowsTargetExited(target)
+      }
+      pendingTargetExitPids.length = 0
+    },
+    closeInput,
+    async waitFor(types, timeoutMs, label) {
+      if (failure) {
+        throw failure
+      }
+
+      const record = records.shift()
+
+      if (record) {
+        if (!types.includes(record.type)) {
+          throw fail(new Error(
+            `Windows Job controller emitted unexpected ${record.type} while waiting for ${label}`
+          ))
+        }
+
+        return record
+      }
+
+      return await new Promise((resolve, reject) => {
+        const waiter = { types, label, resolve, reject, timer: null }
+        waiter.timer = setTimeout(() => {
+          fail(new Error(`timed out waiting for Windows Job controller ${label}`))
+        }, timeoutMs)
+        waiters.push(waiter)
+      })
+    },
+    async waitForCleanTermination(timeoutMs) {
+      if (failure) {
+        throw failure
+      }
+      if (terminalState === 'closed') {
+        return cleanupAcknowledgement
+      }
+      if (terminalState !== 'ack-provisional' || cleanupAcknowledgementCount !== 1) {
+        throw fail(new Error(
+          'Windows Job controller terminal wait requires exactly one provisional cleanup acknowledgement'
+        ))
+      }
+
+      return await new Promise((resolve, reject) => {
+        const waiter = { resolve, reject, timer: null }
+        waiter.timer = setTimeout(() => {
+          fail(new Error(
+            `timed out waiting for Windows Job controller clean exit and closed streams after ${timeoutMs}ms`
+          ))
+        }, timeoutMs)
+        terminalWaiters.push(waiter)
+        settleTerminal()
+      })
+    }
+  }
+}
+
+function validateWindowsTargetIdentity(target, spec, root) {
+  try {
+    validateWindowsTargetRecord(target)
+  } catch (error) {
+    throw new Error(
+      `Windows Job controller target identity is malformed; retained generated root: ${root}`,
+      { cause: error }
+    )
+  }
+
+  if (resolve(target.executable).toLowerCase() !== resolve(spec.executable).toLowerCase()) {
+    throw new Error(
+      `Windows Job controller launch receipt executable identity does not match; ` +
+      `retained generated root: ${root}`
+    )
+  }
+}
+
+function validateWindowsLaunchReceipt(record, spec, root) {
+  if (record?.type !== 'launched') {
+    throw new Error(
+      `Windows Job controller launch receipt is malformed; retained generated root: ${root}`
+    )
+  }
+
+  validateWindowsTargetIdentity(record.target, spec, root)
+}
+
+function createWindowsIdentitySampler({
+  controller,
+  nonce,
+  ownership,
+  protocol,
+  receipt,
+  spec,
+  timeoutMs
+}) {
+  let samplingPromise = null
+
+  return () => {
+    if (!samplingPromise) {
+      samplingPromise = (async () => {
+        controller.stdin.write(`${JSON.stringify({
+          v: WINDOWS_JOB_PROTOCOL_VERSION,
+          type: 'status',
+          nonce
+        })}\n`)
+        const record = await protocol.waitFor(
+          ['status', 'error'],
+          timeoutMs,
+          'target identity status'
+        )
+
+        if (record.type === 'error') {
+          throw windowsControllerError(record, ownership.root)
+        }
+
+        validateWindowsTargetIdentity(record.target, spec, ownership.root)
+        if (record.target.pid !== receipt.target.pid ||
+            record.target.creationTime100ns !== receipt.target.creationTime100ns) {
+          throw new Error(
+            `Windows Job controller target identity changed; retained generated root: ${ownership.root}`
+          )
+        }
+
+        return record.target
+      })().finally(() => {
+        samplingPromise = null
+      })
+    }
+
+    return samplingPromise
+  }
+}
+
+function createWindowsOwnedCleanup({
+  controller,
+  nonce,
+  ownership,
+  protocol,
+  spec,
+  target,
+  terminationTimeoutMs
+}) {
+  let cleanupPromise = null
+
+  return () => {
+    if (!cleanupPromise) {
+      cleanupPromise = (async () => {
+        try {
+          controller.stdin.write(`${JSON.stringify({
+            v: WINDOWS_JOB_PROTOCOL_VERSION,
+            type: 'cleanup',
+            nonce
+          })}\n`)
+
+          const record = await protocol.waitFor(
+            ['cleaned', 'error'],
+            terminationTimeoutMs + 2_000,
+            'zero-active cleanup acknowledgement'
+          )
+
+          if (record.type === 'error') {
+            throw windowsControllerError(record, ownership.root)
+          }
+
+          const terminal = protocol.waitForCleanTermination(terminationTimeoutMs)
+          protocol.closeInput()
+          const authenticatedRecord = await terminal
+          markWindowsTargetExited(target)
+          removeGeneratedRoot(spec)
+
+          return authenticatedRecord
+        } catch (error) {
+          protocol.closeInput()
+          try {
+            await waitForChildExit(
+              controller,
+              terminationTimeoutMs,
+              'Windows Job controller after failed cleanup'
+            )
+          } catch (closeError) {
+            throw new AggregateError(
+              [error, closeError],
+              `Windows Job controller cleanup failed and retained authority did not close; ` +
+              `retained generated root: ${ownership.root}`
+            )
+          }
+          throw error
+        }
+      })()
+    }
+
+    return cleanupPromise
+  }
+}
+
+async function launchWindowsOwnedDesktop(spec, {
+  controllerTimeoutMs,
+  spawnImpl,
+  terminationTimeoutMs
+}) {
+  const ownership = assertOwnedSpec(spec)
+
+  if (!isAbsolute(spec.executable)) {
+    throw new Error(
+      `Windows Job controller requires an exact absolute target executable; ` +
+      `retained generated root: ${ownership.root}`
+    )
+  }
+
+  ownership.launchAttempted = true
+  const nonce = randomUUID()
+  let controller
+
+  try {
+    controller = spawnImpl(
+      'powershell.exe',
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        WINDOWS_JOB_BOOTSTRAP
+      ],
+      {
+        cwd: spec.spawnOptions.cwd,
+        env: spec.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      }
+    )
+  } catch (error) {
+    throw new Error(
+      `Windows Job controller launch failed: ${error.message}; ` +
+      `retained generated root: ${ownership.root}`,
+      { cause: error }
+    )
+  }
+
+  const protocol = createWindowsProtocolSession(controller, nonce, ownership.root)
+
+  try {
+    await waitForSpawn(controller)
+    controller.stdin.write(`${JSON.stringify({
+      v: WINDOWS_JOB_PROTOCOL_VERSION,
+      type: 'launch',
+      nonce,
+      executable: spec.executable,
+      args: spec.args,
+      cwd: spec.spawnOptions.cwd,
+      environment: spec.env,
+      terminationTimeoutMs
+    })}\n`)
+
+    const receipt = await protocol.waitFor(
+      ['launched', 'error'],
+      controllerTimeoutMs,
+      'authenticated launch receipt'
+    )
+
+    if (receipt.type === 'error') {
+      throw windowsControllerError(receipt, ownership.root)
+    }
+
+    validateWindowsLaunchReceipt(receipt, spec, ownership.root)
+    const target = createWindowsTarget(receipt)
+    protocol.bindTarget(target)
+    ownership.launched = true
+
+    return {
+      child: target,
+      nonce,
+      ownedPid: receipt.target.pid,
+      receipt,
+      isControllerRunning: () => !childHasExited(controller),
+      sampleIdentity: createWindowsIdentitySampler({
+        controller,
+        nonce,
+        ownership,
+        protocol,
+        receipt,
+        spec,
+        timeoutMs: controllerTimeoutMs
+      }),
+      cleanup: createWindowsOwnedCleanup({
+        controller,
+        nonce,
+        ownership,
+        protocol,
+        spec,
+        target,
+        terminationTimeoutMs
+      })
+    }
+  } catch (error) {
+    protocol.closeInput()
+    try {
+      await waitForChildExit(
+        controller,
+        terminationTimeoutMs,
+        'Windows Job controller after failed launch'
+      )
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        `Windows Job controller launch failed and retained authority did not close; ` +
+        `retained generated root: ${ownership.root}`
+      )
+    }
+    throw error
+  }
 }
 
 async function terminateOwnedProcessGroup({
@@ -727,14 +1401,11 @@ async function terminateOwnedProcessGroup({
   }
 }
 
-function createOwnedCleanup({
+function createPosixOwnedCleanup({
   spec,
   child,
-  discoverWindowsDescendantPidsImpl,
   killImpl,
   ownedPid,
-  platform,
-  spawnSyncImpl,
   terminationTimeoutMs
 }) {
   let cleanupPromise = null
@@ -742,13 +1413,10 @@ function createOwnedCleanup({
   return () => {
     if (!cleanupPromise) {
       cleanupPromise = (async () => {
-        await terminateOwnedChild({
+        await terminateOwnedProcessGroup({
           child,
-          discoverWindowsDescendantPidsImpl,
           killImpl,
           ownedPid,
-          platform,
-          spawnSyncImpl,
           terminationTimeoutMs
         })
 
@@ -794,17 +1462,24 @@ function waitForSpawn(child) {
 }
 
 export async function launchOwnedDesktop(spec, {
+  controllerTimeoutMs = 30_000,
   spawnImpl = nodeSpawn,
-  discoverWindowsDescendantPidsImpl,
   killImpl = nodeKill,
   platform = process.platform,
-  spawnSyncImpl = nodeSpawnSync,
   terminationTimeoutMs = DEFAULT_TERMINATION_TIMEOUT_MS
 } = {}) {
   const ownership = assertOwnedSpec(spec)
 
-  if (ownership.launched) {
+  if (ownership.launched || ownership.launchAttempted) {
     throw new Error('desktop verifier launch spec may only be launched once')
+  }
+
+  if (platform === 'win32') {
+    return await launchWindowsOwnedDesktop(spec, {
+      controllerTimeoutMs,
+      spawnImpl,
+      terminationTimeoutMs
+    })
   }
 
   let child
@@ -821,25 +1496,21 @@ export async function launchOwnedDesktop(spec, {
   return {
     child,
     ownedPid,
-    cleanup: createOwnedCleanup({
+    cleanup: createPosixOwnedCleanup({
       spec,
       child,
-      discoverWindowsDescendantPidsImpl,
       killImpl,
       ownedPid,
-      platform,
-      spawnSyncImpl,
       terminationTimeoutMs
     })
   }
 }
 
 export async function runDesktopSmoke(spec, {
+  controllerTimeoutMs = 30_000,
   spawnImpl = nodeSpawn,
-  discoverWindowsDescendantPidsImpl,
   killImpl = nodeKill,
   platform = process.platform,
-  spawnSyncImpl = nodeSpawnSync,
   terminationTimeoutMs = DEFAULT_TERMINATION_TIMEOUT_MS,
   portTimeoutMs = DEFAULT_PORT_TIMEOUT_MS,
   pageTimeoutMs = DEFAULT_PAGE_TIMEOUT_MS,
@@ -855,11 +1526,10 @@ export async function runDesktopSmoke(spec, {
 
   try {
     owned = await launchOwnedDesktop(spec, {
+      controllerTimeoutMs,
       spawnImpl,
-      discoverWindowsDescendantPidsImpl,
       killImpl,
       platform,
-      spawnSyncImpl,
       terminationTimeoutMs
     })
     onOwned?.(owned)
@@ -910,7 +1580,8 @@ export async function runDesktopSmoke(spec, {
   if (primaryError && cleanupError) {
     throw new AggregateError(
       [primaryError, cleanupError],
-      'desktop verification and owned cleanup both failed'
+      `desktop verification and owned cleanup both failed; ` +
+      `retained generated root: ${spec.paths.root}`
     )
   }
 

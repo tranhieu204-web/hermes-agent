@@ -182,10 +182,14 @@ npm run verify:desktop:isolated -- --exe <absolute-path-to-worktree-build> --smo
 
 It creates one throwaway root containing isolated Electron user data,
 `HERMES_HOME`, and workspace paths; discovers the run's loopback CDP port from
-that root; strips credential-shaped environment variables; prints a JSON
-receipt; and tears down only the child tree/process group it launched.
-`--fake-boot` only enables deterministic fake boot. Do not pass the installed
-production Desktop executable.
+that root; strips credential-shaped environment variables; and prints a JSON
+receipt. On Windows, an exact absolute target is created suspended and assigned
+to a kill-on-close Job Object before resume. Cleanup deletes the exact throwaway
+root only after an authenticated `TerminateJobObject` acknowledgement reports
+zero active processes; controller failure, timeout, or a missing/uncertain
+acknowledgement retains the root for inspection. POSIX retains its owned process
+group behavior. `--fake-boot` only enables deterministic fake boot. Do not pass
+the installed production Desktop executable.
 
 `test:desktop:existing` is operator deployment inspection only, never
 verification. It intentionally uses the existing installation and live profile,

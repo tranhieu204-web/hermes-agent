@@ -5,6 +5,20 @@ on:
   workflow_call:
 
 jobs:
+  desktop-windows-job-object:
+    name: Desktop Windows Job Object safety
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Preflight process-safety policy
+        run: node apps/desktop/scripts/check-verifier-process-safety.mjs
+      - name: Exercise Job Object lifecycle and process-safety policy
+        run: npm --prefix apps/desktop run check:process-safety
+
   workspaces:
     name: List npm workspaces
     runs-on: ubuntu-latest

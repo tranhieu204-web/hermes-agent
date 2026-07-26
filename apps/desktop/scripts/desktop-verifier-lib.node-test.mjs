@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawnSync as testSpawnSync } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -17,10 +16,8 @@ import { test } from 'node:test'
 import * as verifierLib from './desktop-verifier-lib.mjs'
 import {
   assertDesktopExecutableProvenance,
-  buildWindowsCleanupPlan,
   cleanupUnlaunchedDesktopSpec,
   createDesktopLaunchSpec,
-  discoverWindowsDescendantPids,
   launchOwnedDesktop,
   parseDevToolsActivePort,
   runDesktopSmoke
@@ -67,26 +64,6 @@ async function waitForFile(filePath, timeoutMs = 5000) {
   throw new Error(`timed out waiting for ${filePath}`)
 }
 
-async function waitForWindowsDescendantExit(ownedPid, descendantPid, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs
-
-  while (Date.now() <= deadline) {
-    if (!discoverWindowsDescendantPids(ownedPid).includes(descendantPid)) {
-      return
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 20))
-  }
-
-  throw new Error(`owned Windows PID ${descendantPid} did not exit`)
-}
-
-function terminateExactOwnedTestPid(pid) {
-  testSpawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-    encoding: 'utf8',
-    windowsHide: true
-  })
-}
 
 test('two launch specs own unique roots, state paths, and app identities', () => {
   const first = createDesktopLaunchSpec({ executable: 'Hermes.exe' })
@@ -146,38 +123,93 @@ test('launch spec pins exact isolation args/env and platform-owned process-group
   }
 })
 
-test('launch spec exact 12-name probe strips credentials, profiles, routes, and provider URLs', () => {
+test('launch spec strips credential and configuration routes while preserving benign runtime paths', () => {
   const sensitiveNames = [
+    'SSH_AUTH_SOCK',
+    'SSH_AGENT_PID',
+    'SSH_ASKPASS',
+    'GNUPGHOME',
+    'KUBECONFIG',
+    'DOCKER_CONFIG',
+    'DOCKER_AUTH_CONFIG',
+    'NETRC',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'AWS_CONFIG_FILE',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'CLOUDSDK_CONFIG',
+    'AZURE_CONFIG_DIR',
+    'GIT_ASKPASS',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_KEY_0',
+    'GIT_SSH_COMMAND',
+    'NPM_CONFIG_USERCONFIG',
+    'NPM_CONFIG_REGISTRY',
+    'NODE_AUTH_TOKEN',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'CURL_CA_BUNDLE',
+    'NODE_TLS_REJECT_UNAUTHORIZED',
+    'DATABASE_URL',
+    'PIP_INDEX_URL',
+    'UV_INDEX_URL',
+    'YARN_NPM_AUTH_TOKEN',
+    'NPM_TOKEN',
     'API_KEY',
     'PASSWORD',
-    'SECRET',
-    'ACCESS_KEY',
-    'PRIVATE_KEY',
-    'CREDENTIALS',
-    'AWS_PROFILE',
-    'AWS_SHARED_CREDENTIALS_FILE',
     'HERMES_DESKTOP_REMOTE_URL',
-    'HERMES_DESKTOP_REMOTE_TOKEN',
+    'HERMES_UNRELATED_CONFIG_ROUTE',
     'OPENAI_BASE_URL',
-    'ANTHROPIC_BASE_URL'
+    'AZURE_OPENAI_ENDPOINT',
+    'OPENAI_API_BASE',
+    'OLLAMA_HOST',
+    'GOOGLE_CLOUD_PROJECT',
+    'CUSTOM_CONFIG_PATH',
+    'AUTHORIZATION',
+    'SENTRY_DSN',
+    'SERVICE_URL',
+    'UNRELATED_MARKER'
   ]
-  const sensitiveEnv = Object.fromEntries(sensitiveNames.map(name => [name, `secret-${name}`]))
+  const benignEnv = {
+    PATH: 'safe-path',
+    PATHEXT: '.COM;.EXE;.BAT;.CMD',
+    SystemRoot: 'safe-system-root',
+    WINDIR: 'safe-windir',
+    COMSPEC: 'safe-comspec',
+    USERPROFILE: 'safe-user-profile',
+    HOMEDRIVE: 'safe-home-drive',
+    HOMEPATH: 'safe-home-path',
+    HOME: 'safe-home',
+    APPDATA: 'safe-appdata',
+    LOCALAPPDATA: 'safe-localappdata',
+    PROGRAMDATA: 'safe-programdata',
+    TEMP: 'safe-temp',
+    TMP: 'safe-tmp',
+    TMPDIR: 'safe-tmpdir'
+  }
+  const secretMarker = 'never-log-credential-route-value'
+  const sensitiveEnv = Object.fromEntries(sensitiveNames.map(name => [name, secretMarker]))
   const spec = createDesktopLaunchSpec({
     executable: 'Hermes.exe',
     baseEnv: {
-      PATH: 'safe-path',
-      SYSTEMROOT: 'safe-system-root',
+      ...benignEnv,
       ...sensitiveEnv
     }
   })
 
   try {
-    assert.equal(spec.env.PATH, 'safe-path')
-    assert.equal(spec.env.SYSTEMROOT, 'safe-system-root')
+    for (const [name, value] of Object.entries(benignEnv)) {
+      assert.equal(spec.env[name], value, name)
+    }
     assert.deepEqual(
       sensitiveNames.filter(name => Object.hasOwn(spec.env, name)),
       []
     )
+    assert.doesNotMatch(JSON.stringify(spec.env), new RegExp(secretMarker))
     assert.equal(spec.env.HERMES_DESKTOP_BOOT_FAKE, undefined)
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
@@ -252,86 +284,6 @@ test('DevToolsActivePort parser accepts only a nonzero loopback port record', ()
   }
 })
 
-test('Windows cleanup plan is exact and rejects invalid or unowned PIDs', () => {
-  assert.deepEqual(buildWindowsCleanupPlan(4100, 4100), {
-    command: 'taskkill.exe',
-    args: ['/PID', '4100', '/T', '/F']
-  })
-
-  for (const invalidPid of [0, -1, 1.5, Number.NaN, '4100', null]) {
-    assert.throws(() => buildWindowsCleanupPlan(invalidPid, invalidPid), /owned PID/)
-  }
-
-  assert.throws(() => buildWindowsCleanupPlan(4100, 4101), /unowned PID/)
-})
-
-test('Windows cleanup terminates verified descendants after the owned parent exits', async () => {
-  const spec = createNodeProcessSpec()
-  const fakeChild = Object.assign(new EventEmitter(), {
-    pid: 4100,
-    exitCode: 0,
-    signalCode: null
-  })
-  const calls = []
-  let discoveryCount = 0
-  const owned = await launchOwnedDesktop(spec, {
-    platform: 'win32',
-    spawnImpl: () => fakeChild,
-    discoverWindowsDescendantPidsImpl: ownedPid => {
-      assert.equal(ownedPid, 4100)
-      discoveryCount++
-      return discoveryCount === 1 ? [4101, 4102] : []
-    },
-    spawnSyncImpl: (command, args) => {
-      calls.push([command, args])
-      return { status: 0, stdout: '', stderr: '' }
-    }
-  })
-
-  await owned.cleanup()
-
-  assert.deepEqual(calls, [
-    ['taskkill.exe', ['/PID', '4102', '/T', '/F']],
-    ['taskkill.exe', ['/PID', '4101', '/T', '/F']]
-  ])
-  assert.equal(existsSync(spec.paths.root), false)
-})
-
-test('Windows cleanup discovers and terminates a detached descendant after parent exit', {
-  skip: process.platform !== 'win32'
-}, async () => {
-  const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-win-early-exit-'))
-  const grandchildPidFile = join(parent, 'grandchild.pid')
-  const parentScript = [
-    "const fs = require('node:fs')",
-    "const { spawn } = require('node:child_process')",
-    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
-    `fs.writeFileSync(${JSON.stringify(grandchildPidFile)}, String(child.pid))`,
-    'child.unref()'
-  ].join(';')
-  const spec = createNodeProcessSpec({ script: parentScript, tempBaseDir: parent })
-  const owned = await launchOwnedDesktop(spec)
-  let grandchildPid
-
-  try {
-    await waitForFile(grandchildPidFile)
-    grandchildPid = Number(readFileSync(grandchildPidFile, 'utf8'))
-    await waitForExit(owned.child)
-    assert.ok(discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid))
-
-    await owned.cleanup()
-    await waitForWindowsDescendantExit(owned.ownedPid, grandchildPid)
-
-    assert.equal(existsSync(spec.paths.root), false)
-  } finally {
-    if (Number.isSafeInteger(grandchildPid) &&
-        discoverWindowsDescendantPids(owned.ownedPid).includes(grandchildPid)) {
-      terminateExactOwnedTestPid(grandchildPid)
-    }
-
-    rmSync(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-  }
-})
 
 test('executable provenance accepts only current-worktree dist/release artifacts and rejects outside paths', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'desktop-verifier-provenance-'))
@@ -406,9 +358,38 @@ test('owned cleanup is idempotent and removes only its generated root', async ()
   rmSync(parent, { recursive: true, force: true })
 })
 
-test('startup failure removes the unlaunched owned root', async () => {
+test('missing Windows target retains its generated root and reports the exact path', {
+  skip: process.platform !== 'win32'
+}, async () => {
   const spec = createDesktopLaunchSpec({
-    executable: join(tmpdir(), `missing-hermes-${Date.now()}.exe`)
+    executable: join(tmpdir(), `missing-hermes-${Date.now()}.exe`),
+    platform: 'win32'
+  })
+
+  try {
+    await assert.rejects(
+      runDesktopSmoke(spec, {
+        platform: 'win32',
+        portTimeoutMs: 50,
+        pollIntervalMs: 10
+      }),
+      error => {
+        assert.match(error.message, /launch|cleanup/i)
+        assert.match(error.message, new RegExp(spec.paths.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+        return true
+      }
+    )
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    rmSync(spec.paths.root, { recursive: true, force: true })
+  }
+})
+
+test('POSIX startup failure removes the unlaunched owned root', {
+  skip: process.platform === 'win32'
+}, async () => {
+  const spec = createDesktopLaunchSpec({
+    executable: join(tmpdir(), `missing-hermes-${Date.now()}`)
   })
 
   await assert.rejects(
