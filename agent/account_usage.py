@@ -748,76 +748,156 @@ def redeem_codex_reset_credit(
     )
 
 
+def _resolve_anthropic_token_readonly() -> Optional[str]:
+    """Resolve Anthropic token READ-ONLY (no refresh, no credential writes).
+
+    Used by usage-measurement probes to avoid side effects. Reads:
+      1. ANTHROPIC_TOKEN env var (no refresh)
+      2. CLAUDE_CODE_OAUTH_TOKEN env var (no refresh)
+      3. Claude Code credential file (stored accessToken, NO auto-refresh)
+      4. Anthropic credential_pool OAuth entry (read-only enumerate)
+      5. ANTHROPIC_API_KEY env var
+
+    NEVER triggers token refresh, credential file writes, or network POSTs.
+    Expired tokens → None (honest unknown, not an error).
+    """
+    import os
+
+    # 1. Hermes-managed OAuth/setup token env var (static, no refresh)
+    token = os.getenv("ANTHROPIC_TOKEN", "").strip()
+    if token:
+        return token
+
+    # 2. CLAUDE_CODE_OAUTH_TOKEN (setup-token env var, no refresh)
+    cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    if cc_token:
+        return cc_token
+
+    # 3. Claude Code credential file — read stored token WITHOUT auto-refresh.
+    # We read the file but never call _refresh_oauth_token(), so expired
+    # tokens return None (honest unknown, not an error that triggers a POST).
+    try:
+        from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
+
+        creds = read_claude_code_credentials()
+        if creds and is_claude_code_token_valid(creds):
+            # Token is valid; return it without attempting refresh.
+            return creds.get("accessToken", "").strip() or None
+        # Token is expired or missing — return None, do NOT attempt refresh.
+    except Exception:
+        # Fail-closed: any read error → treat as no token (no refresh attempt).
+        pass
+
+    # 4. Anthropic credential_pool — read-only enumerate (no refresh, no writes).
+    # Mirrors _resolve_anthropic_pool_token() which explicitly avoids refresh/write.
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+
+        pool = load_pool("anthropic")
+        # Read-only: clear_expired=False, refresh=False (documented in anthropic_adapter.py).
+        entries = pool._available_entries(clear_expired=False, refresh=False)
+        for entry in entries:
+            if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+                continue
+            token = (getattr(entry, "access_token", None) or "").strip()
+            if token:
+                return token
+    except Exception:
+        # Fail-closed: any pool read error → move to fallback.
+        pass
+
+    # 5. Regular API key or legacy OAuth token in ANTHROPIC_API_KEY (env var, no refresh).
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if api_key:
+        return api_key
+
+    return None
+
+
 def _fetch_anthropic_usage_window() -> Optional[AccountUsageSnapshot]:
-    """Fetch Anthropic OAuth usage windows only (no inference API calls).
+    """Fetch Anthropic OAuth usage windows only (no inference API calls, read-only).
 
     Queries the public usage/window measurement endpoint
     (api.anthropic.com/api/oauth/usage) to report weekly usage for capacity
     routing. This is the ONLY Anthropic API call enabled for claude_code lane —
     all inference is routed through the CLI executable (see _fetch_anthropic_account_usage).
 
+    STRICTLY READ-ONLY: uses _resolve_anthropic_token_readonly() to avoid
+    triggering credential refresh, file writes, or network POSTs as side effects
+    of a measurement probe.
+
     Returns an AccountUsageSnapshot with window % measurements (five_hour,
-    seven_day, seven_day_opus, seven_day_sonnet), or None if unauthorized or
-    not an OAuth token.
+    seven_day, seven_day_opus, seven_day_sonnet), or None if unauthorized,
+    not an OAuth token, or any transport/parse error (fail-closed).
     """
-    token = (resolve_anthropic_token() or "").strip()
-    if not token:
-        return None
-    if not _is_oauth_token(token):
+    try:
+        # Read-only token resolver — no refresh, no writes, no side effects.
+        token = (_resolve_anthropic_token_readonly() or "").strip()
+        if not token:
+            return None
+        if not _is_oauth_token(token):
+            return AccountUsageSnapshot(
+                provider="anthropic",
+                source="oauth_usage_api",
+                fetched_at=_utc_now(),
+                unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+            )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.1.0",
+        }
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
+            response.raise_for_status()
+        payload = response.json() or {}
+        windows: list[AccountUsageWindow] = []
+        mapping = (
+            ("five_hour", "Current session"),
+            ("seven_day", "Current week"),
+            ("seven_day_opus", "Opus week"),
+            ("seven_day_sonnet", "Sonnet week"),
+        )
+        for key, label in mapping:
+            window = payload.get(key) or {}
+            util = window.get("utilization")
+            if util is None:
+                continue
+            used = float(util) * 100 if float(util) <= 1 else float(util)
+            windows.append(
+                AccountUsageWindow(
+                    label=label,
+                    used_percent=used,
+                    reset_at=_parse_dt(window.get("resets_at")),
+                )
+            )
+        details: list[str] = []
+        extra = payload.get("extra_usage") or {}
+        if extra.get("is_enabled"):
+            used_credits = extra.get("used_credits")
+            monthly_limit = extra.get("monthly_limit")
+            currency = extra.get("currency") or "USD"
+            if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
+                details.append(
+                    f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
+                )
         return AccountUsageSnapshot(
             provider="anthropic",
             source="oauth_usage_api",
             fetched_at=_utc_now(),
-            unavailable_reason="Anthropic account limits are only available for OAuth-backed Claude accounts.",
+            windows=tuple(windows),
+            details=tuple(details),
         )
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "claude-code/2.1.0",
-    }
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
-        response.raise_for_status()
-    payload = response.json() or {}
-    windows: list[AccountUsageWindow] = []
-    mapping = (
-        ("five_hour", "Current session"),
-        ("seven_day", "Current week"),
-        ("seven_day_opus", "Opus week"),
-        ("seven_day_sonnet", "Sonnet week"),
-    )
-    for key, label in mapping:
-        window = payload.get(key) or {}
-        util = window.get("utilization")
-        if util is None:
-            continue
-        used = float(util) * 100 if float(util) <= 1 else float(util)
-        windows.append(
-            AccountUsageWindow(
-                label=label,
-                used_percent=used,
-                reset_at=_parse_dt(window.get("resets_at")),
-            )
+    except Exception:
+        # Fail-closed on any error: transport, HTTP status, JSON parse, etc.
+        # Return None (honest unknown) rather than propagating exceptions.
+        logger.debug(
+            "Anthropic usage window fetch failed (fail-closed, read-only)",
+            exc_info=True,
         )
-    details: list[str] = []
-    extra = payload.get("extra_usage") or {}
-    if extra.get("is_enabled"):
-        used_credits = extra.get("used_credits")
-        monthly_limit = extra.get("monthly_limit")
-        currency = extra.get("currency") or "USD"
-        if isinstance(used_credits, (int, float)) and isinstance(monthly_limit, (int, float)):
-            details.append(
-                f"Extra usage: {used_credits:.2f} / {monthly_limit:.2f} {currency}"
-            )
-    return AccountUsageSnapshot(
-        provider="anthropic",
-        source="oauth_usage_api",
-        fetched_at=_utc_now(),
-        windows=tuple(windows),
-        details=tuple(details),
-    )
+        return None
 
 
 def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:

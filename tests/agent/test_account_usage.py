@@ -490,9 +490,10 @@ def test_anthropic_oauth_usage_window_fetch(monkeypatch, anthropic_oauth_usage_p
         "Client",
         lambda timeout: _AnthropicFakeClient(),
     )
+    # Use the read-only resolver mock
     monkeypatch.setattr(
         account_usage,
-        "resolve_anthropic_token",
+        "_resolve_anthropic_token_readonly",
         lambda: "oauth-token-example",
     )
     monkeypatch.setattr(
@@ -526,7 +527,7 @@ def test_anthropic_oauth_usage_returns_none_when_no_token(monkeypatch):
     """Usage fetch returns None when no token is available."""
     monkeypatch.setattr(
         account_usage,
-        "resolve_anthropic_token",
+        "_resolve_anthropic_token_readonly",
         lambda: None,
     )
 
@@ -639,3 +640,230 @@ def test_anthropic_oauth_usage_with_percentage_already_scaled(monkeypatch):
     assert snapshot is not None
     # Utilization is already > 1, so it's used as-is
     assert snapshot.windows[0].used_percent == 85.0
+
+
+# ── Read-only resolver tests (proves no refresh/write side effects) ───
+
+
+def test_readonly_resolver_uses_env_vars_only(monkeypatch):
+    """Verify read-only resolver returns env vars without attempting refresh."""
+    # Set only env vars, no credential file.
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "oauth-env-token")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    token = account_usage._resolve_anthropic_token_readonly()
+
+    assert token == "oauth-env-token"
+
+
+def test_readonly_resolver_reads_claude_code_creds_without_refresh(monkeypatch):
+    """Verify read-only resolver reads Claude Code credentials without attempting refresh."""
+    from agent import anthropic_adapter
+
+    creds = {"accessToken": "claude-stored-token", "refreshToken": "refresh-xxx"}
+
+    def fake_read_creds():
+        return creds
+
+    def fake_is_valid(c):
+        return True
+
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "read_claude_code_credentials",
+        fake_read_creds,
+    )
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "is_claude_code_token_valid",
+        fake_is_valid,
+    )
+    # Ensure env vars are not set.
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    token = account_usage._resolve_anthropic_token_readonly()
+
+    assert token == "claude-stored-token"
+
+
+def test_readonly_resolver_returns_none_on_expired_claude_code_token(monkeypatch):
+    """Verify read-only resolver returns None on expired Claude Code token (no refresh attempt)."""
+    from agent import anthropic_adapter
+
+    creds = {"accessToken": "expired-token", "refreshToken": "refresh-xxx"}
+
+    def fake_read_creds():
+        return creds
+
+    def fake_is_valid(c):
+        return False  # Token is expired
+
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "read_claude_code_credentials",
+        fake_read_creds,
+    )
+    monkeypatch.setattr(
+        anthropic_adapter,
+        "is_claude_code_token_valid",
+        fake_is_valid,
+    )
+    # Ensure env vars are not set.
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    token = account_usage._resolve_anthropic_token_readonly()
+
+    assert token is None, "Expired token must return None, not attempt refresh"
+
+
+def test_usage_window_fetch_fails_closed_on_http_error(monkeypatch, anthropic_oauth_usage_payload):
+    """Verify usage window fetch returns None on HTTP error (fail-closed)."""
+    calls = []
+
+    class _FailingClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            # Simulate HTTP 401 Unauthorized
+            import httpx
+
+            response = SimpleNamespace()
+            response.status_code = 401
+
+            def raise_for_status():
+                raise httpx.HTTPStatusError("401 Unauthorized", request=None, response=response)
+
+            response.raise_for_status = raise_for_status
+            return response
+
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FailingClient(),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_anthropic_token_readonly",
+        lambda: "oauth-token",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is None, "HTTP error must return None (fail-closed)"
+    assert len(calls) == 1, "Should have attempted one API call"
+
+
+def test_usage_window_fetch_fails_closed_on_json_parse_error(monkeypatch):
+    """Verify usage window fetch returns None on JSON parse error (fail-closed)."""
+    calls = []
+
+    class _BadJsonClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            response = SimpleNamespace()
+
+            def raise_for_status():
+                pass
+
+            def bad_json():
+                raise ValueError("Invalid JSON")
+
+            response.raise_for_status = raise_for_status
+            response.json = bad_json
+            return response
+
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _BadJsonClient(),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_anthropic_token_readonly",
+        lambda: "oauth-token",
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is None, "JSON parse error must return None (fail-closed)"
+    assert len(calls) == 1, "Should have attempted one API call"
+
+
+def test_usage_window_fetch_uses_readonly_resolver_not_full_resolver(monkeypatch, anthropic_oauth_usage_payload):
+    """Verify _fetch_anthropic_usage_window uses _resolve_anthropic_token_readonly, not resolve_anthropic_token."""
+    calls = []
+
+    class _AnthropicFakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            calls.append({"url": url, "headers": headers})
+            return _FakeResponse(anthropic_oauth_usage_payload)
+
+    # Mock httpx
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _AnthropicFakeClient(),
+    )
+
+    # Mock the readonly resolver to track calls
+    readonly_calls = []
+
+    def tracked_readonly():
+        readonly_calls.append(True)
+        return "oauth-token-from-readonly"
+
+    monkeypatch.setattr(
+        account_usage,
+        "_resolve_anthropic_token_readonly",
+        tracked_readonly,
+    )
+
+    # Mock resolve_anthropic_token to ensure it's NOT called
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_anthropic_token",
+        lambda: (_ for _ in ()).throw(AssertionError("full resolver must not be called")),
+    )
+
+    monkeypatch.setattr(
+        account_usage,
+        "_is_oauth_token",
+        lambda t: True,
+    )
+
+    snapshot = account_usage._fetch_anthropic_usage_window()
+
+    assert snapshot is not None
+    assert len(readonly_calls) == 1, "Read-only resolver must be called exactly once"
+    assert len(calls) == 1, "API endpoint must be called once"
