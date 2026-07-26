@@ -1,7 +1,7 @@
 """Usage-headroom fallback selector and role-based reasoning effort mapping.
 
 Implements usage-verified fleet routing across lanes (chatgpt_codex, claude_code,
-grok, antigravity).
+grok, antigravity) with task-importance-based effort grading.
 
 Key features:
 1. **Usage-headroom routing:** Selects the enabled agent with the highest verified
@@ -10,11 +10,14 @@ Key features:
    attestation is stale/suspect is treated as unknown usage (0 headroom) for heavy work.
 3. **Anti-thrash 20-pt band:** Keeps the incumbent provider if the top competitor does
    not beat it by at least 20 percentage points of remaining headroom.
-4. **Role-based effort & ladders:** Maps main workers (Codex & Claude) to ``xhigh`` and
-   auditors/investigators (Grok & Gemini) to ``high``. Provides provider-specific ladders.
-5. **Claude Fable→Opus ladder:** Switches from ``claude-fable-5`` (<50% weekly usage)
+4. **Importance-based effort grading:** Maps task importance to effort levels for
+   Claude/Codex/Kimi (money-critical→max, critically-important→xhigh, semi-critical→high,
+   normal→medium). Grok and Antigravity always pin to ``high``.
+5. **Role-based effort & ladders:** Uses DEFAULT_LANE_EFFORTS as ceilings and bounds
+   efforts to provider-specific ladders. Provides provider-specific ladders.
+6. **Claude Fable→Opus ladder:** Switches from ``claude-fable-5`` (<50% weekly usage)
    to ``claude-opus-5`` (50–100% weekly usage).
-6. **All-lanes-below-floor fallback:** When no lane meets its reserve floor, falls back
+7. **All-lanes-below-floor fallback:** When no lane meets its reserve floor, falls back
    to the highest remaining headroom enabled lane without raising or returning empty.
 """
 
@@ -92,6 +95,18 @@ _PROVIDER_TO_LANE: Dict[str, str] = {
     "gemini": "antigravity",
     "gemini-3.1-pro-high": "antigravity",
     "google": "antigravity",
+    # Kimi: the importance grading applies to this lane, so EVERY supported
+    # provider id/alias must normalize here — otherwise a real dispatch (which
+    # carries ids like "kimi-subscription", the lane profile's provider_id, or
+    # the registry's "kimi-coding") would miss grading entirely and silently
+    # fall back to the lane default. Inspector finding, 2026-07-27.
+    "kimi": "kimi",
+    "kimi-subscription": "kimi",
+    "kimi-coding": "kimi",
+    "kimi-coding-cn": "kimi",
+    "kimi-cn": "kimi",
+    "moonshot": "kimi",
+    "moonshot-cn": "kimi",
 }
 
 
@@ -146,11 +161,91 @@ def _clamp_effort_to_ladder(requested_effort: str, ladder: List[str]) -> str:
     return ladder[-1]
 
 
-def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = "") -> str:
-    """Resolve role-based effort from a per-agent map or fallback default, bounded by provider ladder."""
+IMPORTANCE_LEVELS: Dict[str, int] = {
+    "money_critical": 4,
+    "critically_important": 3,
+    "semi_critical": 2,
+    "normal": 1,
+}
+
+IMPORTANCE_TO_EFFORT_GRADING: Dict[str, Dict[int, str]] = {
+    "claude_code": {
+        4: "max",      # money_critical → max
+        3: "xhigh",    # critically_important → xhigh
+        2: "high",     # semi_critical → high
+        1: "medium",   # normal → medium
+    },
+    "chatgpt_codex": {
+        4: "max",      # money_critical → max
+        3: "xhigh",    # critically_important → xhigh
+        2: "high",     # semi_critical → high
+        1: "medium",   # normal → medium
+    },
+    # Kimi is treated as claude for grading purposes (same scale)
+    "kimi": {
+        4: "max",      # money_critical → max
+        3: "xhigh",    # critically_important → xhigh
+        2: "high",     # semi_critical → high
+        1: "medium",   # normal → medium
+    },
+}
+
+
+def _map_importance_to_effort(importance: str, lane: str) -> Optional[str]:
+    """Map task importance to effort level for graded lanes (Claude/Codex/Kimi).
+
+    Args:
+        importance: One of "money_critical", "critically_important", "semi_critical", "normal"
+        lane: Canonical lane name (e.g., "claude_code", "chatgpt_codex", "grok", "antigravity")
+
+    Returns:
+        Effort level string if the lane is graded and importance is recognized, else None.
+    """
+    if not importance or not lane:
+        return None
+
+    imp_lower = str(importance).strip().lower()
+    lane_lower = str(lane).strip().lower()
+
+    # Grok and Antigravity are always pinned to "high" — no grading
+    if lane_lower in ("grok", "antigravity"):
+        return None
+
+    imp_score = IMPORTANCE_LEVELS.get(imp_lower)
+    if imp_score is None:
+        return None
+
+    # Claude, Codex, and Kimi support grading
+    effort_map = IMPORTANCE_TO_EFFORT_GRADING.get(lane_lower)
+    if effort_map is None:
+        return None
+
+    return effort_map.get(imp_score)
+
+
+def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = "", importance: str = "") -> str:
+    """Resolve role-based effort from explicit map, importance grading, or defaults.
+
+    Priority (highest to lowest):
+    1. If explicit effort_map is provided, use it
+    2. For Claude/Codex/Kimi: if importance is specified, map to effort level
+    3. Use DEFAULT_LANE_EFFORTS (as a ceiling)
+    4. For Grok/Antigravity: always pin to "high"
+
+    All efforts are clamped to the provider's ladder ceiling.
+
+    Args:
+        effort_map: Dict or string of explicitly configured effort levels
+        model: Model identifier
+        provider: Provider identifier
+        importance: Task importance level (only used if effort_map is empty)
+    """
     lane = get_lane_name(provider or model)
     ladder = get_effort_ladder(lane or provider or model)
+
     raw_effort = ""
+
+    # PRIORITY 1: Check explicit effort_map first
     if isinstance(effort_map, dict):
         if model:
             m_lower = str(model).strip().lower()
@@ -163,8 +258,17 @@ def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = ""
     elif isinstance(effort_map, str) and effort_map.strip():
         raw_effort = effort_map.strip()
 
+    # PRIORITY 2: If no explicit map, try importance-based grading (for Claude/Codex/Kimi)
+    if not raw_effort and importance:
+        raw_effort = _map_importance_to_effort(importance, lane) or ""
+
+    # PRIORITY 3: Fallback to DEFAULT_LANE_EFFORTS
     if not raw_effort:
         raw_effort = DEFAULT_LANE_EFFORTS.get(lane, "medium")
+
+    # PRIORITY 4: For Grok and Antigravity, always pin to "high" (override all above)
+    if lane in ("grok", "antigravity"):
+        raw_effort = "high"
 
     return _clamp_effort_to_ladder(raw_effort, ladder)
 
@@ -181,11 +285,17 @@ def select_best_lane(
     is_heavy: bool = True,
     now: Optional[float] = None,
     usage_by_lane: Optional[Mapping[str, float]] = None,
+    importance: str = "normal",
 ) -> SelectedLane:
     """Route to the enabled lane with the highest verified weekly headroom.
 
     Enforces reserve floor percentages, anti-thrash 20-pt band, fail-safe unverified
-    attestation treatment, and role-based effort resolution bounded by provider ladders.
+    attestation treatment, and importance-based effort grading (Claude/Codex/Kimi only;
+    Grok and Antigravity always pin to "high"). All efforts are bounded by provider ladders.
+
+    Args:
+        importance: Task importance level. One of "money_critical", "critically_important",
+                   "semi_critical", "normal" (default). Applies to Claude/Codex/Kimi only.
     """
     if now is None:
         now = time.time()
@@ -277,7 +387,7 @@ def select_best_lane(
             reason_str = f"selected {best_lane.name} (headroom {best_hr:.1f}% exceeds floor {best_lane.reserve_floor_pct}%)"
 
         model_id = best_lane.model
-        effort_val = resolve_effort_from_map(effort_map, model_id, best_lane.provider)
+        effort_val = resolve_effort_from_map(effort_map, model_id, best_lane.provider, importance)
         return SelectedLane(
             lane=best_lane.name,
             provider=best_lane.provider,
