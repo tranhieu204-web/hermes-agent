@@ -749,17 +749,20 @@ def redeem_codex_reset_credit(
 
 
 def _resolve_anthropic_token_readonly() -> Optional[str]:
-    """Resolve Anthropic token READ-ONLY (no refresh, no credential writes).
+    """Resolve Anthropic token READ-ONLY (no refresh, no writes, no pool persistence).
 
     Used by usage-measurement probes to avoid side effects. Reads:
       1. ANTHROPIC_TOKEN env var (no refresh)
       2. CLAUDE_CODE_OAUTH_TOKEN env var (no refresh)
       3. Claude Code credential file (stored accessToken, NO auto-refresh)
-      4. Anthropic credential_pool OAuth entry (read-only enumerate)
+      4. Anthropic credential_pool raw entries (read JSON directly, NO load_pool persistence)
       5. ANTHROPIC_API_KEY env var
 
-    NEVER triggers token refresh, credential file writes, or network POSTs.
+    NEVER triggers token refresh, credential file writes, network POSTs, or pool persistence.
     Expired tokens → None (honest unknown, not an error).
+
+    CRITICAL: Reads pool JSON directly via read_credential_pool(), NOT load_pool().
+    load_pool() can trigger write_credential_pool() as a side effect of normalization/pruning.
     """
     import os
 
@@ -788,15 +791,27 @@ def _resolve_anthropic_token_readonly() -> Optional[str]:
         # Fail-closed: any read error → treat as no token (no refresh attempt).
         pass
 
-    # 4. Anthropic credential_pool — read-only enumerate (no refresh, no writes).
-    # Mirrors _resolve_anthropic_pool_token() which explicitly avoids refresh/write.
+    # 4. Anthropic credential_pool — read raw entries directly (NO load_pool() which can write).
+    # CRITICAL: load_pool() can call write_credential_pool() as a side effect of
+    # normalization, pruning, or singleton seeding. We read the persisted JSON directly
+    # using read_credential_pool(), which is a pure read with no writes.
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+        from hermes_cli.auth import read_credential_pool
+        from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential
 
-        pool = load_pool("anthropic")
-        # Read-only: clear_expired=False, refresh=False (documented in anthropic_adapter.py).
-        entries = pool._available_entries(clear_expired=False, refresh=False)
-        for entry in entries:
+        raw_entries = read_credential_pool("anthropic")
+        if not isinstance(raw_entries, list):
+            raw_entries = []
+
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, dict):
+                continue
+            # Parse entry using PooledCredential.from_dict (pure, no persistence).
+            try:
+                entry = PooledCredential.from_dict("anthropic", raw_entry)
+            except Exception:
+                continue
+            # Filter for OAuth tokens only.
             if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
                 continue
             token = (getattr(entry, "access_token", None) or "").strip()
@@ -804,7 +819,10 @@ def _resolve_anthropic_token_readonly() -> Optional[str]:
                 return token
     except Exception:
         # Fail-closed: any pool read error → move to fallback.
-        pass
+        logger.debug(
+            "Anthropic credential_pool read failed (fail-closed)",
+            exc_info=True,
+        )
 
     # 5. Regular API key or legacy OAuth token in ANTHROPIC_API_KEY (env var, no refresh).
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()

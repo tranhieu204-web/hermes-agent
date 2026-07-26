@@ -646,19 +646,32 @@ def test_anthropic_oauth_usage_with_percentage_already_scaled(monkeypatch):
 
 
 def test_readonly_resolver_uses_env_vars_only(monkeypatch):
-    """Verify read-only resolver returns env vars without attempting refresh."""
+    """Verify read-only resolver returns env vars without attempting refresh or writes."""
+    import hermes_cli.auth as auth_mod
+
     # Set only env vars, no credential file.
     monkeypatch.setenv("ANTHROPIC_TOKEN", "oauth-env-token")
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
+    # Spy on write functions — assert they're never called.
+    write_pool_calls = []
+
+    def spy_write_pool(*args, **kwargs):
+        write_pool_calls.append((args, kwargs))
+        raise AssertionError("write_credential_pool must not be called from readonly resolver")
+
+    monkeypatch.setattr(auth_mod, "write_credential_pool", spy_write_pool)
+
     token = account_usage._resolve_anthropic_token_readonly()
 
     assert token == "oauth-env-token"
+    assert write_pool_calls == [], "Pool write must not occur"
 
 
 def test_readonly_resolver_reads_claude_code_creds_without_refresh(monkeypatch):
-    """Verify read-only resolver reads Claude Code credentials without attempting refresh."""
+    """Verify read-only resolver reads credentials without refresh or write side effects."""
     from agent import anthropic_adapter
+    import hermes_cli.auth as auth_mod
 
     creds = {"accessToken": "claude-stored-token", "refreshToken": "refresh-xxx"}
 
@@ -683,14 +696,29 @@ def test_readonly_resolver_reads_claude_code_creds_without_refresh(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
+    # Spy on writers — assert they're never called.
+    write_pool_calls = []
+
+    def spy_write_pool(*args, **kwargs):
+        write_pool_calls.append((args, kwargs))
+        raise AssertionError("write_credential_pool must not be called")
+
+    monkeypatch.setattr(auth_mod, "write_credential_pool", spy_write_pool)
+
     token = account_usage._resolve_anthropic_token_readonly()
 
     assert token == "claude-stored-token"
+    assert write_pool_calls == [], "Pool write must not occur"
 
 
 def test_readonly_resolver_returns_none_on_expired_claude_code_token(monkeypatch):
-    """Verify read-only resolver returns None on expired Claude Code token (no refresh attempt)."""
+    """Verify expired token → None without refresh POST (mutation-sensitive test).
+
+    This test FAILS if someone reintroduces _refresh_oauth_token() into the resolver.
+    The spy ensures any refresh attempt is immediately detected.
+    """
     from agent import anthropic_adapter
+    import hermes_cli.auth as auth_mod
 
     creds = {"accessToken": "expired-token", "refreshToken": "refresh-xxx"}
 
@@ -715,9 +743,30 @@ def test_readonly_resolver_returns_none_on_expired_claude_code_token(monkeypatch
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
+    # MUTATION-SENSITIVE: spy on _refresh_oauth_token() to detect if someone reintroduces it.
+    # This test MUST FAIL if refresh is called, so we spy and assert zero calls.
+    refresh_calls = []
+
+    def spy_refresh(creds):
+        refresh_calls.append(creds)
+        raise AssertionError("_refresh_oauth_token must not be called in readonly resolver")
+
+    monkeypatch.setattr(anthropic_adapter, "_refresh_oauth_token", spy_refresh)
+
+    # Also spy on pool writes.
+    write_pool_calls = []
+
+    def spy_write_pool(*args, **kwargs):
+        write_pool_calls.append((args, kwargs))
+        raise AssertionError("write_credential_pool must not be called")
+
+    monkeypatch.setattr(auth_mod, "write_credential_pool", spy_write_pool)
+
     token = account_usage._resolve_anthropic_token_readonly()
 
     assert token is None, "Expired token must return None, not attempt refresh"
+    assert refresh_calls == [], "Refresh must not be called (MUTATION-SENSITIVE)"
+    assert write_pool_calls == [], "Pool write must not occur"
 
 
 def test_usage_window_fetch_fails_closed_on_http_error(monkeypatch, anthropic_oauth_usage_payload):
