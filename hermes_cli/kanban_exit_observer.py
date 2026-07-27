@@ -315,12 +315,42 @@ def _write_error_receipt(args, error: str, detail: str) -> None:
         pass
 
 
+def _existing_receipt_blocks_recovery(path: str) -> str:
+    """Return a reason when the on-disk receipt must not be replaced.
+
+    A FINAL receipt (exited/observer_error) is settled evidence — a recovery
+    observer arriving late must never overwrite it. An unparseable receipt
+    is preserved too: invalid bytes are first-class evidence for the
+    dispatcher's ``observer_invalid`` handling, not something to paper over.
+    Returns "" when recovery may proceed (launched-state receipt).
+    """
+    try:
+        raw = open(path, "rb").read()
+    except FileNotFoundError:
+        # No receipt at all: the identity we were dispatched with is the
+        # only binding left; proceeding writes the launch-bound evidence.
+        return ""
+    except OSError:
+        return "receipt_unreadable"
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return "receipt_invalid_preserved"
+    if isinstance(data, dict) and data.get("final") is True:
+        return "receipt_already_final"
+    return ""
+
+
 def _run_recovery(args) -> int:
     """Reattach to a live worker whose primary observer died.
 
     The recovery handle pins the process object, so the exit code read after
     the wait belongs to exactly the process whose start fingerprint the
-    dispatcher validated before dispatching this recovery observer.
+    dispatcher validated before dispatching this recovery observer. The
+    dispatcher passes through the ORIGINAL launch's ``--kind`` and
+    ``--exit-contract`` (read from the launched receipt), so a recovered
+    Claude-route exit 75 stays a generic nonzero exit — recovery re-observes
+    a launch, it never re-labels it.
     """
     import ctypes
     from ctypes import wintypes
@@ -328,6 +358,13 @@ def _run_recovery(args) -> int:
     if not args.worker_pid:
         print("--recover requires --worker-pid", file=sys.stderr)
         return EXIT_USAGE
+
+    blocked = _existing_receipt_blocks_recovery(args.receipt)
+    if blocked == "receipt_already_final":
+        return EXIT_OK  # settled evidence; nothing to recover
+    if blocked:
+        print(f"recovery refused: {blocked}", file=sys.stderr)
+        return EXIT_OBSERVER_ERROR
 
     pid = int(args.worker_pid)
     live_start = _pid_start(pid)
@@ -383,8 +420,12 @@ def _run_recovery(args) -> int:
             )
             _try_write_final(args, final)
             return EXIT_OBSERVER_ERROR
+        # Re-check right before publishing: if the primary observer won the
+        # race and already finalized, its receipt is the settled evidence.
+        if _existing_receipt_blocks_recovery(args.receipt) == \
+                "receipt_already_final":
+            return EXIT_OK
         final = _finalize(receipt, state="exited", exit_code=int(code.value))
-        final["recovered"] = True
         if not _try_write_final(args, final):
             return EXIT_OBSERVER_ERROR
         return EXIT_OK

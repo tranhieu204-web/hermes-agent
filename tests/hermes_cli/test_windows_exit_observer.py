@@ -616,6 +616,10 @@ def test_receipt_round_trip_valid(logdir):
     ({"worker_pid": 0}, "bad_worker_pid"),
     ({"exit_semantics": "posix_wait_status"}, "bad_exit_semantics"),
     ({"exit_code": 7}, "unexpected_exit_code"),  # launched with a code
+    ({"recovered": True}, "unknown_keys"),       # closed key set
+    ({"observed_at": "2026-07-27T00:00:01Z"}, "unexpected_observed_at"),
+    ({"observer_error": "oops"}, "unexpected_observer_error"),
+    ({"observer_error_detail": "x" * 501}, "bad_observer_error_detail"),
 ])
 def test_receipt_exact_schema_rejections(logdir, mutation, reason):
     path = _write_receipt(logdir, _mk_receipt(**mutation))
@@ -623,6 +627,22 @@ def test_receipt_exact_schema_rejections(logdir, mutation, reason):
     assert state == "invalid"
     assert rec["reason"] == reason
     assert rec["_sha256"], "invalid receipts keep their hash as evidence"
+
+
+def test_receipt_missing_key_rejected(logdir):
+    rec = _mk_receipt()
+    del rec["boot_id"]
+    path = _write_receipt(logdir, rec)
+    state, out = kb.read_exit_receipt(path)
+    assert state == "invalid"
+    assert out["reason"] == "missing_keys"
+
+
+def test_final_receipt_requires_observed_at(logdir):
+    path = _write_receipt(logdir, _final(_mk_receipt(), observed_at=None))
+    state, out = kb.read_exit_receipt(path)
+    assert state == "invalid"
+    assert out["reason"] == "missing_observed_at"
 
 
 def test_exited_receipt_requires_int_code_not_bool(logdir):
@@ -843,6 +863,227 @@ def test_duplicate_launch_reservation_rejected(observer_on, monkeypatch):
 
 
 # ===========================================================================
+# Hermes L0b findings — recovery contract, board binding, fail-closed conflict
+# ===========================================================================
+def _bind_launch(conn, tid, rid, worker, wstart, obs_pid, launch_id):
+    conn.execute(
+        "UPDATE tasks SET worker_pid=?, worker_pid_start=?, observer_pid=?, "
+        "observer_pid_start=?, worker_launch_id=? WHERE id=?",
+        (worker, wstart, obs_pid, None, launch_id, tid))
+    conn.execute(
+        "UPDATE task_runs SET worker_pid=?, worker_pid_start=?, "
+        "observer_pid=?, observer_pid_start=?, worker_launch_id=? "
+        "WHERE id=?",
+        (worker, wstart, obs_pid, None, launch_id, rid))
+    conn.commit()
+
+
+def _launched_receipt_for(tid, rid, claim_lock, *, worker_pid,
+                          worker_pid_start, observer_pid,
+                          command_kind="hermes",
+                          exit_contract="hermes_kanban_v1",
+                          launch_id="c" * 32, board="default", **over):
+    rec = _mk_receipt(
+        task_id=tid, run_id=str(rid), board=board, launch_id=launch_id,
+        claim_lock_sha256=kb._claim_lock_sha256(claim_lock),
+        command_kind=command_kind, exit_contract=exit_contract,
+        observer_pid=observer_pid, worker_pid=worker_pid,
+        worker_pid_start=worker_pid_start,
+    )
+    rec.update(over)
+    return rec
+
+
+def test_recovery_observer_inherits_original_contract(observer_on, tmp_path):
+    """Hermes L0b blocking #1: recovery re-observes, it never re-labels.
+
+    A Claude-route (generic_process_v1) worker whose primary observer died
+    is recovered; it exits 75. The recovered receipt must keep the generic
+    contract so 75 stays nonzero_exit — not Hermes rate_limited."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="recover", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        rid = task.current_run_id
+        worker = subprocess.Popen(
+            [sys.executable, "-c",
+             "import time,sys; time.sleep(4); sys.exit(75)"])
+        try:
+            wstart = kb._process_start_time(worker.pid)
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait(timeout=30)
+            _bind_launch(conn, tid, rid, worker.pid, wstart, dead.pid,
+                         "c" * 32)
+            receipt_path = kb.exit_receipt_path(tid, run_id=rid)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.write_text(json.dumps(_launched_receipt_for(
+                tid, rid, task.claim_lock, worker_pid=worker.pid,
+                worker_pid_start=wstart, observer_pid=dead.pid,
+                command_kind="claude_plan",
+                exit_contract="generic_process_v1")), encoding="utf-8")
+
+            kb.reconcile_windows_exit_receipts(conn)
+            row = conn.execute(
+                "SELECT observer_pid FROM task_runs WHERE id=?",
+                (rid,)).fetchone()
+            assert row["observer_pid"] != dead.pid, (
+                "recovery observer must CAS its identity into the run")
+            ev = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id=? AND "
+                "kind='exit_observer_recovery'", (tid,)).fetchone()
+            assert ev is not None
+
+            worker.wait(timeout=30)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                state, rec = kb.read_exit_receipt(receipt_path)
+                if state == "exited":
+                    break
+                time.sleep(0.1)
+            assert state == "exited", "recovery observer must finalize"
+            assert rec["exit_contract"] == "generic_process_v1", (
+                "recovery must inherit the ORIGINAL launch contract")
+            assert rec["command_kind"] == "claude_plan"
+            assert rec["exit_code"] == 75
+            assert kb._map_receipt_exit(rec) == ("nonzero_exit", 75)
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+
+
+def test_recovery_refuses_to_overwrite_final_receipt(observer_on, tmp_path):
+    """A late recovery observer must treat a final receipt as settled
+    evidence — exit 0, bytes untouched."""
+    receipt = tmp_path / "t_r.run1.exit-receipt.json"
+    final_rec = _final(_mk_receipt(), code=7)
+    receipt.write_text(json.dumps(final_rec), encoding="utf-8")
+    before = receipt.read_bytes()
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        out = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.kanban_exit_observer",
+             "--recover", "--receipt", str(receipt), "--task", "t_r",
+             "--run", "1", "--launch", "a" * 32, "--board", "default",
+             "--kind", "hermes", "--exit-contract", "hermes_kanban_v1",
+             "--claim-lock-sha256", kb._claim_lock_sha256("lock"),
+             "--log", str(tmp_path / "t_r.log"),
+             "--worker-pid", str(sleeper.pid)],
+            capture_output=True, text=True, timeout=60,
+            cwd=str(Path(kb.__file__).resolve().parent.parent),
+        )
+        assert out.returncode == 0, out.stderr
+        assert receipt.read_bytes() == before, (
+            "final receipt bytes must never be replaced by recovery")
+    finally:
+        sleeper.kill()
+
+
+def test_named_board_evidence_stays_on_its_board(observer_on, tmp_path,
+                                                 monkeypatch):
+    """Hermes L0b blocking #2: a named-board dispatch writes AND reads its
+    exit evidence under that board, end to end."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    script = _fake_worker(tmp_path, 9)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+    with kb.connect(board="alpha") as conn:
+        tid = kb.create_task(conn, title="board-bound", assignee="worker",
+                             board="alpha")
+        result = kb.dispatch_once(conn, board="alpha")
+        assert [s[0] for s in result.spawned] == [tid]
+        task = kb.get_task(conn, tid)
+        rid = task.current_run_id
+        receipt_path = kb.exit_receipt_path(tid, board="alpha", run_id=rid)
+        assert "alpha" in str(receipt_path)
+        _wait_pid_gone(task.worker_pid)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            state, rec = kb.read_exit_receipt(receipt_path)
+            if state == "exited":
+                break
+            time.sleep(0.1)
+        assert state == "exited", "receipt must land on the named board"
+        assert rec["board"] == "alpha"
+
+        crashed = kb.detect_crashed_workers(conn, board="alpha")
+        assert tid in crashed
+        _s, sup = kb.read_supervisor_record(tid, board="alpha", run_id=rid)
+        assert _s == "valid"
+        assert sup["exit_code"] == 9
+        assert sup["board"] == "alpha"
+
+
+def test_conflicting_evidence_fails_closed_to_triage(observer_on, tmp_path):
+    """Hermes L0b blocking #3: a conflicting receipt (PID-reuse fingerprint)
+    for a dead worker must NOT close/requeue normally — the task parks in
+    triage without consuming the failure budget."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="conflict", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        rid = task.current_run_id
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait(timeout=30)
+        _bind_launch(conn, tid, rid, dead.pid, 777, os.getpid(), "c" * 32)
+        receipt_path = kb.exit_receipt_path(tid, run_id=rid)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(json.dumps(_final(_launched_receipt_for(
+            tid, rid, task.claim_lock, worker_pid=dead.pid,
+            worker_pid_start=111,  # != 777: a different process entirely
+            observer_pid=os.getpid()), code=7)), encoding="utf-8")
+
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid not in crashed, "conflict must not be billed as a crash"
+        after = kb.get_task(conn, tid)
+        assert after.status == "triage"
+        assert after.consecutive_failures == 0, (
+            "conflicting evidence must not consume the failure budget")
+        run = _latest_run(conn, tid)
+        assert run["outcome"] == "conflict"
+        ev = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND "
+            "kind='exit_evidence_conflict'", (tid,)).fetchone()
+        assert ev is not None
+
+
+def test_late_receipt_with_bad_identity_never_enriches(observer_on,
+                                                       tmp_path):
+    """Hermes L0b blocking #4: pass-B late reconciliation must fully bind
+    identity before touching history — a fingerprint-mismatched receipt
+    yields a conflict event, not a coded late_exit_observation."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="late-bad", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        rid = task.current_run_id
+        conn.execute(
+            "UPDATE task_runs SET worker_launch_id=?, worker_pid_start=? "
+            "WHERE id=?", ("c" * 32, 777, rid))
+        conn.commit()
+        with kb.write_txn(conn):
+            kb._end_run(conn, tid, outcome="timed_out", status="timed_out")
+        receipt_path = kb.exit_receipt_path(tid, run_id=rid)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(json.dumps(_final(_launched_receipt_for(
+            tid, rid, task.claim_lock, worker_pid=4242,
+            worker_pid_start=111,  # != 777 on the closed run row
+            observer_pid=os.getpid()), code=5)), encoding="utf-8")
+
+        kb.reconcile_windows_exit_receipts(conn)
+        late = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND "
+            "kind='late_exit_observation'", (tid,)).fetchone()
+        assert late is None, "mismatched identity must not enrich history"
+        conflict = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND "
+            "kind='exit_evidence_conflict'", (tid,)).fetchone()
+        assert conflict is not None
+        run = _latest_run(conn, tid)
+        meta = json.loads(run["metadata"] or "{}")
+        assert "late_exit_code" not in meta
+
+
+# ===========================================================================
 # Mutation guards — source-level invariants
 # ===========================================================================
 def test_production_routes_cannot_bypass_the_launch_primitive():
@@ -880,9 +1121,10 @@ def test_dispatch_tick_reconciles_before_crash_detection():
     import inspect
 
     src = inspect.getsource(kb._dispatch_once_locked)
-    assert "reconcile_windows_exit_receipts(conn)" in src
-    assert src.index("reconcile_windows_exit_receipts(conn)") < src.index(
-        "result.crashed = detect_crashed_workers(conn)")
+    assert "reconcile_windows_exit_receipts(conn, board=board)" in src
+    assert src.index(
+        "reconcile_windows_exit_receipts(conn, board=board)") < src.index(
+        "result.crashed = detect_crashed_workers(conn, board=board)")
 
 
 def test_every_new_seam_has_nontest_production_callers():
