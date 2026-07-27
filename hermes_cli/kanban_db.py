@@ -8776,9 +8776,40 @@ def _task_uses_claude_plan_route(task) -> bool:
                      getattr(task, "model_override", None)):
             if hint and get_lane_name(str(hint)) == CLAUDE_PLAN_LANE:
                 return bool(claude_cli_path())
+        # No task-level override: fall back to the ASSIGNEE PROFILE's provider.
+        # Without this the route only fired for tasks I explicitly overrode — the
+        # exact "fixed the path I tested, not the path the system takes" mistake.
+        # role-coo and role-inspector are configured `provider: anthropic`, so a
+        # plain task on those profiles would otherwise reach the forbidden API.
+        prof = _profile_provider(getattr(task, "assignee", None))
+        if prof and get_lane_name(prof) == CLAUDE_PLAN_LANE:
+            return bool(claude_cli_path())
     except Exception:
         return False
     return False
+
+
+def _profile_provider(assignee) -> Optional[str]:
+    """Provider configured for a kanban assignee profile, or None."""
+    if not assignee:
+        return None
+    try:
+        import yaml
+
+        from hermes_constants import get_default_hermes_root
+
+        cfg = get_default_hermes_root() / "profiles" / str(assignee) / "config.yaml"
+        if not cfg.is_file():
+            return None
+        with open(cfg, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        model = data.get("model")
+        if isinstance(model, dict):
+            prov = model.get("provider")
+            return str(prov).strip() if prov else None
+    except Exception:
+        return None
+    return None
 
 
 def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, board=None):
