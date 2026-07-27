@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping
 
 from utils import atomic_replace
 
-from .live_capacity import RELEVANT_WEEKLY_WINDOWS
+from .live_capacity import RELEVANT_WEEKLY_WINDOWS, weekly_used_percents
 from .usage_paths import COCKPIT_MIRROR_PATH, default_native_usage_path, resolve_usage_path
 
 SCHEMA_VERSION = "plans-1"
@@ -282,15 +282,15 @@ def _find_plan(plans: list[dict[str, Any]], needles: tuple[str, ...]) -> dict[st
 def _weekly_used_from_snapshot(
     snapshot: object, *, lane_id: str
 ) -> float | None:
-    relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
-    values: list[float] = []
-    for window in getattr(snapshot, "windows", None) or ():
-        label = str(getattr(window, "label", "") or "").strip().casefold()
-        if label not in relevant:
-            continue
-        used = _clamp_pct(getattr(window, "used_percent", None))
-        if used is not None:
-            values.append(used)
+    # Single shared implementation with LiveUsageAdapter — the two paths drifting
+    # apart is how a lane ends up measured in one place and blind in the other.
+    values = [
+        pct
+        for pct in (
+            _clamp_pct(raw) for raw in weekly_used_percents(snapshot, lane_id=lane_id)
+        )
+        if pct is not None
+    ]
     return max(values) if values else None
 
 

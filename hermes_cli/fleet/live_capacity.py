@@ -27,6 +27,16 @@ from .types import (
 )
 
 
+# A single-window snapshot whose reset lands in this band is treated as a
+# weekly-cadence quota even though its label is not in RELEVANT_WEEKLY_WINDOWS.
+# Deliberately NARROW (ruling: Hermes, 2026-07-27): a generic ">24h out" rule
+# was rejected because misclassifying a short burn window as weekly headroom
+# would corrupt builder routing and the reserve floor. Both conditions must
+# hold — exactly one usable window AND a 5-8 day horizon — or the lane stays
+# unmeasured, which is the safe outcome.
+WEEKLY_HORIZON_MIN_DAYS = 5.0
+WEEKLY_HORIZON_MAX_DAYS = 8.0
+
 RELEVANT_WEEKLY_WINDOWS = {
     "chatgpt_codex": frozenset({"weekly"}),
     # Claude's aggregate weekly cap and the Opus-specific cap can both
@@ -34,6 +44,67 @@ RELEVANT_WEEKLY_WINDOWS = {
     # not describe this lane's weekly headroom.
     "claude_code": frozenset({"current week", "opus week"}),
 }
+
+
+def _horizon_days(window: object, *, now: datetime | None = None) -> float | None:
+    """Days until this window resets, or None when it carries no reset time."""
+    reset_at = getattr(window, "reset_at", None)
+    if reset_at is None:
+        return None
+    try:
+        reference = now or datetime.now(timezone.utc)
+        if reset_at.tzinfo is None:
+            reset_at = reset_at.replace(tzinfo=timezone.utc)
+        return (reset_at - reference).total_seconds() / 86400.0
+    except Exception:
+        return None
+
+
+def weekly_used_percents(
+    source: object, *, lane_id: str, now: datetime | None = None
+) -> list[float]:
+    """Weekly-scale used-percent readings for a lane.
+
+    PRIMARY: exact label match against ``RELEVANT_WEEKLY_WINDOWS`` — unchanged,
+    and always preferred.
+
+    FALLBACK (narrow, opt-in by evidence): when NO label matches, accept a
+    snapshot that has exactly ONE usable window whose reset is
+    ``WEEKLY_HORIZON_MIN_DAYS``-``WEEKLY_HORIZON_MAX_DAYS`` out. This exists
+    because OpenAI's usage API currently returns a single ``primary_window``
+    labelled "Session" whose reset is ~5.7 days away, with no
+    ``secondary_window`` percentage — so chatgpt_codex was unmeasurable and the
+    router chose lanes blind.
+
+    Anything else returns [] and the lane stays UNMEASURED. Unmeasured is the
+    safe failure: fabricating weekly headroom from a short burn window would
+    corrupt routing and the reserve floor.
+    """
+    relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
+    windows = list(getattr(source, "windows", ()) or ())
+
+    labelled: list[float] = []
+    usable: list[object] = []
+    for window in windows:
+        used = getattr(window, "used_percent", None)
+        if used is None:
+            continue
+        usable.append(window)
+        label = str(getattr(window, "label", "") or "").strip().casefold()
+        if label in relevant:
+            labelled.append(float(used))
+    if labelled:
+        return labelled
+
+    if len(usable) != 1:
+        return []
+    only = usable[0]
+    horizon = _horizon_days(only, now=now)
+    if horizon is None:
+        return []
+    if not (WEEKLY_HORIZON_MIN_DAYS <= horizon <= WEEKLY_HORIZON_MAX_DAYS):
+        return []
+    return [float(getattr(only, "used_percent"))]
 
 
 class LiveUsageAdapter:
@@ -87,14 +158,9 @@ class LiveUsageAdapter:
 
     @classmethod
     def _weekly_used_values(cls, lane_id: str, source: object) -> list[Decimal]:
-        relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
-        values: list[Decimal] = []
-        for window in getattr(source, "windows", ()) or ():
-            label = str(getattr(window, "label", "") or "").strip().casefold()
-            used = getattr(window, "used_percent", None)
-            if label not in relevant or used is None:
-                continue
-            values.append(_plan_percentage(used))
+        values = [
+            _plan_percentage(v) for v in weekly_used_percents(source, lane_id=lane_id)
+        ]
         return values
 
     def read(
