@@ -620,6 +620,64 @@ def task_attachments_dir(task_id: str, board: Optional[str] = None) -> Path:
     return attachments_root(board=board) / task_id
 
 
+# --------------------------------------------------------------------------
+# Terminal-cause diagnosis (S7: failure evidence is too lossy)
+# --------------------------------------------------------------------------
+# Every crashed run recorded "pid <N> not alive" — 30 of 50 runs on 2026-07-27,
+# a 60% crash rate whose real causes (Grok HTTP 403 spending-limit, Codex
+# APIConnectionError behind an AV TLS intercept, 429s) existed ONLY in the
+# per-task worker log and reached neither the board, the failure counters, nor
+# the operator. A dispatcher that records death without cause makes every
+# failure look identical and un-actionable.
+
+# Ordered most-specific first: the first match wins, so a credit exhaustion is
+# never reported as a generic auth failure.
+_WORKER_FAILURE_SIGNATURES: tuple = (
+    ("provider quota exhausted (out of credits/subscription)",
+     ("spending-limit", "run out of credits", "personal-team-blocked")),
+    ("provider rate limited", ("rate_limit_exceeded", "RateLimitError", "HTTP 429", " 429 ")),
+    ("provider auth rejected", ("PermissionDeniedError", "AuthenticationError",
+                                "HTTP 401", "HTTP 403", "invalid_api_key")),
+    ("provider unreachable (connection/TLS)", ("APIConnectionError", "Connection error",
+                                               "SSLError", "ECONNREFUSED", "ConnectTimeout")),
+    ("provider stream silent (no bytes before cutoff)", ("no stream events", "TTFB", "stream timeout")),
+    ("context window exhausted", ("Cannot compress further", "context length", "413")),
+)
+
+_WORKER_LOG_SCAN_BYTES = 200_000
+
+
+def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """Best-effort terminal cause for a dead worker, read from its own log.
+
+    Returns a short human cause, or None when nothing recognizable is present —
+    None means "unknown", never a guess. Failures here are swallowed: a
+    diagnosis is an enrichment and must NEVER prevent a run from being closed
+    out, or a crashed task could never be released.
+    """
+    try:
+        log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+        if not log_path.is_file():
+            return None
+        size = log_path.stat().st_size
+        with open(log_path, "rb") as fh:
+            if size > _WORKER_LOG_SCAN_BYTES:
+                fh.seek(size - _WORKER_LOG_SCAN_BYTES)
+            # Explicitly bounded: an unbounded read() would pull a multi-hundred-MB
+            # worker log into memory inside the dispatcher tick. The bound is also
+            # the CONTRACT — only the tail is diagnosed, because the terminal cause
+            # is what killed the worker, not an error it already recovered from.
+            blob = fh.read(_WORKER_LOG_SCAN_BYTES).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    for cause, needles in _WORKER_FAILURE_SIGNATURES:
+        for needle in needles:
+            if needle in blob:
+                return cause
+    return None
+
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -7446,8 +7504,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} killed by signal {code}"
                 else:
                     error_text = f"pid {pid} not alive"
+                # Attach the real terminal cause when the worker's own log
+                # carries one, so the board shows "provider quota exhausted"
+                # rather than an indistinguishable "pid not alive".
+                # NOTE: detect_crashed_workers has no `board` parameter — passing one
+                # here raises NameError and would break crash detection outright.
+                # The default resolves the current board, which is correct for a
+                # host-local dispatcher.
+                diagnosed = diagnose_worker_failure(row["id"])
+                if diagnosed:
+                    error_text = f"{error_text} — {diagnosed}"
                 event_kind = "crashed"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
+                if diagnosed:
+                    event_payload["diagnosed_cause"] = diagnosed
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
