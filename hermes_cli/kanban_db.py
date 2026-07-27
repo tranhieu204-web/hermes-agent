@@ -7466,6 +7466,134 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
+def observe_and_enforce_progress(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    stall_seconds: Optional[int] = None,
+    board: Optional[str] = None,
+    terminate_fn=None,
+) -> list:
+    """Record observed progress; terminate and requeue workers that have stalled.
+
+    The enforcement half of the progress contract. Detection alone leaves a hung
+    worker holding its slot forever (2026-07-26: 45 minutes at ~0 CPU, dispatcher
+    reporting healthy), so a confirmed stall must actually free the slot.
+
+    Returns a list of ``(task_id, pid, stalled_for)`` for tasks that were
+    terminated and requeued.
+
+    SAFETY — every one of these must hold before anything is killed:
+      * the claim is owned by THIS host (PIDs from other hosts are meaningless)
+      * the task is still ``running`` with the SAME pid we evaluated
+      * the PID is actually alive (a dead one is the crash path's business)
+      * the stall window has genuinely elapsed on OBSERVED evidence
+      * the run is outside the launch grace period
+    UNOBSERVABLE never terminates. Killing slow-but-live work is worse than
+    catching a hang late, so every ambiguous case declines to act.
+    """
+    now_ts = int(time.time() if now is None else now)
+    window = int(DEFAULT_STALL_SECONDS if stall_seconds is None else stall_seconds)
+    terminate = terminate_fn or _terminate_reclaimed_worker
+    stalled: list = []
+    pending_failures: list = []
+
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+            "FROM tasks WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        grace = _resolve_crash_grace_seconds()
+        for row in rows:
+            lock = row["claim_lock"] or ""
+            if not lock.startswith(host_prefix):
+                continue
+            started_at = row["started_at"] if "started_at" in row.keys() else None
+            if started_at is not None and now_ts - started_at < grace:
+                continue
+            run_id = row["current_run_id"] if "current_run_id" in row.keys() else None
+            if run_id is None:
+                continue
+            run = conn.execute(
+                "SELECT progress_fingerprint, last_progress_at FROM task_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                continue
+
+            current_fp = worker_progress_fingerprint(row["id"], board=board)
+            state, stalled_for = evaluate_worker_progress(
+                run["progress_fingerprint"], current_fp,
+                run["last_progress_at"], now_ts, window,
+            )
+
+            if state != PROGRESS_STALLED:
+                # Persist observed motion so the next tick measures from here.
+                if current_fp is not None and current_fp != run["progress_fingerprint"]:
+                    conn.execute(
+                        "UPDATE task_runs SET progress_fingerprint = ?, "
+                        "last_progress_at = ? WHERE id = ?",
+                        (current_fp, now_ts, run_id),
+                    )
+                elif run["last_progress_at"] is None and current_fp is not None:
+                    # First sighting: start the clock, never accuse.
+                    conn.execute(
+                        "UPDATE task_runs SET progress_fingerprint = ?, "
+                        "last_progress_at = ? WHERE id = ?",
+                        (current_fp, now_ts, run_id),
+                    )
+                continue
+
+            pid = row["worker_pid"]
+            if not _pid_alive(pid):
+                continue  # already dead -> detect_crashed_workers owns it
+
+            diagnosed = diagnose_worker_failure(row["id"], board=board)
+            error_text = (
+                f"pid {pid} stalled — no observed progress for {stalled_for}s "
+                f"(limit {window}s)"
+            )
+            if diagnosed:
+                error_text = f"{error_text} — {diagnosed}"
+
+            terminate(pid, lock)
+
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running' AND worker_pid = ?",
+                (row["id"], pid),
+            )
+            if cur.rowcount != 1:
+                continue  # raced with another reclaimer; leave it alone
+            conn.execute(
+                "UPDATE task_runs SET status = 'stalled', outcome = 'stalled', "
+                "ended_at = ?, error = ? WHERE id = ?",
+                (now_ts, error_text, run_id),
+            )
+            _append_event(conn, row["id"], "stalled",
+                          {"pid": pid, "stalled_for": stalled_for,
+                           "limit": window, "diagnosed_cause": diagnosed})
+            stalled.append((row["id"], pid, stalled_for))
+            pending_failures.append((row["id"], error_text))
+
+    # OUTSIDE the transaction: _record_task_failure opens its own write_txn and
+    # SQLite has no nested transactions, so calling it above raises
+    # "cannot start a transaction within a transaction" and the whole sweep
+    # dies. detect_crashed_workers collects-then-records for the same reason.
+    for task_id, error_text in pending_failures:
+        try:
+            # Counts as a failure so the EXISTING circuit breaker bounds retries;
+            # an unbounded stall-retry loop would just re-hang forever.
+            _record_task_failure(conn, task_id, error_text, outcome="stalled")
+        except Exception:
+            # The slot is already freed; a bookkeeping failure must not undo that.
+            logger.warning("stall: failed to record failure for %s", task_id, exc_info=True)
+
+    return stalled
+
+
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
