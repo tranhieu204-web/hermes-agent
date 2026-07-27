@@ -112,8 +112,87 @@ def load_picker_context() -> ConfigContext:
 
 
 
+# Picker VISIBILITY only: a lane row may render from the last proven live
+# receipt for up to this long after the 5-minute qualification TTL lapses.
+# Display is not admission — session create always re-runs the fail-closed
+# doctor (fresh live probe), so a stale-but-once-proven row can never admit
+# a broken route; it just keeps the lane discoverable between probes.
+_ROW_VISIBILITY_MAX_AGE_DAYS = 7
+
+
+def _visibility_receipt(lane_dir: str, lane_id: str) -> dict | None:
+    """Read the lane's last doctor receipt for display, ignoring the TTL."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from hermes_constants import get_hermes_home
+
+    path = get_hermes_home() / "fleet" / "evidence" / lane_dir / "doctor-live-proof.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema_version") != "2" or payload.get("lane_id") != lane_id:
+        return None
+    captured_raw = payload.get("captured_at")
+    if not isinstance(captured_raw, str):
+        return None
+    try:
+        captured_at = datetime.fromisoformat(captured_raw)
+    except ValueError:
+        return None
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - captured_at.astimezone(timezone.utc)
+    if age > timedelta(days=_ROW_VISIBILITY_MAX_AGE_DAYS):
+        return None
+    return payload
+
+
+def _antigravity_visibility_models() -> list[str] | None:
+    """Newest proven agy catalog from the last receipt, for display only."""
+    try:
+        from hermes_cli.fleet.profiles import profile_map
+
+        payload = _visibility_receipt("agy", "antigravity")
+        if payload is None or payload.get("status") != "matched":
+            return None
+        catalog = payload.get("qualified_models")
+        if not isinstance(catalog, list):
+            catalog = [payload.get("canonical_model_id")]
+        ordered = profile_map()["antigravity"].ordered_models
+        models = [m for m in ordered if m in catalog]
+        return models or None
+    except Exception:
+        return None
+
+
+def _claude_visibility_models() -> list[str] | None:
+    """Full claude catalog once the last lead receipt matched, display only."""
+    try:
+        from hermes_cli.fleet.profiles import profile_map
+
+        payload = _visibility_receipt("claude", "claude_code")
+        if payload is None:
+            return None
+        statuses = payload.get("models")
+        ordered = profile_map()["claude_code"].ordered_models
+        if (
+            not isinstance(statuses, dict)
+            or not ordered
+            or statuses.get(ordered[0]) != "matched"
+        ):
+            return None
+        return list(ordered)
+    except Exception:
+        return None
+
+
 def _antigravity_parent_provider_row(*, force_fresh: bool = False) -> dict | None:
-    """Expose only cache-proven Antigravity parent models unless refreshed."""
+    """Expose only receipt-proven Antigravity parent models unless refreshed."""
+    models: list[str] = []
     try:
         from hermes_cli.fleet.adapters.live_routes import _AGY_MODEL_LABELS
         from hermes_cli.fleet.live import FleetQualificationDoctor
@@ -123,11 +202,12 @@ def _antigravity_parent_provider_row(*, force_fresh: bool = False) -> dict | Non
             (profile_map()["antigravity"],),
             allow_live_probe=bool(force_fresh),
         )["antigravity"]
+        if qualification.qualified:
+            models = [m for m in qualification.models if m in _AGY_MODEL_LABELS]
     except Exception:
-        return None
-    if not qualification.qualified:
-        return None
-    models = [m for m in qualification.models if m in _AGY_MODEL_LABELS]
+        models = []
+    if not models:
+        models = _antigravity_visibility_models() or []
     if not models:
         return None
     return {
@@ -155,6 +235,7 @@ def _antigravity_parent_provider_row(*, force_fresh: bool = False) -> dict | Non
 
 def _claude_parent_provider_row(*, force_fresh: bool = False) -> dict | None:
     """Expose only receipt-proven Claude plan-CLI models unless refreshed."""
+    models: list[str] = []
     try:
         from hermes_cli.fleet.live import FleetQualificationDoctor
         from hermes_cli.fleet.profiles import profile_map
@@ -163,11 +244,12 @@ def _claude_parent_provider_row(*, force_fresh: bool = False) -> dict | None:
             (profile_map()["claude_code"],),
             allow_live_probe=bool(force_fresh),
         )["claude_code"]
+        if qualification.qualified:
+            models = list(qualification.models)
     except Exception:
-        return None
-    if not qualification.qualified:
-        return None
-    models = list(qualification.models)
+        models = []
+    if not models:
+        models = _claude_visibility_models() or []
     if not models:
         return None
     return {
