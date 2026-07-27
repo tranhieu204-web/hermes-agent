@@ -188,7 +188,12 @@ def test_no_invented_claude_model_ids(monkeypatch):
     monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
     selected = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
     assert selected.lane == "claude_code"
-    assert selected.model == "claude-sonnet-4-6"  # Real configured top model, not invented string
+    # Operator policy 2026-07-27 usage-tiers this lane: Fable 5 under 50% of the
+    # weekly window, Opus 5 after. Sonnet is no longer valid for a leader lane.
+    # The ORIGINAL intent of this test — never emit an invented model id — is
+    # preserved by pinning to the real, known Claude ids.
+    assert selected.model in {"claude-fable-5", "claude-opus-5"}
+    assert selected.model != "claude-sonnet-4-6"
 
 
 def test_disabled_lane_never_selected_or_in_fallback(monkeypatch):
