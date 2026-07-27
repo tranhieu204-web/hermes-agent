@@ -9251,6 +9251,79 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+CLAUDE_PLAN_LANE = "claude_code"
+
+
+def claude_cli_path() -> Optional[str]:
+    """Resolve the Claude Code executable, or None when unavailable."""
+    import shutil
+
+    for cand in (os.environ.get("CLAUDE_CLI_PATH"), "claude",
+                 str(Path.home() / ".local" / "bin" / "claude.exe")):
+        if not cand:
+            continue
+        found = shutil.which(cand) if not os.path.isabs(cand) else (
+            cand if os.path.isfile(cand) else None)
+        if found:
+            return found
+    return None
+
+
+def _task_uses_claude_plan_route(task) -> bool:
+    """True when this task should run on the Claude Code CLI (the plan route)."""
+    try:
+        from gateway.fleet_safety.selector import get_lane_name
+
+        for hint in (getattr(task, "provider_override", None),
+                     getattr(task, "model_override", None)):
+            if hint and get_lane_name(str(hint)) == CLAUDE_PLAN_LANE:
+                return bool(claude_cli_path())
+    except Exception:
+        return False
+    return False
+
+
+def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, board=None):
+    """Run a kanban task on the Claude Code CLI, on the PLAN, never the API.
+
+    Headless `claude -p` is used exactly as verified by hand:
+        claude -p "<prompt>"   ->  clean stdout, exit 0
+    The prompt carries the kanban completion contract, because claude.exe is not a
+    hermes worker and will not close the card by itself.
+    """
+    import subprocess
+
+    exe = claude_cli_path()
+    if not exe:
+        raise RuntimeError("claude CLI not found; cannot use the plan route")
+
+    model = getattr(task, "model_override", None) or ""
+    nl = chr(10)
+    contract = (
+        prompt + nl + nl
+        + "--- KANBAN CONTRACT ---" + nl
+        + "You are running as a kanban worker for task " + str(task.id) + "." + nl
+        + "When the work is done you MUST close the card yourself by running:" + nl
+        + "  hermes kanban complete " + str(task.id) + " --result \"<one line>\"" + nl
+        + "If you cannot finish, run: hermes kanban block " + str(task.id) + nl
+        + "Do not stop without doing one of those two."
+    )
+    cmd = [exe, "-p", contract, "--dangerously-skip-permissions"]
+    if model:
+        cmd.extend(["--model", model])
+
+    logger.info("kanban dispatch %s: CLAUDE PLAN ROUTE via %s (model=%s)",
+                task.id, exe, model or "<default>")
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(log_dir / f"{task.id}.log", "ab", buffering=0)
+    proc = subprocess.Popen(
+        cmd, cwd=workspace, env=env, stdout=handle, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, creationflags=no_console_creationflags(),
+    )
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -9375,6 +9448,16 @@ def _default_spawn(
     # highest-precedence interface override; dropping the env var covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
+
+    # CLAUDE PLAN ROUTE (operator rule: no agent runs through an API).
+    # Hermes has no CLI transport for the anthropic provider — its adapter is an
+    # HTTP client to api.anthropic.com, and Anthropic now rejects plan tokens sent
+    # that way ("Third-party apps now draw from your extra usage"). But the Claude
+    # Code CLI itself works headlessly on the plan: `claude -p "..."` returns
+    # cleanly. So for claude-lane tasks we invoke claude.exe DIRECTLY instead of
+    # routing a hermes worker through the forbidden API.
+    if _task_uses_claude_plan_route(task):
+        return _spawn_claude_plan_worker(task, workspace, env, prompt, log_path=None, board=board)
 
     cmd = [
         *_resolve_hermes_argv(),
