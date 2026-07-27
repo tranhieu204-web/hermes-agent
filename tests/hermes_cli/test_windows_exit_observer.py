@@ -1890,18 +1890,15 @@ def test_manual_reclaim_defers_when_worker_survives(
                 pass
 
 
-def test_stale_reclaim_initiator_matches_authorizing_branch(
+def test_stale_reclaim_never_initiates_termination(
     observer_on, tmp_path, monkeypatch
 ):
-    """I-7: ``release_stale_claims`` must record the cause of the branch
-    that AUTHORIZED the action — heartbeat staleness vs claim-TTL expiry
-    are different causes and must not collapse into ``claim_ttl``."""
+    """A1: elapsed TTL plus stale heartbeat is never termination authority."""
     import hermes_cli.profiles as profiles
 
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
 
     with kb.connect() as conn:
-        # Case A: pid ALIVE but heartbeat stale — heartbeat_stale initiator.
         script = _fake_worker(tmp_path, 0, sleep_s=30)
         monkeypatch.setattr(
             kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
@@ -1915,30 +1912,20 @@ def test_stale_reclaim_initiator_matches_authorizing_branch(
             "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
             "WHERE id = ?", (now - 10, now - 7200, tid_a))
         conn.commit()
-        kb.release_stale_claims(conn)
-        _s, sup = kb.read_supervisor_record(tid_a, run_id=run_a)
-        assert _s == "valid"
-        assert sup["termination_initiator"] == "heartbeat_stale"
+        try:
+            assert kb.release_stale_claims(conn) == 0
+            after = kb.get_task(conn, tid_a)
+            assert after.status == "running"
+            assert after.claim_expires > now
+            state, _record = kb.read_supervisor_record(tid_a, run_id=run_a)
+            assert state == "absent"
+        finally:
+            from gateway.status import terminate_pid
 
-        # Case B: pid DEAD, no heartbeat, TTL expired — claim_ttl initiator.
-        script_b = _fake_worker(tmp_path, 3)
-        monkeypatch.setattr(
-            kb, "_resolve_hermes_argv",
-            lambda: [sys.executable, str(script_b)])
-        tid_b = kb.create_task(conn, title="ttl", assignee="worker")
-        result = kb.dispatch_once(conn)
-        assert tid_b in [s[0] for s in result.spawned]
-        task_b = kb.get_task(conn, tid_b)
-        run_b = task_b.current_run_id
-        _wait_pid_gone(task_b.worker_pid)
-        conn.execute(
-            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = NULL "
-            "WHERE id = ?", (int(time.time()) - 10, tid_b))
-        conn.commit()
-        kb.release_stale_claims(conn)
-        _s, sup = kb.read_supervisor_record(tid_b, run_id=run_b)
-        assert _s == "valid"
-        assert sup["termination_initiator"] == "claim_ttl"
+            try:
+                terminate_pid(int(task_a.worker_pid), force=True)
+            except OSError:
+                pass
 
 
 def test_gate_off_launch_is_byte_identical_legacy_contract(
@@ -2112,20 +2099,20 @@ def test_every_new_seam_has_exact_production_callers():
             "detect_crashed_workers": 1,
             "reconcile_windows_exit_receipts": 1,
         },
-        # tier-1 initiated causes: every reclaim/timeout/archive seam
+        # Tier-1 initiated causes: explicit reclaim/timeout/archive seams.
+        # Automatic inactivity recovery (detect_stale_running and
+        # release_stale_claims) is intentionally absent from all three maps:
+        # elapsed observations may prove an identity already gone, but cannot
+        # initiate termination or call a destructive process primitive.
         "_record_initiated_termination": {
-            "archive_task": 1, "detect_stale_running": 1,
-            "enforce_max_runtime": 1, "reclaim_task": 1,
-            "release_stale_claims": 1,
+            "archive_task": 1, "enforce_max_runtime": 1, "reclaim_task": 1,
         },
         # shared terminator + survival hold at every reclaim seam
         "_terminate_reclaimed_worker": {
-            "detect_stale_running": 1, "enforce_max_runtime": 1,
-            "reclaim_task": 1, "release_stale_claims": 1,
+            "enforce_max_runtime": 1, "reclaim_task": 1,
         },
         "_worker_survived_termination": {
-            "detect_stale_running": 1, "enforce_max_runtime": 1,
-            "reclaim_task": 1, "release_stale_claims": 1,
+            "enforce_max_runtime": 1, "reclaim_task": 1,
         },
     }
     calls = {name: Counter() for name in approved}

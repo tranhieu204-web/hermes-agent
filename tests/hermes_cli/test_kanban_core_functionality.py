@@ -944,13 +944,17 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
     killed = []
+    alive = True
     def _signal_fn(pid, sig):
+        nonlocal alive
         killed.append((pid, sig))
+        alive = False
 
-    # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
+    # Present one exact live identity before SIGTERM, then report it gone so
+    # the grace poll exits without touching the real test-runner process.
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    _kb._pid_alive = lambda pid: alive
 
     try:
         conn = kb.connect()
@@ -4133,15 +4137,18 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
                 state["alive"] = False
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
+        worker_start = 123
+        monkeypatch.setattr(_kb, "_process_start_time", lambda _pid: worker_start)
         conn.execute(
             "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "worker_pid=?, worker_pid_start=? WHERE id=?",
+            (lock, future, 12345, worker_start, t),
         )
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
-            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
-            (t, lock, future, 12345, int(time.time())),
+            "worker_pid, worker_pid_start, started_at) "
+            "VALUES (?, 'running', ?, ?, ?, ?, ?)",
+            (t, lock, future, 12345, worker_start, int(time.time())),
         )
         run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
@@ -4320,6 +4327,8 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
         if sig == _sig.SIGTERM:
             state["sent_term"] = True
     monkeypatch.setattr(_kb, "_pid_alive", _alive)
+    worker_start = 123
+    monkeypatch.setattr(_kb, "_process_start_time", lambda _pid: worker_start)
 
     conn = kb.connect()
     try:
@@ -4335,25 +4344,27 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
             with kb.write_txn(conn):
                 conn.execute(
                     "UPDATE tasks SET status='running', claim_lock=?, "
-                    "claim_expires=?, worker_pid=?, started_at=? "
+                    "claim_expires=?, worker_pid=?, worker_pid_start=?, started_at=? "
                     "WHERE id=?",
                     (
                         f"{_kb._claimer_id().split(':', 1)[0]}:lock",
                         int(time.time()) + 3600,
                         os.getpid(),
+                        worker_start,
                         int(time.time()) - 30,
                         tid,
                     ),
                 )
                 conn.execute(
                     "INSERT INTO task_runs (task_id, status, claim_lock, "
-                    "claim_expires, worker_pid, started_at) "
-                    "VALUES (?, 'running', ?, ?, ?, ?)",
+                    "claim_expires, worker_pid, worker_pid_start, started_at) "
+                    "VALUES (?, 'running', ?, ?, ?, ?, ?)",
                     (
                         tid,
                         f"{_kb._claimer_id().split(':', 1)[0]}:lock",
                         int(time.time()) + 3600,
                         os.getpid(),
+                        worker_start,
                         int(time.time()) - 30,
                     ),
                 )
