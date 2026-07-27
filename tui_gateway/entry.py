@@ -340,6 +340,9 @@ _recovery_times: list[float] = []
 
 def main():
     _install_sidecar_publisher()
+    from gateway.fleet_safety.integration import start_desktop_guard_loop
+
+    guard_thread, guard_stop = start_desktop_guard_loop(server)
 
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
@@ -401,33 +404,37 @@ def main():
     # Live-apply skins Hermes activates mid-conversation.
     server._ensure_skin_watcher()
 
-    while True:
-        raw = sys.stdin.readline()
-        if not raw:
-            # Stdin fell through — check if spurious (O_NONBLOCK flip by a
-            # child on the shared open file description) or genuine EOF.
-            if not handle_spurious_eof(_recovery_times, _log_exit):
-                break
-            continue
+    try:
+        while True:
+            raw = sys.stdin.readline()
+            if not raw:
+                # Stdin fell through — check if spurious (O_NONBLOCK flip by a
+                # child on the shared open file description) or genuine EOF.
+                if not handle_spurious_eof(_recovery_times, _log_exit):
+                    break
+                continue
 
-        line = raw.strip()
-        if not line:
-            continue
+            line = raw.strip()
+            if not line:
+                continue
 
-        try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
-            if not write_json({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}, "id": None}):
-                _log_exit("parse-error-response write failed (broken stdout pipe)")
-                sys.exit(0)
-            continue
+            try:
+                req = json.loads(line)
+            except json.JSONDecodeError:
+                if not write_json({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}, "id": None}):
+                    _log_exit("parse-error-response write failed (broken stdout pipe)")
+                    sys.exit(0)
+                continue
 
-        method = req.get("method") if isinstance(req, dict) else None
-        resp = dispatch(req)
-        if resp is not None:
-            if not write_json(resp):
-                _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
-                sys.exit(0)
+            method = req.get("method") if isinstance(req, dict) else None
+            resp = dispatch(req)
+            if resp is not None:
+                if not write_json(resp):
+                    _log_exit(f"response write failed for method={method!r} (broken stdout pipe)")
+                    sys.exit(0)
+    finally:
+        guard_stop.set()
+        guard_thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":

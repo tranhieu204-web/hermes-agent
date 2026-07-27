@@ -3300,6 +3300,11 @@ DEFAULT_CONFIG = {
         # Per-provider spend cap on routing (consumed by usage-based routing).
         "wallet_cap": {
             "enabled": True,
+            "soft_percent": 80,
+            "hard_percent": 90,
+            "max_verified_age_seconds": 900,
+            "divergence_points": 15,
+            "heavy_providers": [],
             # >= this weekly-usage %: stop routing new heavy/max-effort work
             # to the provider (fall to the next provider).
             "cap_percent": 90,

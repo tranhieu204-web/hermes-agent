@@ -6386,15 +6386,26 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(session: dict, text: Any) -> bool:
+    """Start one generation-bound desktop turn.
+
+    Callers hold ``history_lock``.  A guard-owned interrupt barrier is a hard
+    lifecycle fence: replacing the turn while a stale cooperative interrupt is
+    still landing could apply that interrupt to the replacement turn.
+    """
+    if session.get("_guard_interrupt_barrier") is not None:
+        return False
     now = time.time()
     session["inflight_turn"] = {
         "assistant": "",
+        "guard_interrupt_state": None,
+        "guard_turn_token": uuid.uuid4().hex,
         "started_at": now,
         "streaming": True,
         "updated_at": now,
         "user": _inflight_text(text),
     }
+    return True
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -6425,7 +6436,12 @@ def _replace_inflight_user(session: dict, text: Any) -> None:
 
 
 def _clear_inflight_turn(session: dict) -> None:
+    turn = session.get("inflight_turn")
+    token = turn.get("guard_turn_token") if isinstance(turn, dict) else None
+    state = turn.get("guard_interrupt_state") if isinstance(turn, dict) else None
     session["inflight_turn"] = None
+    if state == "requested" and session.get("_guard_interrupt_barrier") == token:
+        session.pop("_guard_interrupt_barrier", None)
 
 
 def _fail_inflight_turn(session: dict, error: Any) -> None:
@@ -6684,7 +6700,8 @@ def _handle_busy_submit(
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
-        if not session.get("running"):
+        barrier = session.get("_guard_interrupt_barrier")
+        if not session.get("running") and barrier is None:
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
@@ -6721,12 +6738,12 @@ def _handle_busy_submit(
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
-        if not session.get("running"):
+        if not session.get("running") and session.get("_guard_interrupt_barrier") is None:
             return None
         _enqueue_prompt(session, text, transport)
         session["last_active"] = time.time()
 
-    if mode != "queue":
+    if mode != "queue" and barrier is None:
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 
@@ -6740,7 +6757,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """
     with session["history_lock"]:
         queued = session.get("queued_prompt")
-        if not queued or session.get("running"):
+        if not queued or session.get("running") or session.get("_guard_interrupt_barrier") is not None:
             return False
         session["queued_prompt"] = None
         session["running"] = True
@@ -10919,7 +10936,7 @@ def _(rid, params: dict) -> dict:
     while True:
         busy_transport = None
         with session["history_lock"]:
-            if session.get("running"):
+            if session.get("running") or session.get("_guard_interrupt_barrier") is not None:
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is

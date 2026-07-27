@@ -7182,6 +7182,31 @@ def call_llm(
     main_runtime = _normalize_main_runtime(main_runtime)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    if task in {"moa_reference", "moa_aggregator"}:
+        from gateway.fleet_safety.wallet_runtime import (
+            CallOrigin,
+            WalletCallDescriptor,
+            WalletCapBlocked,
+            wallet_preflight,
+        )
+
+        requested_effort = (
+            str(reasoning_config.get("effort", "medium"))
+            if isinstance(reasoning_config, dict)
+            else "medium"
+        )
+        plan = wallet_preflight(WalletCallDescriptor(
+            provider=str(resolved_provider or ""),
+            model=str(resolved_model or model or ""),
+            effort=requested_effort,
+            origin=CallOrigin.AUTOMATIC_CHILD,
+            fallback_entries=(),
+        ))
+        if plan.provider != str(resolved_provider or "") or plan.model != str(resolved_model or model or ""):
+            raise WalletCapBlocked("MoA wallet fallback requires an explicitly configured child chain")
+        if plan.reasoning_override:
+            reasoning_config = dict(reasoning_config or {})
+            reasoning_config["effort"] = plan.reasoning_override["effort"]
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)

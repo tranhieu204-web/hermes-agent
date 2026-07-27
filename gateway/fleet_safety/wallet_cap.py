@@ -21,6 +21,7 @@ a limit.
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -73,11 +74,12 @@ class WalletCapConfig:
     def from_config(cls, cfg: Optional[dict]) -> "WalletCapConfig":
         cfg = cfg or {}
 
-        def _f(key, default):
+        def _f(key: str, default: float) -> float:
             try:
                 v = cfg.get(key, default)
-                return float(v) if v is not None else default
-            except (TypeError, ValueError):
+                parsed = float(v) if v is not None else default
+                return parsed if math.isfinite(parsed) else default
+            except (TypeError, ValueError, OverflowError):
                 return default
 
         on_unknown = str(cfg.get("on_unknown", cls.on_unknown)).lower()
@@ -86,12 +88,21 @@ class WalletCapConfig:
         floor = str(cfg.get("downgrade_floor", cls.downgrade_floor)).lower()
         if floor not in _EFFORT_ORDER:
             floor = cls.downgrade_floor
+        enabled_raw = cfg.get("enabled", cls.enabled)
+        legacy_cap = _f("cap_percent", cls.cap_percent)
+        hard_cap = _f("hard_percent", legacy_cap)
+        if legacy_cap != cls.cap_percent and hard_cap == cls.cap_percent:
+            hard_cap = legacy_cap
+        legacy_soft = _f("downgrade_percent", cls.downgrade_percent)
+        soft_cap = _f("soft_percent", legacy_soft)
+        if legacy_soft != cls.downgrade_percent and soft_cap == cls.downgrade_percent:
+            soft_cap = legacy_soft
         return cls(
-            cap_percent=_f("cap_percent", cls.cap_percent),
-            downgrade_percent=_f("downgrade_percent", cls.downgrade_percent),
+            cap_percent=hard_cap,
+            downgrade_percent=soft_cap,
             downgrade_floor=floor,
             on_unknown=on_unknown,
-            enabled=bool(cfg.get("enabled", cls.enabled)),
+            enabled=enabled_raw if isinstance(enabled_raw, bool) else cls.enabled,
         )
 
 
