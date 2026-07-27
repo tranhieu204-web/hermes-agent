@@ -834,7 +834,10 @@ def read_supervisor_record(task_id: str, board: Optional[str] = None,
         return ("invalid", {"reason": "unparseable"})
     if not isinstance(data, dict):
         return ("invalid", {"reason": "not_an_object"})
-    if int(data.get("version", 0) or 0) != TERMINAL_RECORD_VERSION:
+    # v1: reap-time snapshot; v2: the reconciler's canonical record carrying
+    # launch identity + receipt hash. Both share task/run binding + cause.
+    if int(data.get("version", 0) or 0) not in (
+            TERMINAL_RECORD_VERSION, SUPERVISOR_RECORD_VERSION_V2):
         return ("invalid", {"reason": "version_mismatch"})
     if not data.get("cause"):
         return ("invalid", {"reason": "no_cause"})
@@ -843,6 +846,837 @@ def read_supervisor_record(task_id: str, board: Optional[str] = None,
     if run_id not in (None, "") and str(data.get("run_id") or "") != str(run_id):
         return ("invalid", {"reason": "run_id_mismatch"})
     return ("valid", data)
+
+
+# --------------------------------------------------------------------------
+# Windows exit observer — raw receipt contract + canonical reconciliation
+# --------------------------------------------------------------------------
+# On native Windows the dispatcher has NO exit-status producer: reaping is a
+# no-op, the classify registry is POSIX-only, and both spawn routes discard
+# the Popen handle. The detached observer (hermes_cli/kanban_exit_observer.py)
+# is the producer; it writes a RAW run/launch-bound exit receipt only. The
+# DISPATCHER alone reconciles raw process evidence, its own initiated
+# terminations, and the worker's declaration into the canonical
+# ``<task>.run<N>.supervisor.json`` — one semantic writer, under the board's
+# single-writer dispatch lock. See joint_windows_exit_observer.md.
+
+EXIT_RECEIPT_SUFFIX = ".exit-receipt.json"
+EXIT_RECEIPT_SCHEMA = "hermes.kanban.exit-receipt"
+EXIT_RECEIPT_VERSION = 1
+EXIT_RECEIPT_SOURCE = "windows_popen_observer"
+SUPERVISOR_RECORD_VERSION_V2 = 2
+
+# Rollout gate: env var beats config ``kanban.windows_exit_observer``;
+# DEFAULT OFF. Enabling is a deliberate live-config/app-restart action gated
+# on the deterministic suite + the real gateway-service restart canary.
+WINDOWS_EXIT_OBSERVER_ENV = "HERMES_KANBAN_WINDOWS_EXIT_OBSERVER"
+
+_EXIT_OBSERVER_BOOTSTRAP_TIMEOUT_SECONDS = 5.0
+_EXIT_OBSERVER_BOOTSTRAP_POLL_SECONDS = 0.04
+# A dead observer with a launched-only receipt gets this long (measured from
+# the first tick that saw the state) before the run is closed as observer
+# loss — covers the "reader raced the final os.replace" window without
+# sleeping inside the dispatch write transaction.
+_LAUNCHED_RECEIPT_GRACE_SECONDS = 2.0
+
+# Dispatcher-INITIATED terminations own the SEMANTIC cause; a later exit
+# code is mechanical evidence and must never turn e.g. a timeout into a
+# generic nonzero exit.
+_DISPATCHER_INITIATORS = {
+    "max_runtime", "heartbeat_stale", "claim_ttl", "manual_reclaim", "archive",
+}
+_INITIATOR_CAUSE = {
+    "max_runtime": "timed_out",
+    "heartbeat_stale": "heartbeat_stale",
+    "claim_ttl": "claim_ttl_expired",
+    "manual_reclaim": "manual_reclaim",
+    "archive": "archived_with_active_run",
+}
+
+# (task_id, run_id) -> monotonic time the dispatcher FIRST saw a dead worker
+# with a launched-only receipt. Bounded: entries pop on resolution.
+_launched_receipt_first_seen: dict = {}
+
+
+def windows_exit_observer_enabled() -> bool:
+    """Rollout gate for the Windows exit-observer launch path.
+
+    Env var (``1/true/on`` / ``0/false/off``) beats the ``kanban.
+    windows_exit_observer`` config key. Default False: the legacy direct
+    spawn stays byte-identical until the operator flips the gate. There is
+    deliberately no silent runtime fallback in the other direction — a
+    bootstrap failure with the gate ON is ``spawn_failed``, never a covert
+    unobserved launch.
+    """
+    raw = os.environ.get(WINDOWS_EXIT_OBSERVER_ENV, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    try:
+        from hermes_cli.config import load_config
+
+        return bool((load_config().get("kanban") or {}).get(
+            "windows_exit_observer", False))
+    except Exception:
+        return False
+
+
+def exit_receipt_path(task_id: str, board: Optional[str] = None,
+                      run_id: object = None) -> Path:
+    """Run-bound raw receipt path. A missing ``run_id`` is a producer bug —
+    there is NO task-scoped fallback, because a stale task-scoped file being
+    read as this run's evidence is exactly the false positive this feature
+    exists to remove."""
+    if run_id in (None, ""):
+        raise ValueError(
+            "exit_receipt_path requires run_id — receipts are run-bound")
+    return worker_logs_dir(board=board) / (
+        f"{task_id}.run{run_id}{EXIT_RECEIPT_SUFFIX}")
+
+
+def _boot_id() -> str:
+    """Host identity + boot time. A launched receipt from a different boot
+    is deterministic evidence the run crossed a reboot: the exit code is
+    honestly unknowable, never invented."""
+    host = _claimer_id().split(":", 1)[0]
+    try:
+        import psutil
+
+        return f"{host}:{int(psutil.boot_time())}"
+    except Exception:
+        return f"{host}:unknown"
+
+
+def _claim_lock_sha256(lock: object) -> str:
+    return hashlib.sha256(str(lock or "").encode("utf-8")).hexdigest()
+
+
+def _process_start_time(pid: object) -> Optional[int]:
+    try:
+        from gateway.status import get_process_start_time
+
+        return get_process_start_time(int(pid))
+    except Exception:
+        return None
+
+
+def _pid_alive_with_start(pid: object, start: object) -> bool:
+    """Liveness that survives PID recycling: same pid + different start
+    fingerprint is a DIFFERENT process and counts as dead-for-us."""
+    if not pid or int(pid) <= 0 or not _pid_alive(int(pid)):
+        return False
+    if start in (None, ""):
+        return True
+    live = _process_start_time(pid)
+    return live is None or int(live) == int(start)
+
+
+@dataclass(frozen=True)
+class ExitObserverLaunch:
+    """Successful observer bootstrap: the REAL worker identity, handshaken
+    back before the spawn is considered successful. The DB stores the worker
+    pid (liveness/timeout/reclaim semantics all key on it), never the
+    observer pid."""
+
+    worker_pid: int
+    worker_pid_start: Optional[int]
+    observer_pid: int
+    observer_pid_start: Optional[int]
+    launch_id: str
+    receipt_path: Path
+
+
+@dataclass(frozen=True)
+class WorkerLaunchSpec:
+    """Everything a worker launch needs, built by the per-route spec
+    builders so both production routes converge on ONE launch primitive
+    (``_spawn_worker_spec``) instead of two hand-rolled ``Popen`` calls."""
+
+    argv: tuple
+    cwd: Optional[str]
+    env: dict
+    log_path: Path
+    command_kind: str            # "hermes" | "claude_plan"
+    exit_contract: str           # "hermes_kanban_v1" | "generic_process_v1"
+    log_buffering: int = -1      # claude route historically used 0
+    start_new_session: bool = False
+    missing_exe_hint: Optional[str] = None
+
+
+_EXIT_RECEIPT_STATES = ("launched", "exited", "observer_error")
+_EXIT_RECEIPT_KINDS = ("hermes", "claude_plan")
+_EXIT_RECEIPT_CONTRACTS = ("hermes_kanban_v1", "generic_process_v1")
+
+
+def _receipt_type_error(data: dict) -> Optional[str]:
+    """Exact-schema validation. Booleans are NOT integers; a receipt that
+    fails any check is ``invalid`` as a whole — no partial trust."""
+    def _is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    if data.get("schema") != EXIT_RECEIPT_SCHEMA:
+        return "schema_mismatch"
+    if not _is_int(data.get("version")) or data["version"] != EXIT_RECEIPT_VERSION:
+        return "version_mismatch"
+    state = data.get("state")
+    if state not in _EXIT_RECEIPT_STATES:
+        return "bad_state"
+    if not isinstance(data.get("final"), bool):
+        return "final_not_bool"
+    if data["final"] != (state != "launched"):
+        return "final_state_incoherent"
+    if not _is_int(data.get("sequence")) or data["sequence"] != (
+            1 if state == "launched" else 2):
+        return "bad_sequence"
+    if data.get("source") != EXIT_RECEIPT_SOURCE:
+        return "bad_source"
+    for key in ("task_id", "run_id", "board", "launch_id",
+                "claim_lock_sha256", "host_id", "boot_id", "launched_at"):
+        if not isinstance(data.get(key), str) or not data[key]:
+            return f"bad_{key}"
+    if not data["run_id"].isdigit():
+        return "bad_run_id"
+    if data.get("command_kind") not in _EXIT_RECEIPT_KINDS:
+        return "bad_command_kind"
+    if data.get("exit_contract") not in _EXIT_RECEIPT_CONTRACTS:
+        return "bad_exit_contract"
+    if not _is_int(data.get("observer_pid")) or data["observer_pid"] <= 0:
+        return "bad_observer_pid"
+    for key in ("observer_pid_start", "worker_pid_start"):
+        if data.get(key) is not None and not _is_int(data[key]):
+            return f"bad_{key}"
+    wp = data.get("worker_pid")
+    if wp is None:
+        if state != "observer_error":
+            return "missing_worker_pid"
+    elif not _is_int(wp) or wp <= 0:
+        return "bad_worker_pid"
+    if data.get("exit_semantics") != "windows_process_exit_code":
+        return "bad_exit_semantics"
+    code = data.get("exit_code")
+    if state == "exited":
+        if not _is_int(code):
+            return "missing_exit_code"
+        if not isinstance(data.get("observed_at"), str):
+            return "missing_observed_at"
+    elif code is not None:
+        return "unexpected_exit_code"
+    return None
+
+
+def read_exit_receipt(path: Path) -> tuple:
+    """Read + exact-schema-validate a raw exit receipt.
+
+    Returns ``(state, record)`` where state is ``absent`` / ``unavailable``
+    (bounded transient sharing/AV error) / ``invalid`` / ``launched`` /
+    ``exited`` / ``observer_error``. An invalid receipt is NEVER deleted —
+    the bytes and their SHA-256 are evidence in their own right; the record
+    carries ``_sha256`` for exactly that. Parse failure never falls back to
+    log inference (an attempted structured record suppresses it)."""
+    raw = None
+    for attempt in range(3):
+        try:
+            raw = Path(path).read_bytes()
+            break
+        except FileNotFoundError:
+            return ("absent", None)
+        except (PermissionError, OSError):
+            # Windows sharing/AV race: bounded retry with the unchanged
+            # path, then report unavailable — never a guessed cause.
+            if attempt == 2:
+                return ("unavailable", None)
+            time.sleep(0.05)
+    sha = hashlib.sha256(raw).hexdigest()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return ("invalid", {"reason": "unparseable", "_sha256": sha})
+    if not isinstance(data, dict):
+        return ("invalid", {"reason": "not_an_object", "_sha256": sha})
+    reason = _receipt_type_error(data)
+    if reason is not None:
+        return ("invalid", {"reason": reason, "_sha256": sha})
+    data["_sha256"] = sha
+    return (data["state"], data)
+
+
+def _receipt_identity_mismatch(
+    rec: dict,
+    *,
+    task_id: str,
+    run_id: object,
+    board: Optional[str] = None,
+    launch_id: Optional[str] = None,
+    claim_lock: Optional[str] = None,
+    worker_pid: object = None,
+    worker_pid_start: object = None,
+) -> Optional[str]:
+    """Bind a receipt to the active DB run. ANY mismatch rejects the whole
+    receipt (``conflict``), never "latest timestamp wins"."""
+    if str(rec.get("task_id")) != str(task_id):
+        return "task_id"
+    if str(rec.get("run_id")) != str(run_id):
+        return "run_id"
+    if board is not None:
+        slug = _normalize_board_slug(board) or get_current_board()
+        if rec.get("board") != slug:
+            return "board"
+    if launch_id is not None and rec.get("launch_id") != launch_id:
+        return "launch_id"
+    if claim_lock is not None and rec.get(
+            "claim_lock_sha256") != _claim_lock_sha256(claim_lock):
+        return "claim_lock"
+    if rec.get("host_id") not in (None, _claimer_id().split(":", 1)[0]):
+        return "host_id"
+    if (worker_pid not in (None, "") and rec.get("worker_pid") is not None
+            and int(rec["worker_pid"]) != int(worker_pid)):
+        return "worker_pid"
+    if (worker_pid_start not in (None, "")
+            and rec.get("worker_pid_start") is not None
+            and int(rec["worker_pid_start"]) != int(worker_pid_start)):
+        return "worker_pid_start"
+    return None
+
+
+def _map_receipt_exit(rec: dict) -> tuple:
+    """Windows exit code -> exit kind, scoped by the launch's contract.
+
+    ``KANBAN_RATE_LIMIT_EXIT_CODE`` (75) is a HERMES worker protocol, not a
+    universal meaning: a generic Claude executable returning decimal 75 has
+    not declared Hermes's sentinel and stays ``nonzero_exit``. Windows codes
+    are process exit codes — never mislabeled as POSIX signals."""
+    code = int(rec["exit_code"])
+    if code == 0:
+        return ("clean_exit", 0)
+    if (code == KANBAN_RATE_LIMIT_EXIT_CODE
+            and rec.get("exit_contract") == "hermes_kanban_v1"):
+        return ("rate_limited", code)
+    return ("nonzero_exit", code)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Unique-temp + fsync + ``os.replace``. A fixed ``.tmp`` name collides
+    under overlap; Windows offers no directory-fsync guarantee and none is
+    claimed here — atomicity is against concurrent readers, not power loss."""
+    blob = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    tmp = Path(f"{path}.{secrets.token_hex(8)}.{os.getpid()}.tmp")
+    fd = os.open(
+        str(tmp),
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(blob)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp), str(path))
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def write_supervisor_observation(
+    task_id: str,
+    *,
+    kind: Optional[str] = None,
+    code: object = None,
+    pid: object = None,
+    board: Optional[str] = None,
+    run_id: object = None,
+    observation: Optional[dict] = None,
+    initiator: Optional[str] = None,
+) -> str:
+    """Canonical supervisor writer with three-tier precedence. Never raises.
+
+    Returns ``written`` / ``enriched`` / ``conflict`` / ``error``.
+
+    Precedence (binding, from the joint design):
+      1. A dispatcher-INITIATED action (max-runtime, TTL/stale/manual
+         reclaim, archive) owns the SEMANTIC cause. A later exit code is
+         retained as mechanics and cannot rewrite the cause.
+      2. For natural death, a validated run/launch-bound raw receipt owns
+         the MECHANICAL classification.
+      3. The worker's own declaration is preserved ALONGSIDE, never
+         overriding observed mechanics.
+
+    Only the dispatcher calls this, under the board dispatch lock. The
+    wrapper never writes this file. Two valid records claiming different
+    launch ids for one run is a ``conflict``: nothing is overwritten and
+    the caller must not close/requeue on it automatically.
+    """
+    try:
+        path = supervisor_record_path(task_id, board=board, run_id=run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        prior_state, prior = read_supervisor_record(
+            task_id, board=board, run_id=run_id)
+        prior_sha = None
+        try:
+            if path.is_file():
+                prior_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        except Exception:
+            prior_sha = None
+
+        rec = (observation or {}).get("receipt")
+        obs_state = (observation or {}).get("observation_state")
+
+        prior_initiator = None
+        if prior_state == "valid":
+            pi = (prior or {}).get("termination_initiator")
+            prior_initiator = pi if pi in _DISPATCHER_INITIATORS else None
+            # Launch-identity conflict: two different launches for one run.
+            p_launch = (prior or {}).get("launch_id")
+            if (rec is not None and p_launch
+                    and p_launch != rec.get("launch_id")):
+                return "conflict"
+            # A canonical record already carrying this exact receipt needs
+            # no rewrite (idempotent reconciliation).
+            if (rec is not None
+                    and (prior or {}).get("receipt_sha256") == rec.get("_sha256")
+                    and initiator is None):
+                return "enriched"
+
+        payload = {
+            "version": SUPERVISOR_RECORD_VERSION_V2,
+            "task_id": str(task_id),
+            "run_id": None if run_id in (None, "") else str(run_id),
+            "board": _normalize_board_slug(board) or get_current_board(),
+            "source": "dispatcher_reconciler",
+            "launch_id": (rec or {}).get("launch_id")
+            or (prior or {}).get("launch_id"),
+            "receipt_path": (Path(exit_receipt_path(
+                task_id, board=board, run_id=run_id)).name
+                if run_id not in (None, "") and rec is not None else None),
+            "receipt_sha256": (rec or {}).get("_sha256")
+            or (prior or {}).get("receipt_sha256"),
+            "worker_pid": (rec or {}).get("worker_pid")
+            or (int(pid) if pid else (prior or {}).get("worker_pid")),
+            "worker_pid_start": (rec or {}).get("worker_pid_start")
+            or (prior or {}).get("worker_pid_start"),
+            "observer_pid": (rec or {}).get("observer_pid")
+            or (prior or {}).get("observer_pid"),
+            "observer_pid_start": (rec or {}).get("observer_pid_start")
+            or (prior or {}).get("observer_pid_start"),
+            "boot_id": (rec or {}).get("boot_id"),
+            "observation_state": obs_state,
+            "exit_kind": None,
+            "exit_code": None,
+            "termination_initiator": None,
+            "cause": None,
+            "quality": (observation or {}).get("quality"),
+            "worker_declaration": None,
+            "reconciled_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "supersedes_sha256": prior_sha,
+            # v1 compat: diagnose_worker_failure and the dashboard read
+            # ``exit_kind``/``code``/``pid`` — keep them populated.
+            "pid": int(pid) if pid else (prior or {}).get("pid"),
+            "code": None,
+        }
+
+        # Mechanical classification (tier 2) — from the receipt when
+        # present, else from the caller's platform classification.
+        mech_kind, mech_code = kind, code
+        if rec is not None and obs_state == "exited":
+            mech_kind, mech_code = _map_receipt_exit(rec)
+        if mech_kind not in (None, "unknown"):
+            payload["exit_kind"] = mech_kind
+            payload["exit_code"] = (
+                int(mech_code) if mech_code is not None else None)
+            payload["code"] = payload["exit_code"]
+        elif mech_kind == "unknown":
+            payload["exit_kind"] = None
+
+        # Semantic cause (tier 1 beats tier 2).
+        if initiator in _DISPATCHER_INITIATORS:
+            payload["termination_initiator"] = initiator
+            payload["cause"] = _INITIATOR_CAUSE[initiator]
+            payload.setdefault("quality", None)
+            payload["quality"] = payload["quality"] or "deterministic"
+        elif prior_initiator is not None:
+            # ENRICHMENT: the dispatcher already recorded that IT initiated
+            # this termination. Preserve that cause; the receipt's exit code
+            # is added as mechanics only.
+            payload["termination_initiator"] = prior_initiator
+            payload["cause"] = (prior or {}).get("cause") \
+                or _INITIATOR_CAUSE[prior_initiator]
+            payload["quality"] = (prior or {}).get("quality") \
+                or "deterministic"
+        else:
+            payload["termination_initiator"] = "natural"
+            explicit = (observation or {}).get("cause")
+            if explicit:
+                payload["cause"] = explicit
+            elif payload["exit_kind"] is not None:
+                payload["cause"] = _SUPERVISOR_CAUSE_BY_KIND.get(
+                    payload["exit_kind"], "nonzero_exit")
+            else:
+                payload["cause"] = _SUPERVISOR_CAUSE_BY_KIND.get(
+                    str(mech_kind), "process_vanished")
+            if not payload["quality"]:
+                payload["quality"] = (
+                    "deterministic" if payload["exit_kind"] is not None
+                    else "incomplete")
+
+        # Tier 3: the worker's declaration rides along, never overrides.
+        w_state, w_rec = read_terminal_record(
+            task_id, board=board, run_id=run_id)
+        if w_state == "valid":
+            payload["worker_declaration"] = w_rec
+
+        _atomic_write_json(path, payload)
+        if prior_state == "valid":
+            return "enriched"
+        return "written"
+    except Exception:
+        _log.warning("write_supervisor_observation failed for %s run %s",
+                     task_id, run_id, exc_info=True)
+        return "error"
+
+
+def _observed_worker_exit(
+    task_id: str,
+    run_id: object,
+    pid: int,
+    *,
+    board: Optional[str] = None,
+    launch_id: Optional[str] = None,
+    claim_lock: Optional[str] = None,
+    worker_pid_start: object = None,
+    observer_pid: object = None,
+    observer_pid_start: object = None,
+) -> tuple:
+    """Platform-neutral exit observation for a dead worker.
+
+    Returns ``(kind, code, observation)``:
+
+    * Windows launch with a validated final receipt → exact mechanics.
+    * Windows launch with launched-only receipt → ``pending_receipt`` while
+      the observer is still alive (final write is imminent — do not close),
+      then deterministic ``host_reboot`` / honest ``observer_lost``.
+    * Anything else → the POSIX wait registry, or an explicit unknown.
+      No state is ever invented.
+    """
+    if os.name == "nt" and launch_id and run_id not in (None, ""):
+        try:
+            path = exit_receipt_path(task_id, board=board, run_id=run_id)
+        except ValueError:
+            path = None
+        state, rec = read_exit_receipt(path) if path else ("absent", None)
+        key = (str(task_id), str(run_id))
+        if state == "exited":
+            mismatch = _receipt_identity_mismatch(
+                rec, task_id=task_id, run_id=run_id, board=board,
+                launch_id=launch_id, claim_lock=claim_lock,
+                worker_pid=pid, worker_pid_start=worker_pid_start,
+            )
+            _launched_receipt_first_seen.pop(key, None)
+            if mismatch is None:
+                k, c = _map_receipt_exit(rec)
+                return (k, c, {
+                    "observation_state": "exited",
+                    "receipt": rec,
+                    "quality": "deterministic",
+                })
+            return ("unknown", None, {
+                "observation_state": "conflict",
+                "receipt": rec,
+                "cause": "exit_evidence_conflict",
+                "quality": "conflict",
+                "mismatch": mismatch,
+            })
+        if state == "launched":
+            mismatch = _receipt_identity_mismatch(
+                rec, task_id=task_id, run_id=run_id, board=board,
+                launch_id=launch_id, claim_lock=claim_lock,
+            )
+            if mismatch is not None:
+                return ("unknown", None, {
+                    "observation_state": "conflict",
+                    "receipt": rec,
+                    "cause": "exit_evidence_conflict",
+                    "quality": "conflict",
+                    "mismatch": mismatch,
+                })
+            if rec.get("boot_id") != _boot_id():
+                # Crossed a reboot: deterministic event, unknowable code.
+                _launched_receipt_first_seen.pop(key, None)
+                return ("unknown", None, {
+                    "observation_state": "host_reboot",
+                    "receipt": rec,
+                    "cause": "host_reboot",
+                    "quality": "deterministic_event_no_exit_code",
+                })
+            # A recovery observer's identity lives on the DB row (the
+            # receipt still names the dead primary) — consult both.
+            if (_pid_alive_with_start(rec.get("observer_pid"),
+                                      rec.get("observer_pid_start"))
+                    or _pid_alive_with_start(observer_pid,
+                                             observer_pid_start)):
+                # An observer is alive while the worker is dead: the final
+                # receipt is being written right now. Wait for it instead
+                # of closing the run on weaker evidence.
+                return ("unknown", None, {"observation_state": "pending_receipt"})
+            first = _launched_receipt_first_seen.setdefault(
+                key, time.monotonic())
+            if time.monotonic() - first < _LAUNCHED_RECEIPT_GRACE_SECONDS:
+                return ("unknown", None, {"observation_state": "pending_receipt"})
+            _launched_receipt_first_seen.pop(key, None)
+            return ("unknown", None, {
+                "observation_state": "observer_lost",
+                "receipt": rec,
+                "cause": "exit_observer_lost",
+                "quality": "incomplete",
+            })
+        if state in ("invalid", "unavailable"):
+            _launched_receipt_first_seen.pop(key, None)
+            return ("unknown", None, {
+                "observation_state": "observer_invalid",
+                "receipt": rec,
+                "cause": "exit_receipt_invalid",
+                "quality": "incomplete",
+            })
+        if state == "observer_error":
+            _launched_receipt_first_seen.pop(key, None)
+            return ("unknown", None, {
+                "observation_state": "observer_lost",
+                "receipt": rec,
+                "cause": "exit_observer_lost",
+                "quality": "incomplete",
+            })
+        # absent: identity was handshaken but the receipt vanished.
+        _launched_receipt_first_seen.pop(key, None)
+        return ("unknown", None, {
+            "observation_state": "observer_lost",
+            "cause": "exit_observer_lost",
+            "quality": "incomplete",
+        })
+    return (*_classify_worker_exit(pid), None)
+
+
+def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
+                             board: Optional[str], conn) -> bool:
+    """Reattach ONE recovery observer to a live worker whose primary
+    observer died. The observer-identity CAS in the DB is what makes "one
+    recovery observer" an invariant rather than a hope."""
+    new_argv = [
+        sys.executable, "-m", "hermes_cli.kanban_exit_observer",
+        "--recover",
+        "--receipt", str(exit_receipt_path(task_id, board=board,
+                                           run_id=run_id)),
+        "--task", str(task_id),
+        "--run", str(run_id),
+        "--launch", str(row["worker_launch_id"]),
+        "--board", _normalize_board_slug(board) or get_current_board(),
+        "--kind", "hermes",
+        "--exit-contract", "hermes_kanban_v1",
+        "--claim-lock-sha256", _claim_lock_sha256(row["claim_lock"]),
+        "--log", str(worker_logs_dir(board=board) / f"{task_id}.log"),
+        "--worker-pid", str(int(row["worker_pid"])),
+    ]
+    # Recovery only re-observes; kind/contract are re-validated against the
+    # DB at reconcile time via launch_id, and the launched receipt on disk
+    # keeps the authoritative contract for exit mapping.
+    if row["worker_pid_start"] is not None:
+        new_argv += ["--worker-pid-start", str(int(row["worker_pid_start"]))]
+    env = dict(os.environ)
+    pkg_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = (
+        pkg_root + os.pathsep + env["PYTHONPATH"]
+        if env.get("PYTHONPATH") else pkg_root)
+    from hermes_cli._subprocess_compat import windows_detach_flags
+
+    try:
+        proc = subprocess.Popen(
+            new_argv, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, creationflags=windows_detach_flags(),
+        )
+    except OSError:
+        return False
+    new_start = _process_start_time(proc.pid)
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE task_runs SET observer_pid = ?, observer_pid_start = ? "
+            "WHERE id = ? AND task_id = ? AND worker_launch_id = ? "
+            "  AND observer_pid IS ? AND ended_at IS NULL",
+            (proc.pid, new_start, run_id, task_id,
+             row["worker_launch_id"], row["observer_pid"]),
+        )
+        if cur.rowcount != 1:
+            # Lost the CAS: another dispatcher already attached a recovery
+            # observer. Ours must not double-observe.
+            pass
+        else:
+            conn.execute(
+                "UPDATE tasks SET observer_pid = ?, observer_pid_start = ? "
+                "WHERE id = ? AND current_run_id = ?",
+                (proc.pid, new_start, task_id, run_id),
+            )
+            _append_event(
+                conn, task_id, "exit_observer_recovery",
+                {"observer_pid": proc.pid,
+                 "launch_id": row["worker_launch_id"],
+                 "worker_pid": int(row["worker_pid"])},
+                run_id=run_id,
+            )
+        won = cur.rowcount == 1
+    if not won:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    return won
+
+
+def reconcile_windows_exit_receipts(conn: sqlite3.Connection) -> None:
+    """Dispatcher-tick reconciliation of raw Windows exit evidence.
+
+    Runs BEFORE crash classification so ``detect_crashed_workers`` consumes
+    normalized observations. Two passes:
+
+    A. Active observed runs: dead primary observer + live worker → attach
+       one recovery observer (CAS-guarded); invalid receipts surface as
+       first-class events. The worker itself is NEVER killed here — an
+       observer death is not worker failure.
+    B. Late final receipts for already-closed runs: enrich the historical
+       run + canonical record and append ``late_exit_observation``; never
+       reopen the run or retroactively count a failure. Process exit and
+       kanban semantic completion answer different questions.
+    """
+    if os.name != "nt":
+        return
+    try:
+        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        rows = conn.execute(
+            "SELECT id, worker_pid, worker_pid_start, observer_pid, "
+            "       observer_pid_start, worker_launch_id, claim_lock, "
+            "       current_run_id "
+            "FROM tasks "
+            "WHERE status = 'running' AND worker_launch_id IS NOT NULL "
+            "  AND current_run_id IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            if not (row["claim_lock"] or "").startswith(host_prefix):
+                continue
+            run_id = int(row["current_run_id"])
+            state, rec = read_exit_receipt(
+                exit_receipt_path(row["id"], run_id=run_id))
+            if state == "invalid":
+                # First-class signal; preserve bytes + sha, never delete.
+                already = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? "
+                    "AND run_id = ? AND kind = 'exit_receipt_invalid' LIMIT 1",
+                    (row["id"], run_id),
+                ).fetchone()
+                if not already:
+                    with write_txn(conn):
+                        _append_event(
+                            conn, row["id"], "exit_receipt_invalid",
+                            {"reason": (rec or {}).get("reason"),
+                             "sha256": (rec or {}).get("_sha256"),
+                             "launch_id": row["worker_launch_id"]},
+                            run_id=run_id,
+                        )
+                continue
+            if state != "launched":
+                continue
+            mismatch = _receipt_identity_mismatch(
+                rec, task_id=row["id"], run_id=run_id,
+                launch_id=row["worker_launch_id"],
+                claim_lock=row["claim_lock"],
+            )
+            if mismatch is not None:
+                continue
+            observer_alive = _pid_alive_with_start(
+                row["observer_pid"], row["observer_pid_start"])
+            worker_alive = _pid_alive_with_start(
+                row["worker_pid"], row["worker_pid_start"])
+            if observer_alive or not worker_alive:
+                # Healthy, or a dead worker detect_crashed_workers handles.
+                continue
+            # Observer died under a live worker: do NOT reclaim or
+            # duplicate-spawn — reattach a recovery observer.
+            already = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind = 'exit_observer_lost' LIMIT 1",
+                (row["id"], run_id),
+            ).fetchone()
+            if not already:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "exit_observer_lost",
+                        {"observer_pid": row["observer_pid"],
+                         "worker_pid": row["worker_pid"],
+                         "launch_id": row["worker_launch_id"]},
+                        run_id=run_id,
+                    )
+            _spawn_recovery_observer(row["id"], run_id, row, None, conn)
+
+        # ---- pass B: late receipts for closed runs ----
+        try:
+            log_dir = worker_logs_dir()
+            candidates = list(log_dir.glob(f"*{EXIT_RECEIPT_SUFFIX}"))
+        except Exception:
+            candidates = []
+        for path in candidates:
+            state, rec = read_exit_receipt(path)
+            if state != "exited":
+                continue
+            run_row = conn.execute(
+                "SELECT id, task_id, ended_at, outcome, metadata, "
+                "       worker_launch_id, worker_pid, worker_pid_start, "
+                "       claim_lock "
+                "FROM task_runs WHERE task_id = ? AND id = ?",
+                (rec["task_id"], int(rec["run_id"])),
+            ).fetchone()
+            if run_row is None or not run_row["ended_at"]:
+                continue  # active runs are pass-A / crash-branch territory
+            if run_row["worker_launch_id"] != rec.get("launch_id"):
+                continue
+            meta = {}
+            try:
+                meta = json.loads(run_row["metadata"] or "{}")
+            except Exception:
+                meta = {}
+            if meta.get("exit_receipt_sha256") == rec["_sha256"]:
+                continue  # already reconciled
+            sup_state, sup = read_supervisor_record(
+                rec["task_id"], run_id=rec["run_id"])
+            if (sup_state == "valid"
+                    and (sup or {}).get("receipt_sha256") == rec["_sha256"]):
+                continue
+            k, c = _map_receipt_exit(rec)
+            write_supervisor_observation(
+                rec["task_id"], kind=k, code=c,
+                pid=rec.get("worker_pid"), run_id=rec["run_id"],
+                observation={"observation_state": "exited", "receipt": rec,
+                             "quality": "deterministic"},
+            )
+            meta["exit_receipt_sha256"] = rec["_sha256"]
+            meta["late_exit_kind"] = k
+            meta["late_exit_code"] = c
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(meta, ensure_ascii=False),
+                     int(run_row["id"])),
+                )
+                _append_event(
+                    conn, rec["task_id"], "late_exit_observation",
+                    {"exit_kind": k, "exit_code": c,
+                     "launch_id": rec.get("launch_id"),
+                     "receipt_sha256": rec["_sha256"],
+                     "run_outcome": run_row["outcome"]},
+                    run_id=int(rec["run_id"]),
+                )
+    except Exception:
+        # Reconciliation is an enrichment pass — it must never be able to
+        # take down the dispatch tick.
+        _log.warning("reconcile_windows_exit_receipts failed", exc_info=True)
 
 
 def diagnose_worker_failure(task_id: str, board: Optional[str] = None,
@@ -1541,7 +2375,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- NULL. When set, the dispatcher exports it as HERMES_TASK_IMPORTANCE so
     -- the worker's reasoning-effort resolution grades the lane. NULL = ungraded
     -- (falls through to the lane default, preserving pre-column behaviour).
-    importance           TEXT
+    importance           TEXT,
+    -- Windows exit-observer launch identity (mirror of the authoritative
+    -- task_runs columns, for cheap dispatcher reads). worker_launch_id is
+    -- the per-launch random token whose task_runs CAS makes "one launch per
+    -- run" a checked invariant; the *_pid_start fingerprints are the
+    -- PID-reuse guard (same pid + different start time = different process).
+    -- All NULL on POSIX, on legacy launches, and with the observer gate off.
+    worker_launch_id     TEXT,
+    worker_pid_start     INTEGER,
+    observer_pid         INTEGER,
+    observer_pid_start   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1593,7 +2437,16 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- Windows exit-observer launch identity — AUTHORITATIVE copy (the tasks
+    -- columns are a read mirror). Reserved by CAS BEFORE any process spawn;
+    -- a run row is never reused, so "one launch per run" is enforced here.
+    -- Kept after the run ends: it is the historical binding that lets a late
+    -- exit receipt enrich exactly this attempt and no other.
+    worker_launch_id    TEXT,
+    worker_pid_start    INTEGER,
+    observer_pid        INTEGER,
+    observer_pid_start  INTEGER
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2697,6 +3550,32 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # Effort-grading importance. Existing rows stay NULL = ungraded, which
         # preserves the lane-default effort they already resolved to.
         _add_column_if_missing(conn, "tasks", "importance", "importance TEXT")
+
+    # Windows exit-observer launch identity (mirror columns; the
+    # authoritative copies live on task_runs, migrated below). NULL on all
+    # legacy rows — exactly correct: those launches carried no identity.
+    for col, ddl in (
+        ("worker_launch_id", "worker_launch_id TEXT"),
+        ("worker_pid_start", "worker_pid_start INTEGER"),
+        ("observer_pid", "observer_pid INTEGER"),
+        ("observer_pid_start", "observer_pid_start INTEGER"),
+    ):
+        if col not in cols:
+            _add_column_if_missing(conn, "tasks", col, ddl)
+
+    # task_runs gained the authoritative launch-identity columns.
+    run_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+    }
+    if run_cols:
+        for col, ddl in (
+            ("worker_launch_id", "worker_launch_id TEXT"),
+            ("worker_pid_start", "worker_pid_start INTEGER"),
+            ("observer_pid", "observer_pid INTEGER"),
+            ("observer_pid_start", "observer_pid_start INTEGER"),
+        ):
+            if col not in run_cols:
+                _add_column_if_missing(conn, "task_runs", col, ddl)
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -4636,6 +5515,13 @@ def release_stale_claims(
                 )
             continue
 
+        # Dispatcher-initiated: the TTL expiry owns the semantic cause. Record
+        # it before signaling so a racing natural-exit receipt can only
+        # enrich, never overwrite, who initiated this termination.
+        write_supervisor_observation(
+            row["id"], pid=row["worker_pid"],
+            run_id=_current_run_id(conn, row["id"]), initiator="claim_ttl",
+        )
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
@@ -4650,7 +5536,9 @@ def release_stale_claims(
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "worker_launch_id = NULL, worker_pid_start = NULL, "
+                "observer_pid = NULL, observer_pid_start = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
                 (row["id"], row["claim_lock"], now),
@@ -4716,13 +5604,20 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
+    # Dispatcher-initiated: the operator's reclaim owns the semantic cause.
+    write_supervisor_observation(
+        task_id, pid=row["worker_pid"],
+        run_id=_current_run_id(conn, task_id), initiator="manual_reclaim",
+    )
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "worker_launch_id = NULL, worker_pid_start = NULL, "
+            "observer_pid = NULL, observer_pid_start = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (task_id, prev_lock),
@@ -6385,7 +7280,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "    worker_launch_id = NULL, worker_pid_start = NULL, "
+            "    observer_pid = NULL, observer_pid_start = NULL "
             "WHERE id = ? AND status != 'archived'",
             (task_id,),
         )
@@ -6399,6 +7296,12 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
+        if run_id is not None:
+            # Dispatcher/operator-initiated: archiving a live run owns its
+            # semantic cause; a late exit receipt can only add mechanics.
+            write_supervisor_observation(
+                task_id, run_id=run_id, initiator="archive",
+            )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
@@ -7300,7 +8203,7 @@ def enforce_max_runtime(
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.current_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -7322,6 +8225,14 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
+        # Record the INITIATED semantic cause BEFORE signaling: the timeout
+        # owns the cause; the observer's exit receipt (racing this kill) may
+        # later add the mechanical code but must never rewrite a timeout
+        # into a generic nonzero exit.
+        write_supervisor_observation(
+            tid, pid=pid, run_id=row["current_run_id"],
+            initiator="max_runtime",
+        )
         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
         # want a cleaner shutdown can install their own SIGTERM handler
         # before the grace expires.
@@ -7352,6 +8263,8 @@ def enforce_max_runtime(
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
+                "worker_launch_id = NULL, worker_pid_start = NULL, "
+                "observer_pid = NULL, observer_pid_start = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
@@ -7460,6 +8373,11 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
+        # Dispatcher-initiated: heartbeat staleness owns the semantic cause.
+        write_supervisor_observation(
+            tid, pid=pid, run_id=_current_run_id(conn, tid),
+            initiator="heartbeat_stale",
+        )
         # Terminate the worker if it's still host-local.
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
@@ -7478,6 +8396,8 @@ def detect_stale_running(
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
+                "worker_launch_id = NULL, worker_pid_start = NULL, "
+                "observer_pid = NULL, observer_pid_start = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND claim_lock IS ?",
@@ -7652,7 +8572,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             # current_run_id is REQUIRED here: without it diagnose_worker_failure is
             # called with no run_id and the run-scoped record reader is
             # unreachable from production — the run-binding becomes decoration.
-            "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+            # The launch-identity columns bind the Windows exit receipt to
+            # exactly this attempt (and reject PID-reuse impostors).
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id, "
+            "       worker_launch_id, worker_pid_start, observer_pid, "
+            "       observer_pid_start "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -7674,7 +8598,31 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
-            kind, code = _classify_worker_exit(pid)
+            _rid = row["current_run_id"] if "current_run_id" in row.keys() else None
+            kind, code, observation = _observed_worker_exit(
+                row["id"], _rid, pid,
+                launch_id=row["worker_launch_id"],
+                claim_lock=row["claim_lock"],
+                worker_pid_start=row["worker_pid_start"],
+                observer_pid=row["observer_pid"],
+                observer_pid_start=row["observer_pid_start"],
+            )
+            if (observation or {}).get("observation_state") == "pending_receipt":
+                # The observer is finalizing (or just finalized) the raw
+                # receipt — one short-lived skip beats closing the run on
+                # weaker evidence and racing the atomic replace.
+                continue
+            # Canonical supervisor record in the COMMON path, BEFORE the
+            # clean/rate-limited/nonzero branch split. This is the branch-
+            # reachability fix: every observed exit kind now produces the
+            # record, not just the generic else-branch crash.
+            if write_supervisor_observation(
+                row["id"], kind=kind, code=code, pid=pid, run_id=_rid,
+                observation=observation,
+            ) == "error":
+                _log.warning(
+                    "terminal evidence NOT recorded for %s — diagnosis will "
+                    "fall back to inference", row["id"])
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -7729,22 +8677,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     error_text = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
+                elif (observation or {}).get("cause") == "host_reboot":
+                    error_text = (
+                        f"pid {pid} lost to host reboot — exit code unknowable"
+                    )
+                elif (observation or {}).get("cause") == "exit_observer_lost":
+                    error_text = f"pid {pid} exit unobserved (observer lost)"
                 else:
                     error_text = f"pid {pid} not alive"
-                # Attach the real terminal cause when the worker's own log
-                # carries one, so the board shows "provider quota exhausted"
-                # rather than an indistinguishable "pid not alive".
+                # Attach the real terminal cause when the canonical record /
+                # worker declaration carries one, so the board shows
+                # "provider quota exhausted" rather than an
+                # indistinguishable "pid not alive".
                 # NOTE: detect_crashed_workers has no `board` parameter — passing one
                 # here raises NameError and would break crash detection outright.
                 # The default resolves the current board, which is correct for a
-                # host-local dispatcher.
-                _rid = row["current_run_id"] if "current_run_id" in row.keys() else None
-                if not write_supervisor_record(
-                    row["id"], kind=kind, code=code, pid=pid, run_id=_rid
-                ):
-                    _log.warning(
-                        "terminal evidence NOT recorded for %s — diagnosis will "
-                        "fall back to inference", row["id"])
+                # host-local dispatcher. (The canonical supervisor record was
+                # already written in the common path above the branch split.)
                 diagnosed = diagnose_worker_failure(row["id"], run_id=_rid)
                 if diagnosed:
                     error_text = f"{error_text} — {diagnosed}"
@@ -7755,10 +8704,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                obs_state = (observation or {}).get("observation_state")
+                if obs_state:
+                    event_payload["observation_state"] = obs_state
 
             cur = conn.execute(
+                # The launch-identity mirror is cleared with the pid so the
+                # next run can reserve a fresh launch; the AUTHORITATIVE
+                # copy on task_runs is kept as the attempt's history.
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "worker_launch_id = NULL, worker_pid_start = NULL, "
+                "observer_pid = NULL, observer_pid_start = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
                 (row["id"], pid, row["claim_lock"]),
@@ -7989,6 +8946,8 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "worker_launch_id = NULL, worker_pid_start = NULL, "
+                    "observer_pid = NULL, observer_pid_start = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready')",
                     (failures, error[:500], task_id),
@@ -8037,6 +8996,8 @@ def _record_task_failure(
                 conn.execute(
                     "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "worker_launch_id = NULL, worker_pid_start = NULL, "
+                    "observer_pid = NULL, observer_pid_start = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (failures, error[:500], task_id),
@@ -8434,6 +9395,11 @@ def _dispatch_once_locked(
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
+    # Windows: reconcile raw exit-observer evidence (recovery observers,
+    # invalid receipts, late receipts for closed runs) BEFORE crash
+    # classification so detect_crashed_workers consumes normalized
+    # observations. No-op on POSIX and on boards without observed launches.
+    reconcile_windows_exit_receipts(conn)
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
@@ -8682,7 +9648,11 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            if pid:
+            if isinstance(pid, ExitObserverLaunch):
+                # Windows observer route: persist the REAL worker identity
+                # (pid + start fingerprints + launch id) via the second CAS.
+                _set_worker_process_identity(conn, claimed, pid)
+            elif pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
@@ -8777,7 +9747,9 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            if pid:
+            if isinstance(pid, ExitObserverLaunch):
+                _set_worker_process_identity(conn, claimed, pid)
+            elif pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
@@ -9157,12 +10129,20 @@ def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, bo
                 task.id, exe, model or "<default>")
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
-    handle = open(log_dir / f"{task.id}.log", "ab", buffering=0)
-    proc = subprocess.Popen(
-        cmd, cwd=workspace, env=env, stdout=handle, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    # generic_process_v1: claude.exe is NOT a hermes worker — a decimal 75
+    # from it has not declared Hermes's rate-limit sentinel and must stay a
+    # plain nonzero exit. Only the hermes route carries hermes_kanban_v1.
+    spec = WorkerLaunchSpec(
+        argv=tuple(cmd),
+        cwd=workspace,
+        env=dict(env),
+        log_path=log_dir / f"{task.id}.log",
+        command_kind="claude_plan",
+        exit_contract="generic_process_v1",
+        log_buffering=0,
+        start_new_session=False,
     )
-    return proc.pid
+    return _spawn_worker_spec(task, spec, board=board)
 
 
 def _default_spawn(
@@ -9351,31 +10331,301 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
+    spec = WorkerLaunchSpec(
+        argv=tuple(cmd),
+        cwd=workspace if os.path.isdir(workspace) else None,
+        env=env,
+        log_path=log_path,
+        command_kind="hermes",
+        exit_contract="hermes_kanban_v1",
+        start_new_session=True,
+        missing_exe_hint=(
+            "`hermes` executable not found on PATH. "
+            "Install Hermes Agent or activate its venv before running the "
+            "kanban dispatcher."
+        ),
+    )
+    return _spawn_worker_spec(task, spec, board=board)
+
+
+def _spawn_worker_spec(task, spec: WorkerLaunchSpec, *, board=None):
+    """THE worker launch primitive. Both production routes (hermes worker
+    and Claude Plan) go through here and nowhere else — a source guard test
+    fails if either route grows a direct ``subprocess.Popen`` again.
+
+    POSIX keeps the legacy direct launch (``waitpid`` reaping already covers
+    exit collection there). Windows launches through the detached exit
+    observer when the rollout gate is ON; with the gate OFF the legacy
+    direct launch is byte-for-byte preserved.
+    """
+    if os.name != "nt" or not windows_exit_observer_enabled():
+        return _direct_popen_spec(spec)
+    return _spawn_windows_exit_observer(task, spec, board=board)
+
+
+def _direct_popen_spec(spec: WorkerLaunchSpec):
+    """Legacy fire-and-forget launch (exact pre-observer behaviour)."""
+    if spec.log_buffering == -1:
+        # Use 'a' so a re-run on unblock appends rather than overwrites.
+        log_f = open(spec.log_path, "ab")
+    else:
+        log_f = open(spec.log_path, "ab", buffering=spec.log_buffering)
     try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
+        proc = subprocess.Popen(  # noqa: S603 -- argv built by the spec builders
+            list(spec.argv),
+            cwd=spec.cwd,
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
+            env=spec.env,
+            start_new_session=spec.start_new_session,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )
     except FileNotFoundError:
         log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        if spec.missing_exe_hint:
+            raise RuntimeError(spec.missing_exe_hint)
+        raise
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
     return proc.pid
+
+
+def _clear_launch_reservation(task_id, run_id, launch_id, board,
+                              reason: str) -> None:
+    """Run-bound spawn-failure transaction: release a reserved launch that
+    never bound a worker identity. The ``worker_pid IS NULL`` guard means a
+    completed handshake can never be un-reserved."""
+    try:
+        with connect_closing(board=board) as c:
+            with write_txn(c):
+                c.execute(
+                    "UPDATE task_runs SET worker_launch_id = NULL "
+                    "WHERE id = ? AND task_id = ? AND worker_launch_id = ? "
+                    "  AND worker_pid IS NULL",
+                    (int(run_id), task_id, launch_id),
+                )
+                c.execute(
+                    "UPDATE tasks SET worker_launch_id = NULL "
+                    "WHERE id = ? AND worker_launch_id = ?",
+                    (task_id, launch_id),
+                )
+                _append_event(
+                    c, task_id, "exit_observer_bootstrap_failed",
+                    {"launch_id": launch_id, "reason": str(reason)[:500]},
+                    run_id=int(run_id),
+                )
+    except Exception:
+        _log.warning("failed to clear launch reservation for %s run %s",
+                     task_id, run_id, exc_info=True)
+
+
+def _spawn_windows_exit_observer(task, spec: WorkerLaunchSpec, *,
+                                 board=None) -> "ExitObserverLaunch":
+    """Reserve → spawn observer → bootstrap handshake.
+
+    Contract (binding, from the joint design):
+    * the launch is reserved in SQLite by CAS BEFORE any process spawn;
+    * the observer is started with breakaway detach flags and there is NO
+      silent retry without breakaway — a denied breakaway is spawn_failed,
+      because a non-breakaway observer dies with the gateway job, which is
+      the exact restart this design must survive;
+    * the spawn succeeds only after a valid launched receipt hands the REAL
+      child pid + start fingerprint back; anything else terminates the
+      observer's process tree and raises (→ ``spawn_failed``), never a
+      silent unobserved fallback.
+    """
+    run_id = getattr(task, "current_run_id", None)
+    if not run_id:
+        raise RuntimeError(
+            "windows exit observer requires a claimed run "
+            f"(task {task.id} has no current_run_id — producer bug)")
+    run_id = int(run_id)
+    claim_lock = getattr(task, "claim_lock", None) or ""
+    launch_id = secrets.token_hex(16)
+    receipt = exit_receipt_path(task.id, board=board, run_id=run_id)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+
+    # CAS 1 — reserve the launch BEFORE any process exists. "One launch per
+    # run" becomes a checked invariant instead of an assumption.
+    with connect_closing(board=board) as rconn:
+        with write_txn(rconn):
+            cur = rconn.execute(
+                "UPDATE task_runs SET worker_launch_id = ? "
+                "WHERE id = ? AND task_id = ? AND claim_lock IS ? "
+                "  AND ended_at IS NULL AND worker_launch_id IS NULL",
+                (launch_id, run_id, task.id, claim_lock or None),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"duplicate_launch_rejected: run {run_id} of {task.id} "
+                    "already has a reserved launch")
+            rconn.execute(
+                "UPDATE tasks SET worker_launch_id = ? "
+                "WHERE id = ? AND current_run_id = ?",
+                (launch_id, task.id, run_id),
+            )
+            _append_event(
+                rconn, task.id, "exit_observer_reserved",
+                {"launch_id": launch_id}, run_id=run_id,
+            )
+
+    env = dict(spec.env)
+    # The observer must import the SAME hermes_cli the dispatcher runs —
+    # profile HERMES_HOME rewrites must not change which code observes.
+    pkg_root = str(Path(__file__).resolve().parent.parent)
+    existing_pp = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = pkg_root + (
+        (os.pathsep + existing_pp) if existing_pp else "")
+    argv = [
+        sys.executable, "-m", "hermes_cli.kanban_exit_observer",
+        "--receipt", str(receipt),
+        "--task", str(task.id),
+        "--run", str(run_id),
+        "--launch", launch_id,
+        "--board", resolved_board,
+        "--kind", spec.command_kind,
+        "--exit-contract", spec.exit_contract,
+        "--claim-lock-sha256", _claim_lock_sha256(claim_lock),
+        "--log", str(spec.log_path),
+    ]
+    if spec.cwd:
+        argv += ["--cwd", str(spec.cwd)]
+    argv += ["--", *spec.argv]
+
+    from hermes_cli._subprocess_compat import windows_detach_flags
+
+    try:
+        proc = subprocess.Popen(
+            argv, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            close_fds=True, creationflags=windows_detach_flags(),
+        )
+    except OSError as exc:
+        _clear_launch_reservation(task.id, run_id, launch_id, board,
+                                  f"observer spawn failed: {exc}")
+        raise RuntimeError(
+            "exit observer spawn failed (breakaway denied or interpreter "
+            f"unavailable — no silent unobserved fallback): {exc}")
+
+    # Bounded bootstrap handshake: wait for a valid identity-bound receipt.
+    deadline = time.monotonic() + _EXIT_OBSERVER_BOOTSTRAP_TIMEOUT_SECONDS
+    last_state = "absent"
+    while time.monotonic() < deadline:
+        state, rec = read_exit_receipt(receipt)
+        last_state = state
+        if state in ("launched", "exited"):
+            mismatch = _receipt_identity_mismatch(
+                rec, task_id=task.id, run_id=run_id, board=resolved_board,
+                launch_id=launch_id, claim_lock=claim_lock,
+            )
+            if mismatch is None and rec.get("worker_pid"):
+                wp = int(rec["worker_pid"])
+                # A launched receipt for an already-dead worker means the
+                # child exited within the window — the final receipt is
+                # imminent; keep polling and accept the exited state.
+                if state == "exited" or _pid_alive(wp):
+                    return ExitObserverLaunch(
+                        worker_pid=wp,
+                        worker_pid_start=rec.get("worker_pid_start"),
+                        observer_pid=int(rec["observer_pid"]),
+                        observer_pid_start=rec.get("observer_pid_start"),
+                        launch_id=launch_id,
+                        receipt_path=receipt,
+                    )
+        elif state == "observer_error":
+            mismatch = _receipt_identity_mismatch(
+                rec, task_id=task.id, run_id=run_id, board=resolved_board,
+                launch_id=launch_id, claim_lock=claim_lock,
+            )
+            if mismatch is None:
+                # Observer reported bootstrap failure and (per its
+                # contract) already terminated the child tree.
+                break
+        elif state == "absent" and proc.poll() is not None:
+            break  # observer died before publishing anything
+        time.sleep(_EXIT_OBSERVER_BOOTSTRAP_POLL_SECONDS)
+
+    # Bootstrap failure: terminate the observer's whole tree (observer +
+    # any child it spawned). Deliberately NOT a fallback to direct spawn —
+    # that could leave a second, untracked worker running.
+    try:
+        from gateway.status import terminate_pid
+
+        terminate_pid(proc.pid, force=True)
+    except Exception:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    _clear_launch_reservation(
+        task.id, run_id, launch_id, board,
+        f"bootstrap handshake failed (receipt state: {last_state})")
+    raise RuntimeError(
+        f"exit observer bootstrap failed for {task.id} run {run_id} "
+        f"(receipt state: {last_state}); observer tree terminated")
+
+
+def _set_worker_process_identity(conn: sqlite3.Connection, task,
+                                 launch: ExitObserverLaunch) -> None:
+    """CAS 2 — bind the handshaken worker identity to the reserved launch.
+
+    Persists the REAL worker pid (never the observer pid: liveness, timeout,
+    stale-reclaim and termination semantics all key on ``worker_pid``) plus
+    both start fingerprints on ``tasks`` AND ``task_runs``. Losing this CAS
+    means a second launch bound the run first: the loser's child tree is
+    terminated (identity-guarded) and the spawn fails as a duplicate.
+    """
+    run_id = getattr(task, "current_run_id", None)
+    ok = False
+    if run_id:
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE task_runs SET worker_pid = ?, worker_pid_start = ?, "
+                "observer_pid = ?, observer_pid_start = ? "
+                "WHERE id = ? AND task_id = ? AND worker_launch_id = ? "
+                "  AND worker_pid IS NULL AND ended_at IS NULL",
+                (launch.worker_pid, launch.worker_pid_start,
+                 launch.observer_pid, launch.observer_pid_start,
+                 int(run_id), task.id, launch.launch_id),
+            )
+            ok = cur.rowcount == 1
+            if ok:
+                conn.execute(
+                    "UPDATE tasks SET worker_pid = ?, worker_pid_start = ?, "
+                    "observer_pid = ?, observer_pid_start = ? "
+                    "WHERE id = ? AND current_run_id = ?",
+                    (launch.worker_pid, launch.worker_pid_start,
+                     launch.observer_pid, launch.observer_pid_start,
+                     task.id, int(run_id)),
+                )
+                _append_event(
+                    conn, task.id, "spawned",
+                    {"pid": launch.worker_pid,
+                     "worker_pid_start": launch.worker_pid_start,
+                     "observer_pid": launch.observer_pid,
+                     "launch_id": launch.launch_id},
+                    run_id=int(run_id),
+                )
+    if not ok:
+        # Identity-guarded kill: never terminate a recycled PID whose start
+        # fingerprint no longer matches the child we launched.
+        live_start = _process_start_time(launch.worker_pid)
+        if (launch.worker_pid_start is None or live_start is None
+                or int(live_start) == int(launch.worker_pid_start)):
+            try:
+                from gateway.status import terminate_pid
+
+                terminate_pid(launch.worker_pid, force=True)
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"duplicate_launch_rejected: run {run_id} of {task.id} already "
+            "bound a worker identity; losing child tree terminated")
 
 
 # ---------------------------------------------------------------------------
