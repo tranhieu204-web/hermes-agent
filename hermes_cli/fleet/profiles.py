@@ -29,21 +29,9 @@ def ordered_profiles() -> tuple[LaneProfile, ...]:
         LaneProfile(
             lane_id="claude_code",
             order=1,
-            # OPERATOR RULE 2026-07-27: no agent may run through an API route.
-            # This lane was NATIVE_PROVIDER/"anthropic" — the Anthropic API — which
-            # returns HTTP 400 "Third-party apps now draw from your extra usage,
-            # not your plan limits" on every call, so the lane advertised 85%
-            # headroom while being unable to execute anything. It now runs through
-            # the Claude Code CLI on the plan/subscription, exactly like the
-            # antigravity lane runs through `agy`. Plan only; if plan usage is
-            # exhausted the lane WAITS FOR RESET and never falls back to API.
-            adapter_kind=AdapterKind.EXTERNAL_CLI,
-            provider_id="claude-code-subscription",
-            # Top-model policy (operator 2026-07-27): Fable 5 while under 50% of the
-            # weekly window, Opus 5 for the remainder. Selection is made by
-            # _resolve_claude_model in the selector; both entries are top-class and
-            # Sonnet is deliberately absent from a leader lane.
-            ordered_models=("claude-fable-5", "claude-opus-5"),
+            adapter_kind=AdapterKind.NATIVE_PROVIDER,
+            provider_id="anthropic",
+            ordered_models=("claude-opus-4-8",),
             supported_efforts=("low", "medium", "high", "max"),
             capabilities=frozenset({"workspace_read", "workspace_write", "shell"}),
             allowed_auth_kinds=frozenset({"oauth_subscription"}),
