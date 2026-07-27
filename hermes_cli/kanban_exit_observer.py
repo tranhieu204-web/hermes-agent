@@ -218,6 +218,7 @@ def _parse_args(argv):
     parser.add_argument("--claim-lock-sha256", required=True)
     parser.add_argument("--log", required=True)
     parser.add_argument("--cwd", default=None)
+    parser.add_argument("--child-env-file", default=None)
     parser.add_argument("--recover", action="store_true")
     parser.add_argument("--worker-pid", type=int, default=None)
     parser.add_argument("--worker-pid-start", type=int, default=None)
@@ -231,10 +232,44 @@ def _parse_args(argv):
     return args, child_argv
 
 
+def _load_child_env(args):
+    """Restore the EXACT env the dispatcher built for the worker.
+
+    The dispatcher must prepend its own package root to the OBSERVER's
+    PYTHONPATH so this module is importable, but the worker's module
+    resolution must not inherit that mutation: the original
+    ``WorkerLaunchSpec.env`` rides along in a sidecar file and is restored
+    verbatim before the child ``Popen``. Missing/unreadable sidecar fails
+    the bootstrap CLOSED — launching the worker under the observer's
+    polluted env would silently change which code the worker imports.
+    """
+    if not args.child_env_file:
+        return None, "child_env_file_missing"
+    try:
+        with open(args.child_env_file, "r", encoding="utf-8") as fh:
+            env = json.load(fh)
+    except Exception as exc:
+        return None, f"child_env_file_unreadable: {exc}"
+    if (not isinstance(env, dict)
+            or not all(isinstance(k, str) and isinstance(v, str)
+                       for k, v in env.items())):
+        return None, "child_env_file_invalid"
+    try:
+        os.unlink(args.child_env_file)
+    except OSError:
+        pass
+    return env, None
+
+
 def _run_primary(args, child_argv) -> int:
     if not child_argv:
         print("missing child argv after --", file=sys.stderr)
         return EXIT_USAGE
+
+    child_env, env_error = _load_child_env(args)
+    if env_error:
+        _write_error_receipt(args, "child_env_unavailable", env_error)
+        return EXIT_BOOTSTRAP_FAILED
 
     log_handle = None
     try:
@@ -249,6 +284,7 @@ def _run_primary(args, child_argv) -> int:
         child = subprocess.Popen(
             child_argv,
             cwd=args.cwd or None,
+            env=child_env,
             stdin=subprocess.DEVNULL,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
@@ -258,8 +294,26 @@ def _run_primary(args, child_argv) -> int:
         _write_error_receipt(args, "child_spawn_failed", str(exc))
         return EXIT_BOOTSTRAP_FAILED
 
+    worker_start = _pid_start(child.pid)
+    if worker_start is None and child.poll() is None:
+        # FAIL CLOSED: a LIVE child without a birth fingerprint can never be
+        # identity-bound again (PID reuse becomes unprovable), which would
+        # poison every downstream recovery/kill/trust decision. Terminate
+        # the child while we still hold the only handle. A child that has
+        # ALREADY exited is exempt: its fingerprint is legitimately
+        # unreadable post-mortem, and the retained handle (not the PID)
+        # is what ``wait()`` collects, so reuse cannot misbind the code.
+        _terminate_tree(child.pid)
+        try:
+            child.wait(timeout=30)
+        except Exception:
+            pass
+        _write_error_receipt(args, "child_fingerprint_unavailable",
+                             f"no start fingerprint for live pid {child.pid}")
+        return EXIT_BOOTSTRAP_FAILED
+
     receipt = _base_receipt(
-        args, worker_pid=child.pid, worker_pid_start=_pid_start(child.pid),
+        args, worker_pid=child.pid, worker_pid_start=worker_start,
     )
     try:
         _atomic_write_receipt(args.receipt, receipt,
@@ -369,6 +423,13 @@ def _run_recovery(args) -> int:
     if not args.worker_pid:
         print("--recover requires --worker-pid", file=sys.stderr)
         return EXIT_USAGE
+    if args.worker_pid_start is None:
+        # FAIL CLOSED: without the spawn-time start fingerprint there is no
+        # way to prove the PID was not recycled — recovery must never wait
+        # on (and publish evidence for) an arbitrary process.
+        print("--recover requires --worker-pid-start (identity fail-closed)",
+              file=sys.stderr)
+        return EXIT_USAGE
 
     blocked = _existing_receipt_blocks_recovery(args.receipt, args)
     if blocked == "receipt_already_final":
@@ -379,8 +440,8 @@ def _run_recovery(args) -> int:
 
     pid = int(args.worker_pid)
     live_start = _pid_start(pid)
-    if (args.worker_pid_start is not None and live_start is not None
-            and int(live_start) != int(args.worker_pid_start)):
+    if live_start is None or int(live_start) != int(args.worker_pid_start):
+        # Unreadable fingerprint is UNKNOWN identity, not a match.
         _write_error_receipt(
             args, "recovery_identity_mismatch",
             f"pid {pid} start {live_start} != expected {args.worker_pid_start}",
@@ -389,7 +450,20 @@ def _run_recovery(args) -> int:
 
     SYNCHRONIZE = 0x00100000
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    # 64-bit safety: without explicit restype/argtypes ctypes truncates the
+    # returned HANDLE to a 32-bit c_int, which can corrupt every later call
+    # that receives it (Wait/GetExitCode/CloseHandle).
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL,
+                                     wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     handle = kernel32.OpenProcess(
         SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid,
     )
@@ -405,8 +479,7 @@ def _run_recovery(args) -> int:
         # recycled between our first probe and OpenProcess would otherwise be
         # waited on as if it were ours.
         live_start = _pid_start(pid)
-        if (args.worker_pid_start is not None and live_start is not None
-                and int(live_start) != int(args.worker_pid_start)):
+        if live_start is None or int(live_start) != int(args.worker_pid_start):
             _write_error_receipt(
                 args, "recovery_identity_mismatch",
                 f"pid {pid} start changed to {live_start} after open",
@@ -415,19 +488,41 @@ def _run_recovery(args) -> int:
 
         receipt = _base_receipt(
             args, worker_pid=pid,
-            worker_pid_start=(
-                int(args.worker_pid_start)
-                if args.worker_pid_start is not None else live_start
-            ),
+            worker_pid_start=int(args.worker_pid_start),
         )
         INFINITE = 0xFFFFFFFF
-        kernel32.WaitForSingleObject(handle, INFINITE)
+        WAIT_OBJECT_0 = 0x00000000
+        STILL_ACTIVE = 259
+        wait_rc = kernel32.WaitForSingleObject(handle, INFINITE)
+        if wait_rc != WAIT_OBJECT_0:
+            # WAIT_FAILED / WAIT_ABANDONED / anything unexpected: the wait
+            # proves nothing — publishing a code now could bill a live or
+            # unrelated process's state to this run.
+            final = _finalize(
+                receipt, state="observer_error",
+                error="recovery_wait_failed",
+                detail=(f"WaitForSingleObject returned {wait_rc} "
+                        f"(error {ctypes.get_last_error()})"),
+            )
+            _try_write_final(args, final)
+            return EXIT_OBSERVER_ERROR
         code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
             final = _finalize(
                 receipt, state="observer_error",
                 error="recovery_exit_code_unavailable",
                 detail=f"GetExitCodeProcess error {ctypes.get_last_error()}",
+            )
+            _try_write_final(args, final)
+            return EXIT_OBSERVER_ERROR
+        if int(code.value) == STILL_ACTIVE:
+            # 259 after a signaled wait is either a process that really
+            # exited with STILL_ACTIVE (indistinguishable) or a probe bug —
+            # never publish it as a real exit code.
+            final = _finalize(
+                receipt, state="observer_error",
+                error="recovery_still_active_code",
+                detail="GetExitCodeProcess returned STILL_ACTIVE after wait",
             )
             _try_write_final(args, final)
             return EXIT_OBSERVER_ERROR

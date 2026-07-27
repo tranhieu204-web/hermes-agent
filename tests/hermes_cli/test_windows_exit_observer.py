@@ -1,4 +1,4 @@
-"""Windows exit observer — RED tests first, then the observer contract.
+"""Windows exit observer — characterization tests, then the observer contract.
 
 The dispatcher on native Windows has NO exit-status producer at all:
 ``reap_worker_zombies`` is a documented no-op, ``_classify_worker_exit`` reads
@@ -6,12 +6,15 @@ only the POSIX wait-status registry, and both production spawn routes discard
 the ``Popen`` object after returning ``proc.pid``. Live evidence: 70/70
 crashed runs classified as ``pid <N> not alive``.
 
-The RED tests below drive the REAL production spawn seams (``_default_spawn``
-and ``_spawn_claude_plan_worker``) — not a seeded registry — and pin the
-defect: with the observer gate OFF (the default), a worker that exits 0, 75,
-or 7 is indistinguishable from a vanished process. They stay green after the
-fix because the legacy path is preserved behind the gate; the gate-ON
-acceptance tests in this file prove the same seam now yields exact codes.
+HONEST LABELS (Hermes I-2): the ``test_characterization_*`` tests below are
+NEGATIVE CHARACTERIZATION tests — they assert the documented defect on the
+gate-OFF legacy path and are GREEN BY DESIGN on both the unfixed and the
+fixed candidate (the legacy path is preserved behind the gate). They are NOT
+the RED proof. The genuine RED/desired-behavior acceptance is
+``test_desired_exit_code_reaches_run_history_through_dispatch``, which
+enters only through top-level ``dispatch_once`` ticks and demonstrably FAILS
+on the unfixed candidate (run against 46f3ca9a4; failing output recorded in
+the remediation evidence pack).
 """
 
 from __future__ import annotations
@@ -58,21 +61,23 @@ def _fake_worker(tmp_path: Path, exit_code: int, sleep_s: float = 0.0) -> Path:
     return script
 
 
-def _spawn_via_production_route(conn, monkeypatch, tmp_path, exit_code):
+def _spawn_via_production_route(conn, monkeypatch, tmp_path, exit_code,
+                                sleep_s: float = 0.0, max_retries=None):
     """Dispatch one task through the REAL ``_default_spawn`` seam.
 
     Only the hermes argv is redirected to a deterministic python child —
     everything else (claim, workspace, env, log, Popen call, pid persistence)
     is the production path.
     """
-    script = _fake_worker(tmp_path, exit_code)
+    script = _fake_worker(tmp_path, exit_code, sleep_s=sleep_s)
     monkeypatch.setattr(
         kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)]
     )
     import hermes_cli.profiles as profiles
 
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
-    tid = kb.create_task(conn, title=f"exit-{exit_code}", assignee="worker")
+    tid = kb.create_task(conn, title=f"exit-{exit_code}", assignee="worker",
+                         max_retries=max_retries)
     result = kb.dispatch_once(conn)
     assert [s[0] for s in result.spawned] == [tid]
     task = kb.get_task(conn, tid)
@@ -90,10 +95,10 @@ def _wait_pid_gone(pid: int, timeout: float = 30.0) -> None:
 
 
 # ---------------------------------------------------------------------------
-# RED 1 — the real hermes-route spawn seam loses every exit code (gate OFF)
+# CHARACTERIZATION 1 — hermes-route spawn seam loses every exit code (gate OFF)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("exit_code", [0, 75, 7])
-def test_red_default_spawn_exit_code_is_lost_without_observer(
+def test_characterization_default_spawn_exit_code_lost_gate_off(
     kanban_home, tmp_path, monkeypatch, exit_code
 ):
     """Exit 0 / 75 / 7 through the production spawn are all 'unknown'.
@@ -132,17 +137,23 @@ def test_red_default_spawn_exit_code_is_lost_without_observer(
 
 
 # ---------------------------------------------------------------------------
-# RED 2 — the Claude Plan route discards the Popen handle the same way
+# CHARACTERIZATION 2 — the Claude Plan route discards the Popen handle
 # ---------------------------------------------------------------------------
-def test_red_claude_plan_route_discards_popen_handle(
+def test_characterization_claude_plan_discards_popen_handle(
     kanban_home, tmp_path, monkeypatch
 ):
     """The plan route returns a bare int pid; the handle (and with it the
-    only Windows source of the exit code) is dropped on the floor."""
-    script = _fake_worker(tmp_path, 75)
-    # Route the task down the claude-plan branch with a fake executable.
+    only Windows source of the exit code) is dropped on the floor.
+
+    The fake claude executable exits with the DETERMINISTIC contract code
+    75 (Hermes I-2: the old version pointed at ``sys.executable -p …``,
+    which produced an unrelated option-parser exit and left an unused
+    ``_fake_worker`` script behind)."""
+    fake_claude = tmp_path / "fake_claude.cmd"
+    fake_claude.write_text("@echo off\r\nexit /b 75\r\n", encoding="ascii")
+    # Route the task down the claude-plan branch with the fake executable.
     monkeypatch.setattr(kb, "_task_uses_claude_plan_route", lambda task: True)
-    monkeypatch.setattr(kb, "claude_cli_path", lambda: sys.executable)
+    monkeypatch.setattr(kb, "claude_cli_path", lambda: str(fake_claude))
     monkeypatch.setattr(
         kb, "_resolve_hermes_argv",
         lambda: pytest.fail("claude-plan task must not take the hermes route"),
@@ -156,8 +167,6 @@ def test_red_claude_plan_route_discards_popen_handle(
         import hermes_cli.profiles as profiles
 
         monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
-        # sys.executable -p <contract> ... exits 2 immediately (bad option) —
-        # good enough: a real exit code that nothing captures.
         spawned = kb._default_spawn(
             kb.get_task(conn, tid) or kb.claim_task(conn, tid),
             str(tmp_path),
@@ -167,13 +176,14 @@ def test_red_claude_plan_route_discards_popen_handle(
             "discarded, so the exit code is unrecoverable"
         )
         _wait_pid_gone(spawned)
+        # The deterministic 75 is GONE: the legacy path cannot classify it.
         assert kb._classify_worker_exit(spawned) == ("unknown", None)
 
 
 # ---------------------------------------------------------------------------
-# RED 3 — negative control: a parent-held handle dies with the parent
+# CHARACTERIZATION 3 — negative control: a parent-held handle dies with the parent
 # ---------------------------------------------------------------------------
-def test_red_in_process_waiter_loses_handle_when_parent_dies(tmp_path):
+def test_characterization_in_process_waiter_loses_handle(tmp_path):
     """An in-gateway waiter cannot survive the gateway.
 
     A 'gateway' process retains the only Popen handle on a worker; the
@@ -207,6 +217,60 @@ def test_red_in_process_waiter_loses_handle_when_parent_dies(tmp_path):
     finally:
         if gateway.poll() is None:
             gateway.kill()
+
+
+# ===========================================================================
+# DESIRED BEHAVIOR (the genuine RED test) — deliberately restricted to APIs
+# that exist on the UNFIXED candidate so it runs there unmodified.
+# ===========================================================================
+def test_desired_exit_code_reaches_run_history_through_dispatch(
+    kanban_home, tmp_path, monkeypatch
+):
+    """I-2 desired-behavior acceptance, through the top-level production
+    boundary ONLY: dispatch a worker that exits 7 via ``dispatch_once``,
+    then keep ticking ``dispatch_once`` until the attempt closes — the run
+    history must carry the exact exit code.
+
+    RED on the unfixed candidate (46f3ca9a4): the run closes as
+    ``pid <N> not alive`` with no code, and this test FAILS (output
+    recorded in the remediation evidence pack). GREEN only once a working
+    observer + reconciler are wired into the dispatch tick."""
+    monkeypatch.setenv("HERMES_KANBAN_WINDOWS_EXIT_OBSERVER", "1")
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    script = tmp_path / "exit7.py"
+    script.write_text("import sys\nsys.exit(7)\n", encoding="utf-8")
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="desired-code", assignee="worker", max_retries=1)
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid]
+        pid = conn.execute(
+            "SELECT worker_pid FROM tasks WHERE id = ?",
+            (tid,)).fetchone()["worker_pid"]
+        assert pid
+        deadline = time.time() + 30
+        while time.time() < deadline and kb._pid_alive(pid):
+            time.sleep(0.1)
+        run = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            kb.dispatch_once(conn)
+            run = conn.execute(
+                "SELECT outcome, error, ended_at FROM task_runs "
+                "WHERE task_id = ? ORDER BY id LIMIT 1", (tid,)).fetchone()
+            if run and run["ended_at"]:
+                break
+            time.sleep(0.2)
+        assert run is not None and run["ended_at"], (
+            "the dispatch ticks never closed the attempt")
+        assert "exited with code 7" in (run["error"] or ""), (
+            "DESIRED BEHAVIOR: the exact exit code must reach run history "
+            f"through dispatch_once alone; got outcome={run['outcome']!r} "
+            f"error={run['error']!r}")
 
 
 # ===========================================================================
@@ -247,23 +311,35 @@ def test_observer_branch_matrix_through_production_boundary(
 ):
     """Exit 0/75/7 through the REAL dispatch boundary now classify exactly.
 
-    The spy on ``write_supervisor_observation`` (definition module) proves
-    the canonical writer is reached in the COMMON path for every branch —
-    moving it back behind one branch fails the 0 and 75 cases (mutation
-    guard #5 of the design)."""
+    BOTH ends are the top-level production entry: the launch is a real
+    ``dispatch_once`` and the CONSUMPTION is a second real ``dispatch_once``
+    tick after the exit — never a direct ``detect_crashed_workers`` call.
+    Definition-module spies prove the tick itself reached
+    ``reconcile_windows_exit_receipts`` and the canonical writer; moving
+    the writer back behind one branch fails the 0 and 75 cases, and
+    removing the reconciler call from ``_dispatch_once_locked`` fails the
+    reconcile-spy assertion (mutation guards #5 and #7)."""
     spy_calls = []
+    reconcile_calls = []
     real_writer = kb.write_supervisor_observation
+    real_reconcile = kb.reconcile_windows_exit_receipts
 
     def spying_writer(task_id, **kwargs):
         spy_calls.append((task_id, kwargs.get("run_id"),
                           kwargs.get("kind"), kwargs.get("code")))
         return real_writer(task_id, **kwargs)
 
+    def spying_reconcile(conn, **kwargs):
+        reconcile_calls.append(kwargs.get("board"))
+        return real_reconcile(conn, **kwargs)
+
     monkeypatch.setattr(kb, "write_supervisor_observation", spying_writer)
+    monkeypatch.setattr(kb, "reconcile_windows_exit_receipts",
+                        spying_reconcile)
 
     with kb.connect() as conn:
         tid, task = _spawn_via_production_route(
-            conn, monkeypatch, tmp_path, exit_code
+            conn, monkeypatch, tmp_path, exit_code, max_retries=1,
         )
         run_id = task.current_run_id
         assert run_id, "claimed dispatch must carry a run id"
@@ -291,10 +367,20 @@ def test_observer_branch_matrix_through_production_boundary(
         assert state == "exited", f"final receipt missing: {state}"
         assert rec["exit_code"] == exit_code
 
-        crashed = kb.detect_crashed_workers(conn)
+        # CONSUME through the top-level production boundary: a SECOND real
+        # dispatch tick, not a direct helper call.
+        reconcile_calls.clear()
+        res2 = kb.dispatch_once(conn)
+        crashed = res2.crashed
+        assert reconcile_calls, (
+            "dispatch_once must call reconcile_windows_exit_receipts — "
+            "the production consumer boundary is bypassed")
+        assert res2.spawned == [], (
+            "the closed attempt must not silently respawn inside the "
+            "assertion tick")
         if expected_kind == "rate_limited":
             assert tid not in crashed
-            assert tid in kb.detect_crashed_workers._last_rate_limited
+            assert tid in res2.rate_limited
             task_after = kb.get_task(conn, tid)
             assert task_after.consecutive_failures == 0, (
                 "a quota wall must not consume the failure budget")
@@ -328,6 +414,10 @@ def test_observer_branch_matrix_through_production_boundary(
         assert sup["exit_code"] == exit_code
         assert sup["receipt_sha256"] == rec["_sha256"]
         assert sup["termination_initiator"] == "natural"
+        if expected_kind == "clean_exit":
+            # I-6: in the crash context (card still running) a clean exit
+            # is a protocol violation — never a bare 'clean_exit' cause.
+            assert sup["cause"] == "worker_protocol_violation"
         diag = kb.diagnose_worker_failure(tid, run_id=run_id)
         assert diag and diag.startswith("observed:")
 
@@ -433,6 +523,69 @@ def test_evidence_survives_dispatcher_death(observer_on, tmp_path,
         assert sup["exit_kind"] == "nonzero_exit"
 
 
+def test_observer_loss_recovery_through_dispatch_tick(
+    observer_on, tmp_path, monkeypatch
+):
+    """Primary observer dies under a LIVE worker: the next real production
+    tick — via ``reconcile_windows_exit_receipts`` at the top of
+    ``_dispatch_once_locked`` — must attach ONE recovery observer instead
+    of reclaiming or duplicate-spawning, and the worker's eventual exact
+    exit code is still captured end to end.
+
+    This behaviour exists ONLY in the top-of-tick reconciler: removing
+    that production call makes this test fail (I-9 mutation guard #7),
+    which is what proves the consumer boundary is genuinely wired.
+    """
+    with kb.connect() as conn:
+        tid, task = _spawn_via_production_route(
+            conn, monkeypatch, tmp_path, 42, sleep_s=8.0, max_retries=1,
+        )
+        run_id = task.current_run_id
+        trow = conn.execute(
+            "SELECT observer_pid FROM tasks WHERE id = ?", (tid,)).fetchone()
+        obs_pid = trow["observer_pid"]
+        assert obs_pid and obs_pid != task.worker_pid
+        # Kill ONLY the primary observer; the worker keeps running.
+        subprocess.run(
+            ["taskkill", "/PID", str(obs_pid), "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        _wait_pid_gone(obs_pid)
+        assert kb._pid_alive(task.worker_pid), (
+            "worker must survive its observer")
+
+        # Next REAL tick: no reclaim, no duplicate spawn — recovery attach.
+        res2 = kb.dispatch_once(conn)
+        assert res2.spawned == [] and tid not in res2.crashed
+        rrow = conn.execute(
+            "SELECT observer_pid FROM task_runs WHERE id = ?",
+            (run_id,)).fetchone()
+        assert rrow["observer_pid"] and rrow["observer_pid"] != obs_pid, (
+            "the production tick must attach a recovery observer")
+        ev = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND "
+            "kind = 'exit_observer_recovery'", (tid,)).fetchone()
+        assert ev is not None
+
+        _wait_pid_gone(task.worker_pid)
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            state, rec = kb.read_exit_receipt(
+                kb.exit_receipt_path(tid, run_id=run_id))
+            if state == "exited":
+                break
+            time.sleep(0.1)
+        assert state == "exited", "recovery observer must finalize the receipt"
+        assert rec["exit_code"] == 42
+
+        res3 = kb.dispatch_once(conn)
+        assert tid in res3.crashed
+        _s, sup = kb.read_supervisor_record(tid, run_id=run_id)
+        assert _s == "valid"
+        assert sup["exit_kind"] == "nonzero_exit"
+        assert sup["exit_code"] == 42
+
+
 def test_bootstrap_failure_is_spawn_failed_never_untracked(
     observer_on, tmp_path, monkeypatch
 ):
@@ -477,7 +630,12 @@ def test_timeout_cause_survives_late_exit_receipt(observer_on, tmp_path,
                                                   monkeypatch):
     """Precedence tier 1: a dispatcher-initiated max-runtime kill owns the
     semantic cause; the observer's receipt (arriving after the kill) adds
-    the mechanical code without rewriting timed_out into nonzero_exit."""
+    the mechanical code without rewriting timed_out into nonzero_exit.
+
+    Timeout AND late-receipt reconciliation both run through the top-level
+    production boundary (real ``dispatch_once`` ticks), never by calling
+    ``enforce_max_runtime`` / ``reconcile_windows_exit_receipts`` directly.
+    """
     import hermes_cli.profiles as profiles
 
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
@@ -488,7 +646,7 @@ def test_timeout_cause_survives_late_exit_receipt(observer_on, tmp_path,
     with kb.connect() as conn:
         tid = kb.create_task(
             conn, title="timeout-precedence", assignee="worker",
-            max_runtime_seconds=1,
+            max_runtime_seconds=1, max_retries=1,
         )
         result = kb.dispatch_once(conn)
         assert [s[0] for s in result.spawned] == [tid]
@@ -496,8 +654,10 @@ def test_timeout_cause_survives_late_exit_receipt(observer_on, tmp_path,
         run_id = task.current_run_id
         worker_pid = task.worker_pid
         time.sleep(1.2)
-        timed_out = kb.enforce_max_runtime(conn)
-        assert tid in timed_out
+        res2 = kb.dispatch_once(conn)
+        assert tid in res2.timed_out, (
+            "the production tick itself must enforce max runtime")
+        assert res2.spawned == []
         _wait_pid_gone(worker_pid)
 
         # The initiated record exists and owns the cause.
@@ -506,8 +666,9 @@ def test_timeout_cause_survives_late_exit_receipt(observer_on, tmp_path,
         assert sup["termination_initiator"] == "max_runtime"
         assert sup["cause"] == "timed_out"
 
-        # Wait for the observer's final receipt, then reconcile (as the
-        # next dispatch tick would).
+        # Wait for the observer's final receipt, then run the NEXT real
+        # dispatch tick — the top-of-tick reconciler is what must pick the
+        # late receipt up (removing that production call fails here).
         deadline = time.time() + 20
         while time.time() < deadline:
             state, rec = kb.read_exit_receipt(
@@ -516,7 +677,7 @@ def test_timeout_cause_survives_late_exit_receipt(observer_on, tmp_path,
                 break
             time.sleep(0.1)
         assert state == "exited"
-        kb.reconcile_windows_exit_receipts(conn)
+        kb.dispatch_once(conn)
 
         _s, sup = kb.read_supervisor_record(tid, run_id=run_id)
         assert sup["termination_initiator"] == "max_runtime", (
@@ -564,7 +725,10 @@ def _mk_receipt(**over):
         "host_id": host,
         "boot_id": kb._boot_id(),
         "observer_pid": os.getpid(),
-        "observer_pid_start": None,
+        # Non-null by default: a receipt factory that omits launch
+        # fingerprints shares the implementation's fail-open premise and
+        # cannot catch missing-fingerprint acceptance bugs (Hermes I-10).
+        "observer_pid_start": 555,
         "worker_pid": 4242,
         "worker_pid_start": 777,
         "launched_at": "2026-07-27T00:00:00.000000Z",
@@ -667,20 +831,77 @@ def test_exited_receipt_requires_int_code_not_bool(logdir):
 @pytest.mark.parametrize("field,value,expected", [
     ("task_id", "t_OTHER", "task_id"),
     ("run_id", "4", "run_id"),
+    ("board", "otherboard", "board"),
     ("launch_id", "b" * 32, "launch_id"),
     ("claim_lock_sha256", kb._claim_lock_sha256("stolen"), "claim_lock"),
     ("host_id", "otherhost", "host_id"),
+    # Mismatched values reject…
     ("worker_pid", 999, "worker_pid"),
     ("worker_pid_start", 888, "worker_pid_start"),
+    ("observer_pid", 999983, "observer_pid"),
+    ("observer_pid_start", 888888, "observer_pid_start"),
+    # …and MISSING identity is unknown/conflict, never a match (I-5/I-10):
+    # when the DB carries an expected value, a receipt without one must
+    # fail CLOSED.
+    ("worker_pid", None, "worker_pid_missing"),
+    ("worker_pid_start", None, "worker_pid_start_missing"),
+    ("observer_pid_start", None, "observer_pid_start_missing"),
 ])
 def test_receipt_identity_mismatches_each_rejected(logdir, field, value,
                                                    expected):
+    """FULL expected identity at the validation call — every field the DB
+    can carry participates, and each one is proven to reject both a
+    mismatched and a missing receipt value."""
     rec = _final(_mk_receipt(**{field: value}))
     mismatch = kb._receipt_identity_mismatch(
-        rec, task_id="t_x", run_id="3", launch_id="a" * 32,
-        claim_lock="lock", worker_pid=4242, worker_pid_start=777,
+        rec, task_id="t_x", run_id="3", board="default",
+        launch_id="a" * 32, claim_lock="lock",
+        worker_pid=4242, worker_pid_start=777,
+        observer_pid=os.getpid(), observer_pid_start=555,
     )
     assert mismatch == expected
+
+
+def test_receipt_identity_full_binding_accepts_exact_match(logdir):
+    """Control for the rejection matrix: the unmutated receipt binds
+    cleanly against the same full expected identity."""
+    mismatch = kb._receipt_identity_mismatch(
+        _final(_mk_receipt()), task_id="t_x", run_id="3", board="default",
+        launch_id="a" * 32, claim_lock="lock",
+        worker_pid=4242, worker_pid_start=777,
+        observer_pid=os.getpid(), observer_pid_start=555,
+    )
+    assert mismatch is None
+
+
+def test_pid_identity_helpers_fail_closed_on_unknown(monkeypatch):
+    """I-5: unknown identity must HOLD — never a kill-eligible match,
+    never a release-eligible 'gone'. ``_pid_alive_with_start`` stays
+    hold-biased (deferral decisions only); the confirmed variants used for
+    kill/trust/release fail closed."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(kb, "_process_start_time", lambda pid: None)
+    assert kb._pid_alive_with_start(1234, 777) is True
+    assert kb._pid_confirmed_ours(1234, 777) is False
+    assert kb._pid_confirmed_gone(1234, 777) is False
+
+    monkeypatch.setattr(kb, "_process_start_time", lambda pid: 999)
+    assert kb._pid_confirmed_ours(1234, 777) is False
+    assert kb._pid_confirmed_gone(1234, 777) is True  # provably recycled
+
+    monkeypatch.setattr(kb, "_process_start_time", lambda pid: 777)
+    assert kb._pid_confirmed_ours(1234, 777) is True
+    assert kb._pid_confirmed_gone(1234, 777) is False
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
+    assert kb._pid_confirmed_ours(1234, 777) is False
+    assert kb._pid_confirmed_gone(1234, 777) is True
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: True)
+    assert kb._pid_confirmed_ours(1234, None) is False, (
+        "no spawn fingerprint -> never kill-eligible")
+    assert kb._pid_confirmed_gone(1234, None) is False, (
+        "a live pid without a fingerprint can never be proven gone")
 
 
 def test_windows_status_values_are_never_posix_signals(logdir):
@@ -752,6 +973,74 @@ def test_observer_loss_is_honest_after_grace(logdir, monkeypatch):
     assert obs["observation_state"] == "observer_lost"
     assert obs["cause"] == "exit_observer_lost"
     assert obs["quality"] == "incomplete"
+
+
+def test_unavailable_receipt_pending_then_honest_close(logdir, monkeypatch):
+    """I-6: a transiently unreadable receipt (sharing/AV race) is PENDING —
+    held and retried — never lumped in with structurally invalid bytes;
+    only a PERSISTENTLY unavailable receipt closes, and honestly as
+    unavailable, never as a guessed cause."""
+    monkeypatch.setattr(kb, "read_exit_receipt",
+                        lambda path: ("unavailable", None))
+    kind, code, obs = kb._observed_worker_exit(
+        "t_x", "31", 4242, launch_id="a" * 32, claim_lock="lock",
+        worker_pid_start=777,
+    )
+    assert obs["observation_state"] == "pending_receipt", (
+        "first unavailable sighting must hold, not close")
+    # Grace expired -> honest close as unavailable.
+    monkeypatch.setattr(kb, "_UNAVAILABLE_RECEIPT_GRACE_SECONDS", 0.0)
+    kind, code, obs = kb._observed_worker_exit(
+        "t_x", "31", 4242, launch_id="a" * 32, claim_lock="lock",
+        worker_pid_start=777,
+    )
+    assert (kind, code) == ("unknown", None)
+    assert obs["cause"] == "exit_receipt_unavailable"
+    assert obs["quality"] == "incomplete"
+
+
+def test_initiator_only_write_is_monotonic(logdir):
+    """I-6: enrichment must be MONOTONIC — an initiator-only write must not
+    drop the receipt path/hash/boot/observation-state/mechanics an earlier
+    reconciliation already recorded."""
+    path = _write_receipt(logdir, _final(_mk_receipt(run_id="7"), code=9))
+    _state, rec = kb.read_exit_receipt(path)
+    assert _state == "exited"
+    st = kb.write_supervisor_observation(
+        "t_x", kind="nonzero_exit", code=9, pid=4242, run_id="7",
+        observation={"receipt": rec, "observation_state": "exited"})
+    assert st == "written"
+    _s, before = kb.read_supervisor_record("t_x", run_id="7")
+    assert before["receipt_sha256"] == rec["_sha256"]
+    # Now an initiator-only write (no receipt in hand).
+    st = kb.write_supervisor_observation(
+        "t_x", run_id="7", pid=4242, initiator="manual_reclaim")
+    assert st == "enriched"
+    _s, after = kb.read_supervisor_record("t_x", run_id="7")
+    assert after["termination_initiator"] == "manual_reclaim"
+    for field in ("receipt_path", "receipt_sha256", "boot_id",
+                  "observation_state", "exit_kind", "exit_code",
+                  "worker_pid_start", "observer_pid", "observer_pid_start"):
+        assert after[field] == before[field], (
+            f"initiator-only enrichment dropped {field}")
+
+
+def test_invalid_prior_supervisor_bytes_survive_supersession(logdir):
+    """I-6: invalid structured evidence must SURVIVE being superseded —
+    the exact prior bytes are parked in a sidecar and linked by hash."""
+    sup_path = kb.supervisor_record_path("t_x", run_id="9")
+    sup_path.parent.mkdir(parents=True, exist_ok=True)
+    bad = b'{"version": "not-even-close"'
+    sup_path.write_bytes(bad)
+    prior_sha = kb.hashlib.sha256(bad).hexdigest()
+    st = kb.write_supervisor_observation(
+        "t_x", kind="nonzero_exit", code=3, pid=4242, run_id="9")
+    assert st == "written"
+    sidecar = sup_path.with_name(f"{sup_path.name}.invalid.{prior_sha[:12]}")
+    assert sidecar.exists(), "invalid prior evidence must be preserved"
+    assert sidecar.read_bytes() == bad
+    _s, rec = kb.read_supervisor_record("t_x", run_id="9")
+    assert rec["supersedes_sha256"] == prior_sha
 
 
 def test_live_observer_defers_classification(logdir):
@@ -835,16 +1124,31 @@ def test_exit_receipt_path_requires_run_id():
 
 def test_atomic_write_stale_temp_cannot_collide(tmp_path):
     """A stale temp file from a killed writer must not break (or be
-    consumed by) the next writer — unique per-writer temp names."""
+    consumed by) the next writer — unique per-writer temp names.
+
+    BOTH stale shapes are planted: a unique-style leftover AND the fixed
+    ``<final>.tmp`` name. A writer that regresses to the fixed temp name
+    collides with the second one under ``O_EXCL`` and fails here
+    (mutation guard M3 — the original version of this test never failed
+    under that mutation because it only planted the unique shape)."""
     from hermes_cli import kanban_exit_observer as obs
 
     final = tmp_path / "r.json"
-    stale = tmp_path / f"r.json.{'c' * 32}.9999.2.tmp"
-    stale.write_text("{half json", encoding="utf-8")
+    stale_unique = tmp_path / f"r.json.{'c' * 32}.9999.2.tmp"
+    stale_unique.write_text("{half json", encoding="utf-8")
+    stale_fixed = tmp_path / "r.json.tmp"
+    stale_fixed.write_text("{stale fixed-name temp", encoding="utf-8")
     obs._atomic_write_receipt(
         str(final), {"ok": True}, launch_id="a" * 32, sequence=2)
     assert json.loads(final.read_text(encoding="utf-8")) == {"ok": True}
-    assert stale.read_text(encoding="utf-8") == "{half json"
+    assert stale_unique.read_text(encoding="utf-8") == "{half json"
+    assert stale_fixed.read_text(encoding="utf-8") == (
+        "{stale fixed-name temp"), "another writer's temp must be untouched"
+    # A second, overlapping writer (different launch id / same final path)
+    # must also succeed without consuming anyone else's temp.
+    obs._atomic_write_receipt(
+        str(final), {"ok": 2}, launch_id="b" * 32, sequence=2)
+    assert json.loads(final.read_text(encoding="utf-8")) == {"ok": 2}
 
 
 def test_duplicate_launch_reservation_rejected(observer_on, monkeypatch):
@@ -979,7 +1283,9 @@ def test_recovery_refuses_to_overwrite_final_receipt(observer_on, tmp_path):
              "--kind", "hermes", "--exit-contract", "hermes_kanban_v1",
              "--claim-lock-sha256", kb._claim_lock_sha256("lock"),
              "--log", str(tmp_path / "t_r.log"),
-             "--worker-pid", str(sleeper.pid)],
+             "--worker-pid", str(sleeper.pid),
+             "--worker-pid-start",
+             str(kb._process_start_time(sleeper.pid))],
             capture_output=True, text=True, timeout=60,
             cwd=str(Path(kb.__file__).resolve().parent.parent),
         )
@@ -1018,7 +1324,11 @@ def test_recovery_preserves_non_launched_receipts(observer_on, tmp_path,
          "--kind", "hermes", "--exit-contract", "hermes_kanban_v1",
          "--claim-lock-sha256", kb._claim_lock_sha256("lock"),
          "--log", str(tmp_path / "t_r2.log"),
-         "--worker-pid", str(quick.pid)],
+         "--worker-pid", str(quick.pid),
+         # A real (already-exited) pid with a nominal fingerprint: the
+         # refusal under test must come from the RECEIPT check, not from
+         # the separate missing-fingerprint usage guard.
+         "--worker-pid-start", "1"],
         capture_output=True, text=True, timeout=60,
         cwd=str(Path(kb.__file__).resolve().parent.parent),
     )
@@ -1096,26 +1406,42 @@ def test_conflicting_evidence_fails_closed_to_triage(observer_on, tmp_path):
         assert ev is not None
 
 
-def test_late_receipt_with_bad_identity_never_enriches(observer_on,
-                                                       tmp_path):
-    """Hermes L0b blocking #4: pass-B late reconciliation must fully bind
-    identity before touching history — a fingerprint-mismatched receipt
-    yields a conflict event, not a coded late_exit_observation."""
+@pytest.mark.parametrize("receipt_worker_pid,receipt_start,steal_lock", [
+    (4242, 111, False),   # historical fingerprint mismatch
+    (5555, 777, False),   # historical worker PID mismatch (I-15)
+    (4242, 777, True),    # historical claim-lock hash mismatch (I-15)
+])
+def test_late_receipt_with_bad_identity_never_enriches(
+    observer_on, tmp_path, receipt_worker_pid, receipt_start, steal_lock
+):
+    """Hermes L0b blocking #4 + I-15: pass-B late reconciliation must bind
+    EVERY piece of historical identity the closed run row still carries —
+    launch id, worker PID, PID-start fingerprint, AND the claim-lock hash.
+    Any single mismatch yields a conflict event, never a coded
+    late_exit_observation."""
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="late-bad", assignee="worker")
         task = kb.claim_task(conn, tid)
         rid = task.current_run_id
-        conn.execute(
-            "UPDATE task_runs SET worker_launch_id=?, worker_pid_start=? "
-            "WHERE id=?", ("c" * 32, 777, rid))
-        conn.commit()
         with kb.write_txn(conn):
             kb._end_run(conn, tid, outcome="timed_out", status="timed_out")
+        # NOTE on the I-15 premise: ``_end_run`` has ALWAYS nulled
+        # ``task_runs.claim_lock`` / ``worker_pid`` on close (pre-existing
+        # at base f3c133285) — Hermes's "no close-path SQL nulls them" was
+        # contradicted by the base source. The binding rule is therefore
+        # "any historical identity value that DID survive must bind"; this
+        # test plants surviving values to prove each one binds.
+        conn.execute(
+            "UPDATE task_runs SET worker_launch_id=?, worker_pid=?, "
+            "worker_pid_start=?, claim_lock=? WHERE id=?",
+            ("c" * 32, 4242, 777, task.claim_lock, rid))
+        conn.commit()
+        receipt_lock = "stolen-lock" if steal_lock else task.claim_lock
         receipt_path = kb.exit_receipt_path(tid, run_id=rid)
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         receipt_path.write_text(json.dumps(_final(_launched_receipt_for(
-            tid, rid, task.claim_lock, worker_pid=4242,
-            worker_pid_start=111,  # != 777 on the closed run row
+            tid, rid, receipt_lock, worker_pid=receipt_worker_pid,
+            worker_pid_start=receipt_start,
             observer_pid=os.getpid()), code=5)), encoding="utf-8")
 
         kb.reconcile_windows_exit_receipts(conn)
@@ -1130,6 +1456,328 @@ def test_late_receipt_with_bad_identity_never_enriches(observer_on,
         run = _latest_run(conn, tid)
         meta = json.loads(run["metadata"] or "{}")
         assert "late_exit_code" not in meta
+
+
+def test_worker_env_preserved_byte_for_byte_through_observer(
+    observer_on, tmp_path, monkeypatch
+):
+    """I-13 canary: the worker's environment must be EXACTLY the
+    ``WorkerLaunchSpec.env`` the dispatcher built — the observer's own
+    PYTHONPATH mutation (needed so the observer can import itself) must
+    never leak into the worker, or module resolution silently changes."""
+    dump = tmp_path / "env_dump.json"
+    script = tmp_path / "dump_env.py"
+    script.write_text(
+        "import json, os, pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(\n"
+        "    json.dumps(dict(os.environ)), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv",
+        lambda: [sys.executable, str(script), str(dump)])
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    captured = {}
+    real_spawn_spec = kb._spawn_worker_spec
+
+    def spy(task, spec, board=None):
+        captured["spec"] = spec
+        return real_spawn_spec(task, spec, board=board)
+
+    monkeypatch.setattr(kb, "_spawn_worker_spec", spy)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="env-canary", assignee="worker")
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid]
+        deadline = time.time() + 20
+        while time.time() < deadline and not dump.exists():
+            time.sleep(0.1)
+        assert dump.exists(), "worker never ran / never dumped its env"
+        child_env = json.loads(dump.read_text(encoding="utf-8"))
+        spec_env = dict(captured["spec"].env)
+        # Windows env keys are case-insensitive; compare canonicalized keys,
+        # values byte-for-byte.
+        child_norm = {k.upper(): v for k, v in child_env.items()}
+        spec_norm = {k.upper(): v for k, v in spec_env.items()}
+        assert child_norm == spec_norm, (
+            "worker env differs from the dispatcher-built spec env: "
+            f"only-in-child={sorted(set(child_norm) - set(spec_norm))} "
+            f"only-in-spec={sorted(set(spec_norm) - set(child_norm))} "
+            f"changed={[k for k in child_norm if k in spec_norm and child_norm[k] != spec_norm[k]]}")
+
+
+def test_timeout_kills_descendants_before_requeue(
+    observer_on, tmp_path, monkeypatch
+):
+    """I-7: max-runtime termination is a TREE kill — a grandchild spawned
+    by the worker must be dead before the task is requeued. Root-only
+    ``os.kill`` leaves the grandchild running and fails this test."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    grand_pid_file = tmp_path / "grand.pid"
+    script = tmp_path / "worker_with_child.py"
+    script.write_text(
+        "import subprocess, sys, time, pathlib\n"
+        "g = subprocess.Popen([sys.executable, '-c',\n"
+        "                      'import time; time.sleep(120)'])\n"
+        f"pathlib.Path(r'{grand_pid_file}').write_text(str(g.pid))\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="descendants", assignee="worker",
+            max_runtime_seconds=1, max_retries=1,
+        )
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid]
+        task = kb.get_task(conn, tid)
+        deadline = time.time() + 20
+        while time.time() < deadline and not grand_pid_file.exists():
+            time.sleep(0.1)
+        assert grand_pid_file.exists(), "worker never spawned its grandchild"
+        grand_pid = int(grand_pid_file.read_text())
+        assert kb._pid_alive(grand_pid)
+        time.sleep(1.2)
+        res2 = kb.dispatch_once(conn)
+        assert tid in res2.timed_out
+        _wait_pid_gone(task.worker_pid, timeout=15)
+        _wait_pid_gone(grand_pid, timeout=15)
+
+
+def test_timeout_holds_claim_while_worker_may_be_alive(
+    observer_on, tmp_path, monkeypatch
+):
+    """I-7: when termination cannot be CONFIRMED, max-runtime must hold —
+    no claim clear, no identity clear, no requeue, no run close. The
+    survivor is simulated at the definition-module terminator binding."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    script = _fake_worker(tmp_path, 0, sleep_s=30)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+    monkeypatch.setattr(
+        kb, "_terminate_reclaimed_worker",
+        lambda pid, lock, signal_fn=None, worker_pid_start=None: {
+            "prev_pid": pid, "host_local": True,
+            "termination_attempted": True, "terminated": False,
+            "sigkill": True,
+        })
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="unkillable", assignee="worker",
+            max_runtime_seconds=1,
+        )
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid]
+        task = kb.get_task(conn, tid)
+        try:
+            time.sleep(1.2)
+            res2 = kb.dispatch_once(conn)
+            assert tid not in res2.timed_out, (
+                "unconfirmed termination must never count as timed out")
+            after = kb.get_task(conn, tid)
+            assert after.status == "running", "claim must be HELD"
+            assert after.worker_pid == task.worker_pid, (
+                "launch identity must not be cleared")
+            run = _latest_run(conn, tid)
+            assert run["ended_at"] is None, "run must not be closed"
+            ev = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND "
+                "kind = 'reclaim_deferred' ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+            assert ev is not None
+            assert json.loads(ev["payload"])["reason"] == (
+                "max_runtime_worker_alive")
+            # The initiated semantic record is kept for the eventual kill.
+            _s, sup = kb.read_supervisor_record(
+                tid, run_id=task.current_run_id)
+            assert _s == "valid"
+            assert sup["termination_initiator"] == "max_runtime"
+        finally:
+            from gateway.status import terminate_pid
+
+            try:
+                terminate_pid(int(task.worker_pid), force=True)
+            except OSError:
+                pass
+
+
+def test_manual_reclaim_defers_when_worker_survives(
+    observer_on, tmp_path, monkeypatch
+):
+    """I-7: operator reclaim must also refuse to requeue beside a possibly
+    live worker — defer, keep the claim, report False."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    script = _fake_worker(tmp_path, 0, sleep_s=30)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+    monkeypatch.setattr(
+        kb, "_terminate_reclaimed_worker",
+        lambda pid, lock, signal_fn=None, worker_pid_start=None: {
+            "prev_pid": pid, "host_local": True,
+            "termination_attempted": True, "terminated": False,
+            "sigkill": True,
+        })
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="manual-hold", assignee="worker")
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid]
+        task = kb.get_task(conn, tid)
+        try:
+            assert kb.reclaim_task(conn, tid, reason="operator") is False, (
+                "reclaim must refuse while the worker may be alive")
+            after = kb.get_task(conn, tid)
+            assert after.status == "running"
+            assert after.worker_pid == task.worker_pid
+            run = _latest_run(conn, tid)
+            assert run["ended_at"] is None
+            ev = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id = ? AND "
+                "kind = 'reclaim_deferred' ORDER BY id DESC LIMIT 1",
+                (tid,)).fetchone()
+            assert ev is not None
+            assert json.loads(ev["payload"])["reason"] == (
+                "manual_reclaim_worker_alive")
+        finally:
+            from gateway.status import terminate_pid
+
+            try:
+                terminate_pid(int(task.worker_pid), force=True)
+            except OSError:
+                pass
+
+
+def test_stale_reclaim_initiator_matches_authorizing_branch(
+    observer_on, tmp_path, monkeypatch
+):
+    """I-7: ``release_stale_claims`` must record the cause of the branch
+    that AUTHORIZED the action — heartbeat staleness vs claim-TTL expiry
+    are different causes and must not collapse into ``claim_ttl``."""
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+
+    with kb.connect() as conn:
+        # Case A: pid ALIVE but heartbeat stale — heartbeat_stale initiator.
+        script = _fake_worker(tmp_path, 0, sleep_s=30)
+        monkeypatch.setattr(
+            kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+        tid_a = kb.create_task(conn, title="hb-stale", assignee="worker")
+        result = kb.dispatch_once(conn)
+        assert [s[0] for s in result.spawned] == [tid_a]
+        task_a = kb.get_task(conn, tid_a)
+        run_a = task_a.current_run_id
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?", (now - 10, now - 7200, tid_a))
+        conn.commit()
+        kb.release_stale_claims(conn)
+        _s, sup = kb.read_supervisor_record(tid_a, run_id=run_a)
+        assert _s == "valid"
+        assert sup["termination_initiator"] == "heartbeat_stale"
+
+        # Case B: pid DEAD, no heartbeat, TTL expired — claim_ttl initiator.
+        script_b = _fake_worker(tmp_path, 3)
+        monkeypatch.setattr(
+            kb, "_resolve_hermes_argv",
+            lambda: [sys.executable, str(script_b)])
+        tid_b = kb.create_task(conn, title="ttl", assignee="worker")
+        result = kb.dispatch_once(conn)
+        assert tid_b in [s[0] for s in result.spawned]
+        task_b = kb.get_task(conn, tid_b)
+        run_b = task_b.current_run_id
+        _wait_pid_gone(task_b.worker_pid)
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = NULL "
+            "WHERE id = ?", (int(time.time()) - 10, tid_b))
+        conn.commit()
+        kb.release_stale_claims(conn)
+        _s, sup = kb.read_supervisor_record(tid_b, run_id=run_b)
+        assert _s == "valid"
+        assert sup["termination_initiator"] == "claim_ttl"
+
+
+def test_gate_off_launch_is_byte_identical_legacy_contract(
+    kanban_home, tmp_path, monkeypatch
+):
+    """I-12 equivalence proof: with the gate OFF, both production routes
+    take ``_direct_popen_spec`` — the SAME path POSIX always takes — and
+    must reproduce the exact pre-observer ``Popen`` contract (argv, cwd,
+    env identity, DEVNULL stdin, log handle mode/buffering, STDOUT merge,
+    session flag, creationflags). Pinned against the bodies removed from
+    ``_default_spawn`` / ``_spawn_claude_plan_worker`` at f3c133285."""
+    import io
+
+    calls = []
+
+    class _Stub:
+        pid = 4242
+
+    def fake_popen(argv, **kw):
+        calls.append((list(argv), kw))
+        return _Stub()
+
+    import hermes_cli.profiles as profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    monkeypatch.delenv(kb.WINDOWS_EXIT_OBSERVER_ENV, raising=False)
+    script = _fake_worker(tmp_path, 0)
+    monkeypatch.setattr(
+        kb, "_resolve_hermes_argv", lambda: [sys.executable, str(script)])
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy-hermes", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        monkeypatch.setattr(kb.subprocess, "Popen", fake_popen)
+        pid = kb._default_spawn(task, str(tmp_path))
+        assert pid == 4242, "gate-off spawn must return the bare pid"
+        argv, kw = calls[-1]
+        assert argv[0] == sys.executable
+        assert kw["stdin"] is subprocess.DEVNULL
+        assert kw["stderr"] is subprocess.STDOUT
+        assert kw["start_new_session"] is True
+        assert kw["creationflags"] == (
+            subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        log = kw["stdout"]
+        try:
+            assert isinstance(log, io.BufferedWriter), (
+                "hermes route log: open(path, 'ab') default buffering")
+            assert log.mode == "ab"
+            assert Path(log.name).name == f"{tid}.log"
+        finally:
+            log.close()
+
+        tid2 = kb.create_task(conn, title="legacy-claude", assignee="worker")
+        task2 = kb.claim_task(conn, tid2)
+        monkeypatch.setattr(kb, "claude_cli_path", lambda: sys.executable)
+        env2 = {"LEGACY_KEY": "legacy-value"}
+        pid2 = kb._spawn_claude_plan_worker(task2, str(tmp_path), env2, "p")
+        assert pid2 == 4242
+        argv2, kw2 = calls[-1]
+        assert argv2[0] == sys.executable and argv2[1] == "-p"
+        assert kw2["cwd"] == str(tmp_path)
+        assert kw2["env"] == env2, "claude route env passed verbatim"
+        assert kw2["stdin"] is subprocess.DEVNULL
+        assert kw2["stderr"] is subprocess.STDOUT
+        assert kw2.get("start_new_session", False) is False, (
+            "claude route never used start_new_session")
+        log2 = kw2["stdout"]
+        try:
+            assert isinstance(log2, io.FileIO), (
+                "claude route log: open(path, 'ab', buffering=0) unbuffered")
+            assert Path(log2.name).name == f"{tid2}.log"
+        finally:
+            log2.close()
 
 
 # ===========================================================================
@@ -1164,54 +1812,120 @@ def test_production_routes_cannot_bypass_the_launch_primitive():
         f"production routes missing _spawn_worker_spec call: {routes}")
 
 
-def test_dispatch_tick_reconciles_before_crash_detection():
-    """Source-order guard: the reconciler must run before
-    detect_crashed_workers in the dispatch tick."""
-    import inspect
+def test_dispatch_tick_reconciles_before_crash_detection(observer_on,
+                                                         monkeypatch):
+    """EXECUTABLE-order guard: through a REAL ``dispatch_once``,
+    definition-module spies prove the reconciler actually runs, and runs
+    before crash detection. (Replaces the old source-string index check,
+    which proved text order, not reachability.)"""
+    order = []
+    real_rec = kb.reconcile_windows_exit_receipts
+    real_det = kb.detect_crashed_workers
 
-    src = inspect.getsource(kb._dispatch_once_locked)
-    assert "reconcile_windows_exit_receipts(conn, board=board)" in src
-    assert src.index(
-        "reconcile_windows_exit_receipts(conn, board=board)") < src.index(
-        "result.crashed = detect_crashed_workers(conn, board=board)")
+    def rec_spy(conn, **kw):
+        order.append("reconcile")
+        return real_rec(conn, **kw)
+
+    def det_spy(conn, **kw):
+        order.append("detect")
+        return real_det(conn, **kw)
+
+    monkeypatch.setattr(kb, "reconcile_windows_exit_receipts", rec_spy)
+    monkeypatch.setattr(kb, "detect_crashed_workers", det_spy)
+    with kb.connect() as conn:
+        kb.dispatch_once(conn)
+    assert "reconcile" in order, "tick never executed the reconciler"
+    assert "detect" in order, "tick never executed crash detection"
+    assert order.index("reconcile") < order.index("detect"), (
+        "reconciler must run BEFORE crash detection so crashes consume "
+        "normalized observations")
 
 
-def test_every_new_seam_has_nontest_production_callers():
-    """Production Reachability Gate #1 (static): each new seam must keep at
-    least the enumerated NON-TEST callers inside the production module.
-    Zero non-test callers = automatic HOLD — six features this session were
-    built correctly and never reached production; this guard fails the
-    seventh at commit time.
+def test_every_new_seam_has_exact_production_callers():
+    """Production Reachability Gate #1: AST CALL GRAPH, not text counts.
 
-    Enumeration (non-test call sites in hermes_cli/kanban_db.py):
-      _spawn_worker_spec            <- _default_spawn, _spawn_claude_plan_worker
-      _spawn_windows_exit_observer  <- _spawn_worker_spec
-      _set_worker_process_identity  <- ready + review dispatch loops
-      _observed_worker_exit         <- detect_crashed_workers
-      write_supervisor_observation  <- detect_crashed_workers,
-                                       enforce_max_runtime,
-                                       release_stale_claims,
-                                       detect_stale_running, reclaim_task,
-                                       archive_task (+ reconciler)
-      reconcile_windows_exit_receipts <- _dispatch_once_locked
-      kanban_exit_observer module   <- observer argv in
-                                       _spawn_windows_exit_observer and
-                                       _spawn_recovery_observer
+    Each new seam binds an EXACT approved caller map — enclosing production
+    function -> number of call expressions. Definitions, comments,
+    docstrings, and dead strings cannot count; a removed production call, a
+    moved call, and an unreviewed extra caller ALL fail. (Replaces the
+    ``source.count(needle) >=`` guard, which counted text, not callers —
+    Hermes I-11.)
     """
+    import ast
     import inspect
+    from collections import Counter
 
     src = inspect.getsource(kb)
-    minimum_callers = {
-        "_spawn_worker_spec(": 3,             # def + 2 production routes
-        "_spawn_windows_exit_observer(": 2,   # def + launch primitive
-        "_set_worker_process_identity(": 3,   # def + ready + review loops
-        "_observed_worker_exit(": 2,          # def + detect_crashed_workers
-        "write_supervisor_observation(": 8,   # def + 7 production writers
-        "reconcile_windows_exit_receipts(": 2,  # def + dispatch tick
-        "hermes_cli.kanban_exit_observer": 2,   # primary + recovery argv
+    tree = ast.parse(src)
+    approved = {
+        "_spawn_worker_spec": {
+            "_default_spawn": 1, "_spawn_claude_plan_worker": 1},
+        "_direct_popen_spec": {"_spawn_worker_spec": 1},
+        "_spawn_windows_exit_observer": {"_spawn_worker_spec": 1},
+        # ready loop + review loop, both inside _dispatch_once_locked
+        "_set_worker_process_identity": {"_dispatch_once_locked": 2},
+        "_observed_worker_exit": {"detect_crashed_workers": 1},
+        "reconcile_windows_exit_receipts": {"_dispatch_once_locked": 1},
+        "_spawn_recovery_observer": {"reconcile_windows_exit_receipts": 1},
+        # canonical writer: crash common path + late-receipt reconciler +
+        # the platform-gated initiated-termination helper
+        "write_supervisor_observation": {
+            "_record_initiated_termination": 1,
+            "detect_crashed_workers": 1,
+            "reconcile_windows_exit_receipts": 1,
+        },
+        # tier-1 initiated causes: every reclaim/timeout/archive seam
+        "_record_initiated_termination": {
+            "archive_task": 1, "detect_stale_running": 1,
+            "enforce_max_runtime": 1, "reclaim_task": 1,
+            "release_stale_claims": 1,
+        },
+        # shared terminator + survival hold at every reclaim seam
+        "_terminate_reclaimed_worker": {
+            "detect_stale_running": 1, "enforce_max_runtime": 1,
+            "reclaim_task": 1, "release_stale_claims": 1,
+        },
+        "_worker_survived_termination": {
+            "detect_stale_running": 1, "enforce_max_runtime": 1,
+            "reclaim_task": 1, "release_stale_claims": 1,
+        },
     }
-    for needle, expected in minimum_callers.items():
-        found = src.count(needle)
-        assert found >= expected, (
-            f"{needle} appears {found}x, expected >= {expected} — a "
-            "production call site was removed (reachability HOLD)")
+    calls = {name: Counter() for name in approved}
+    observer_argv_strings = Counter()
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self):
+            self.stack = ["<module>"]
+
+        def visit_FunctionDef(self, node):
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            fn = node.func
+            name = (fn.id if isinstance(fn, ast.Name)
+                    else fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name in calls:
+                calls[name][self.stack[-1]] += 1
+            self.generic_visit(node)
+
+        def visit_Constant(self, node):
+            if node.value == "hermes_cli.kanban_exit_observer":
+                observer_argv_strings[self.stack[-1]] += 1
+            self.generic_visit(node)
+
+    _Visitor().visit(tree)
+
+    for target, want in approved.items():
+        got = dict(calls[target])
+        assert got == want, (
+            f"{target}: caller map {got} != approved {want} — a production "
+            "call site was removed, moved, or added without review "
+            "(reachability HOLD)")
+    assert dict(observer_argv_strings) == {
+        "_spawn_windows_exit_observer": 1,
+        "_spawn_recovery_observer": 1,
+    }, "observer module argv must be built by exactly the two launchers"
