@@ -350,11 +350,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
     p_create.add_argument("--importance", default=None,
-                          choices=["money_critical", "critically_important",
+                          choices=["ultra", "critically_important",
                                    "semi_critical", "normal"],
                           help="Task importance, which grades the worker's "
                                "reasoning effort on the graded lanes "
-                               "(Claude/Codex/Kimi): money_critical=max, "
+                               "(Claude/Codex/Kimi): ultra=max, "
                                "critically_important=xhigh, "
                                "semi_critical=high, normal=medium. Grok and "
                                "Antigravity are always pinned to high. Omit "

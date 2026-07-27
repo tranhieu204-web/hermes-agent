@@ -163,7 +163,7 @@ def _clamp_effort_to_ladder(requested_effort: str, ladder: List[str]) -> str:
 
 
 IMPORTANCE_LEVELS: Dict[str, int] = {
-    "money_critical": 4,
+    "ultra": 4,
     "critically_important": 3,
     "semi_critical": 2,
     "normal": 1,
@@ -171,20 +171,20 @@ IMPORTANCE_LEVELS: Dict[str, int] = {
 
 IMPORTANCE_TO_EFFORT_GRADING: Dict[str, Dict[int, str]] = {
     "claude_code": {
-        4: "max",      # money_critical → max
+        4: "max",      # ultra → max
         3: "xhigh",    # critically_important → xhigh
         2: "high",     # semi_critical → high
         1: "medium",   # normal → medium
     },
     "chatgpt_codex": {
-        4: "max",      # money_critical → max
+        4: "max",      # ultra → max
         3: "xhigh",    # critically_important → xhigh
         2: "high",     # semi_critical → high
         1: "medium",   # normal → medium
     },
     # Kimi is treated as claude for grading purposes (same scale)
     "kimi": {
-        4: "max",      # money_critical → max
+        4: "max",      # ultra → max
         3: "xhigh",    # critically_important → xhigh
         2: "high",     # semi_critical → high
         1: "medium",   # normal → medium
@@ -196,7 +196,7 @@ def _map_importance_to_effort(importance: str, lane: str) -> Optional[str]:
     """Map task importance to effort level for graded lanes (Claude/Codex/Kimi).
 
     Args:
-        importance: One of "money_critical", "critically_important", "semi_critical", "normal"
+        importance: One of "ultra", "critically_important", "semi_critical", "normal"
         lane: Canonical lane name (e.g., "claude_code", "chatgpt_codex", "grok", "antigravity")
 
     Returns:
@@ -205,7 +205,11 @@ def _map_importance_to_effort(importance: str, lane: str) -> Optional[str]:
     if not importance or not lane:
         return None
 
-    imp_lower = str(importance).strip().lower()
+    # Normalize through the shared canonicalizer so retired spellings (see
+    # IMPORTANCE_ALIASES) grade identically here. Doing its own .lower() meant
+    # an aliased label silently missed the table and fell back to the lane
+    # default — caught in verification of the money_critical -> ultra rename.
+    imp_lower = normalize_importance(importance)
     lane_lower = str(lane).strip().lower()
 
     # Grok and Antigravity are always pinned to "high" — no grading
@@ -231,6 +235,15 @@ def _map_importance_to_effort(importance: str, lane: str) -> Optional[str]:
 TASK_IMPORTANCE_ENV = "HERMES_TASK_IMPORTANCE"
 
 
+# Retired spellings that still normalize, so an old label fails soft instead of
+# raising. `money_critical` was renamed to `ultra` (operator, 2026-07-27); the
+# CLI advertises only the new name, but normalization keeps accepting the old one
+# because `_normalized_task_importance` RAISES on anything unrecognized.
+IMPORTANCE_ALIASES: Dict[str, str] = {
+    "money_critical": "ultra",
+}
+
+
 def normalize_importance(value: object) -> str:
     """Canonicalize a task-importance label.
 
@@ -241,6 +254,7 @@ def normalize_importance(value: object) -> str:
     operator explicitly tags a task, or opts in via ``default_importance``.
     """
     text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    text = IMPORTANCE_ALIASES.get(text, text)
     return text if text in IMPORTANCE_LEVELS else ""
 
 
@@ -355,7 +369,7 @@ def select_best_lane(
     Grok and Antigravity always pin to "high"). All efforts are bounded by provider ladders.
 
     Args:
-        importance: Task importance level. One of "money_critical", "critically_important",
+        importance: Task importance level. One of "ultra", "critically_important",
                    "semi_critical", "normal" (default). Applies to Claude/Codex/Kimi only.
     """
     if now is None:
