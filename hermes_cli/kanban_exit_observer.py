@@ -318,11 +318,13 @@ def _write_error_receipt(args, error: str, detail: str) -> None:
 def _existing_receipt_blocks_recovery(path: str) -> str:
     """Return a reason when the on-disk receipt must not be replaced.
 
-    A FINAL receipt (exited/observer_error) is settled evidence — a recovery
-    observer arriving late must never overwrite it. An unparseable receipt
-    is preserved too: invalid bytes are first-class evidence for the
-    dispatcher's ``observer_invalid`` handling, not something to paper over.
-    Returns "" when recovery may proceed (launched-state receipt).
+    Recovery may write ONLY over a well-formed launched-state receipt (or
+    nothing at all). Everything else is evidence that must be preserved:
+    a final receipt is settled; an unreadable, unparseable, or otherwise
+    not-launched document is first-class ``observer_invalid`` material for
+    the dispatcher — papering over it would erase exactly the bytes the
+    conflict/invalid handling exists to examine.
+    Returns "" when recovery may proceed.
     """
     try:
         raw = open(path, "rb").read()
@@ -338,7 +340,10 @@ def _existing_receipt_blocks_recovery(path: str) -> str:
         return "receipt_invalid_preserved"
     if isinstance(data, dict) and data.get("final") is True:
         return "receipt_already_final"
-    return ""
+    if (isinstance(data, dict) and data.get("state") == "launched"
+            and data.get("final") is False):
+        return ""
+    return "receipt_not_launched_preserved"
 
 
 def _run_recovery(args) -> int:
@@ -420,11 +425,17 @@ def _run_recovery(args) -> int:
             )
             _try_write_final(args, final)
             return EXIT_OBSERVER_ERROR
-        # Re-check right before publishing: if the primary observer won the
-        # race and already finalized, its receipt is the settled evidence.
-        if _existing_receipt_blocks_recovery(args.receipt) == \
-                "receipt_already_final":
+        # Re-check right before publishing. Only a still-launched receipt
+        # (or none) may be replaced: a finalized one is settled evidence
+        # (exit 0, someone else won), and anything invalid/unreadable that
+        # appeared mid-wait must be preserved for the dispatcher's
+        # observer_invalid handling, not overwritten.
+        blocked = _existing_receipt_blocks_recovery(args.receipt)
+        if blocked == "receipt_already_final":
             return EXIT_OK
+        if blocked:
+            print(f"recovery result withheld: {blocked}", file=sys.stderr)
+            return EXIT_OBSERVER_ERROR
         final = _finalize(receipt, state="exited", exit_code=int(code.value))
         if not _try_write_final(args, final):
             return EXIT_OBSERVER_ERROR

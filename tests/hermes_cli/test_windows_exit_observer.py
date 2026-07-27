@@ -619,7 +619,7 @@ def test_receipt_round_trip_valid(logdir):
     ({"recovered": True}, "unknown_keys"),       # closed key set
     ({"observed_at": "2026-07-27T00:00:01Z"}, "unexpected_observed_at"),
     ({"observer_error": "oops"}, "unexpected_observer_error"),
-    ({"observer_error_detail": "x" * 501}, "bad_observer_error_detail"),
+    ({"observer_error_detail": "ctx"}, "unexpected_observer_error_detail"),
 ])
 def test_receipt_exact_schema_rejections(logdir, mutation, reason):
     path = _write_receipt(logdir, _mk_receipt(**mutation))
@@ -636,6 +636,18 @@ def test_receipt_missing_key_rejected(logdir):
     state, out = kb.read_exit_receipt(path)
     assert state == "invalid"
     assert out["reason"] == "missing_keys"
+
+
+def test_error_receipt_detail_bounded(logdir):
+    rec = _mk_receipt(worker_pid=None)
+    rec.update(state="observer_error", final=True, sequence=2,
+               observed_at="2026-07-27T00:00:05.000000Z",
+               observer_error="wait_failed",
+               observer_error_detail="x" * 501)
+    path = _write_receipt(logdir, rec)
+    state, out = kb.read_exit_receipt(path)
+    assert state == "invalid"
+    assert out["reason"] == "bad_observer_error_detail"
 
 
 def test_final_receipt_requires_observed_at(logdir):
@@ -976,6 +988,37 @@ def test_recovery_refuses_to_overwrite_final_receipt(observer_on, tmp_path):
             "final receipt bytes must never be replaced by recovery")
     finally:
         sleeper.kill()
+
+
+@pytest.mark.parametrize("blob", [
+    "{not json at all",                       # unparseable
+    '{"state": "weird", "final": false}',     # parseable, not launched
+    '{"final": 1, "state": "launched"}',      # incoherent final flag
+])
+def test_recovery_preserves_non_launched_receipts(observer_on, tmp_path,
+                                                  blob):
+    """A recovery observer may only replace a well-formed LAUNCHED receipt.
+    Invalid or incoherent bytes are first-class observer_invalid evidence —
+    recovery must refuse (nonzero) and leave them untouched."""
+    receipt = tmp_path / "t_r2.run1.exit-receipt.json"
+    receipt.write_text(blob, encoding="utf-8")
+    before = receipt.read_bytes()
+    quick = subprocess.Popen([sys.executable, "-c", "pass"])
+    quick.wait(timeout=30)
+    out = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.kanban_exit_observer",
+         "--recover", "--receipt", str(receipt), "--task", "t_r2",
+         "--run", "1", "--launch", "a" * 32, "--board", "default",
+         "--kind", "hermes", "--exit-contract", "hermes_kanban_v1",
+         "--claim-lock-sha256", kb._claim_lock_sha256("lock"),
+         "--log", str(tmp_path / "t_r2.log"),
+         "--worker-pid", str(quick.pid)],
+        capture_output=True, text=True, timeout=60,
+        cwd=str(Path(kb.__file__).resolve().parent.parent),
+    )
+    assert out.returncode != 0, "recovery must refuse non-launched evidence"
+    assert receipt.read_bytes() == before, (
+        "invalid receipt bytes are evidence and must be preserved")
 
 
 def test_named_board_evidence_stays_on_its_board(observer_on, tmp_path,

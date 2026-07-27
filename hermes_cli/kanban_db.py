@@ -1084,17 +1084,21 @@ def _receipt_type_error(data: dict) -> Optional[str]:
             return "unexpected_observed_at"
     elif not isinstance(observed_at, str) or not observed_at:
         return "missing_observed_at"
-    # observer_error fields belong to the observer_error state only.
+    # observer_error fields belong to the observer_error state only — a
+    # launched/exited receipt carrying error text is incoherent as a whole.
     err = data.get("observer_error")
     detail = data.get("observer_error_detail")
     if state == "observer_error":
         if not isinstance(err, str) or not err:
             return "missing_observer_error"
-    elif err is not None:
-        return "unexpected_observer_error"
-    if detail is not None and (
-            not isinstance(detail, str) or len(detail) > 500):
-        return "bad_observer_error_detail"
+        if detail is not None and (
+                not isinstance(detail, str) or len(detail) > 500):
+            return "bad_observer_error_detail"
+    else:
+        if err is not None:
+            return "unexpected_observer_error"
+        if detail is not None:
+            return "unexpected_observer_error_detail"
     return None
 
 
