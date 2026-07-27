@@ -1450,3 +1450,25 @@ pattern as" IS the violation.
 
 Full text + incidents: `SakaanFleetGovernance\LESSONS-RECURRENCE-PREVENTION.md` (L0), `SOUL.md`.
 Operator rules are ALWAYS recorded in both the governance docs and the fleet's own rules.
+
+**L0b — INVESTIGATION IS ALWAYS A SWARM JOB, NEVER ALONE (operator, 2026-07-27).**
+Concurrent independent investigation by 2+ agents on the SAME question, then reconciliation
+including contradictions — not "one investigates, one reviews after." Evidence: the joint
+failure investigation found 32 modes (Hermes) vs 15 (Claude), **17 visible only to Hermes**, and
+the merge caught a fix falsely reported as held. The counter-example: investigating alone failed
+inspection FOUR times with the identical defect. Each agent must be told to DISAGREE EXPLICITLY
+and to name what it is least sure of. A solo investigation is not evidence — it is provisional
+and must say so.
+
+**RECONCILIATION IS THE BUILDER META-AUDIT'S JOB (operator, 2026-07-27; corrected from
+"finalizer" the same day).** Every audit/research/investigation is a SWARM job (L0b) yielding 2+
+independent answers. **Builder Meta-Audit** merges them — it is the stage that HANDLES findings
+(§1.2: "may add findings or challenge evidence but cannot erase, alter, reclassify, or discharge
+them"). Finalize is only the go/hold verdict on the reconciled result and earns no audit credit.
+Reconciling means: ONE merged answer with a single ranking · contradictions recorded EXPLICITLY
+with which reading won and why · corrections recorded, including the meta-auditor's own earlier
+claims · each reviewer's least-confident item carried forward as open · coverage stated honestly.
+Reconciliation may resolve presentation and ranking but may NEVER erase or discharge a finding.
+An unreconciled pile of swarm outputs must not reach Finalize.
+NOTE: not in GOVERNANCE.md ("reconcile" appears zero times); operational practice pending a
+Chairman-ratified REV, deferred to a fresh session.
