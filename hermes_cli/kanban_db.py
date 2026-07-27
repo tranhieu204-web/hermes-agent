@@ -678,6 +678,69 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Option
 
 
 
+# --------------------------------------------------------------------------
+# Progress contract (S1: liveness is substituted for progress)
+# --------------------------------------------------------------------------
+# Default stall window. Generous on purpose: a worker legitimately reasoning
+# between tool calls still streams output, whereas the 2026-07-26 delegation
+# loop emitted NOTHING for 45 minutes. Better to catch a real stall late than
+# to kill slow-but-live work.
+DEFAULT_STALL_SECONDS = 900
+
+PROGRESS_PROGRESSING = "PROGRESSING"
+PROGRESS_STALLED = "STALLED"
+PROGRESS_UNOBSERVABLE = "UNOBSERVABLE"
+
+
+def worker_progress_fingerprint(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """Observable evidence of forward motion, or None when unobservable.
+
+    Deliberately derived from the worker log's SIZE and MTIME rather than any
+    heartbeat the worker writes about itself: a hung child keeps its heartbeat
+    fresh, but it cannot fabricate output it never produced. Hermes's ruling was
+    explicit — "do not treat a self-authored heartbeat alone as progress".
+
+    None means we cannot observe progress (no log yet), which must NEVER be
+    treated as a stall; absence of evidence is not evidence of a hang.
+    """
+    try:
+        log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+        st = log_path.stat()
+        return f"{st.st_size}:{int(st.st_mtime)}"
+    except Exception:
+        return None
+
+
+def evaluate_worker_progress(
+    previous_fingerprint: Optional[str],
+    current_fingerprint: Optional[str],
+    last_progress_at: Optional[int],
+    now: int,
+    stall_seconds: int = DEFAULT_STALL_SECONDS,
+) -> tuple:
+    """Classify a running worker. Returns ``(state, stalled_for_seconds)``.
+
+    Pure and side-effect free so it can be exhaustively tested; the DB and the
+    process table stay out of the decision.
+
+    UNOBSERVABLE when there is no fingerprint to compare — the caller must leave
+    such a run alone rather than guess.
+    """
+    if current_fingerprint is None:
+        return (PROGRESS_UNOBSERVABLE, 0)
+    if previous_fingerprint is None or current_fingerprint != previous_fingerprint:
+        return (PROGRESS_PROGRESSING, 0)
+    if last_progress_at is None:
+        # Unchanged, but we have no baseline to measure against yet. Start the
+        # clock instead of declaring a stall on first observation.
+        return (PROGRESS_UNOBSERVABLE, 0)
+    stalled_for = max(0, int(now) - int(last_progress_at))
+    if stalled_for >= int(stall_seconds):
+        return (PROGRESS_STALLED, stalled_for)
+    return (PROGRESS_PROGRESSING, stalled_for)
+
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -1363,6 +1426,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_pid          INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    -- Progress contract (S1: liveness is not progress). A live PID, a fresh
+    -- heartbeat and an accepted TCP stream can ALL be true while the obligation
+    -- is unchanged — a worker sat at ~0 CPU for 45 min on 2026-07-26 and the
+    -- dispatcher counted it healthy the whole time. These two columns record
+    -- OBSERVED forward motion, deliberately not a self-authored "I'm fine".
+    progress_fingerprint TEXT,
+    last_progress_at    INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
@@ -2468,6 +2538,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    run_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_runs)")}
+    if run_cols and "progress_fingerprint" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "progress_fingerprint", "progress_fingerprint TEXT"
+        )
+    if run_cols and "last_progress_at" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "last_progress_at", "last_progress_at INTEGER"
         )
 
     if "importance" not in cols:
