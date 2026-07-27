@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from hermes_cli.fleet.types import (
 )
 from tui_gateway import server
 from tui_gateway import fleet_parent
+from tui_gateway.external_parent import ClaudeExternalParentSessionDriver
 
 
 @pytest.fixture(autouse=True)
@@ -688,6 +690,160 @@ def test_prompt_submit_uses_parent_turn_guard_and_skips_config_swap(
     assert events[0] == ("acquire", "grok-4.5", tmp_path)
     assert events[-1] == ("release", "complete", False)
     assert sync_calls == []
+
+
+def test_claude_external_parent_image_turn_reaches_transport_and_next_turn_stays_usable(
+    monkeypatch, tmp_path
+):
+    class InlineThread:
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            self._target(*self._args, **self._kwargs)
+
+    class Store:
+        conversation_id = None
+
+        def read_external_parent_conversation(self, profile_id, lineage_root_id):
+            assert (profile_id, lineage_root_id) == ("default", "stored-root")
+            return self.conversation_id
+
+        def bind_external_parent_conversation(
+            self, *, profile_id, lineage_root_id, lane_id, conversation_id
+        ):
+            assert (profile_id, lineage_root_id, lane_id) == (
+                "default",
+                "stored-root",
+                "claude_code",
+            )
+            self.conversation_id = conversation_id
+
+    transported: list[str] = []
+    releases: list[tuple[str, bool]] = []
+    conversation_id = "41927196-2e60-44de-9d00-a871f491656c"
+    model = "claude-fable-5"
+
+    class Process:
+        returncode = 0
+
+        def communicate(self, prompt, timeout):
+            assert timeout == 17
+            transported.append(prompt)
+            return (
+                json.dumps(
+                    {
+                        "is_error": False,
+                        "subtype": "success",
+                        "result": f"answer {len(transported)}",
+                        "modelUsage": {model: {}},
+                        "session_id": conversation_id,
+                        "num_turns": len(transported),
+                    }
+                ),
+                "",
+            )
+
+    class Guard:
+        def release(self, *, outcome, provider_failure):
+            releases.append((outcome, provider_failure))
+
+    route = {
+        "model_source": "fleet_auto",
+        "fleet_profile_id": "default",
+        "fleet_lineage_root_id": "stored-root",
+        "fleet_lane_id": "claude_code",
+        "fleet_adapter_kind": "external_cli",
+        "fleet_route_purpose": "desktop_parent",
+        "fleet_route_identity": "sha256:claude-route",
+        "model": model,
+        "provider": "anthropic",
+        "reasoning_effort": "medium",
+        "display_label": "Claude · Fleet",
+    }
+    agent = ClaudeExternalParentSessionDriver(
+        executable=sys.executable,
+        route=route,
+        cwd=tmp_path,
+        session_id="stored-root",
+        session_db=None,
+        store=Store(),
+        timeout_seconds=17,
+        process_factory=lambda *_args, **_kwargs: Process(),
+    )
+    image = tmp_path / "attached.png"
+    image.write_bytes(b"not-decoded-by-this-test")
+    session = {
+        "agent": agent,
+        "session_key": "stored-root",
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": True,
+        "attached_images": [str(image)],
+        "image_counter": 1,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+        "inflight_turn": None,
+        "fleet_parent_route": route,
+    }
+
+    monkeypatch.setattr(server.threading, "Thread", InlineThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: str(tmp_path))
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_enrich_with_attached_images",
+        lambda text, paths: f"[vision:{Path(paths[0]).name}]\n\n{text}",
+    )
+    monkeypatch.setattr(
+        "agent.image_routing.build_native_content_parts",
+        lambda text, paths: (
+            [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": paths[0]}},
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        fleet_parent,
+        "acquire_parent_turn_guard",
+        lambda _route, cwd: Guard(),
+    )
+
+    server._run_prompt_submit("rid-1", "sid", session, "inspect this image")
+    session["running"] = True
+    server._run_prompt_submit("rid-2", "sid", session, "follow up")
+
+    assert transported == ["[vision:attached.png]\n\ninspect this image", "follow up"]
+    assert releases == [("complete", False), ("complete", False)]
+    assert [message["role"] for message in session["history"]] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+
+@pytest.mark.parametrize("prompt", ["", "   \t\n"])
+def test_claude_external_parent_still_rejects_empty_text(prompt):
+    driver = object.__new__(ClaudeExternalParentSessionDriver)
+
+    with pytest.raises(ValueError, match="prompt must be non-empty text"):
+        driver.run_conversation(prompt)
 
 
 def test_no_eligible_parent_fails_closed_without_session_or_build(monkeypatch):

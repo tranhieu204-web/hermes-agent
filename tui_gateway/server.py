@@ -11693,7 +11693,13 @@ def _run_prompt_submit(
                             agent, "requested_provider", ""
                         ),
                     )
-                    if getattr(agent, "api_mode", "") == "codex_app_server":
+                    if (
+                        getattr(agent, "api_mode", "") == "codex_app_server"
+                        or getattr(agent, "external_subscription", False)
+                    ):
+                        # External parent CLIs accept one textual prompt, not
+                        # native-provider content-part lists. Text mode keeps
+                        # both the user's prompt and vision description.
                         _mode = "text"
                 except Exception as _img_exc:
                     print(
