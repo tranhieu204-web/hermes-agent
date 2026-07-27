@@ -178,8 +178,11 @@ def test_resolve_effort_from_map_and_bounded_ladders():
     assert resolve_effort_from_map(None, provider="xai-oauth") == "high"
 
 
-def test_no_invented_claude_model_ids(monkeypatch):
-    # Model IDs must come from validated config/registry, not invented strings like claude-fable-5
+def test_claude_leader_lane_model_policy_never_sonnet(monkeypatch):
+    # Top-model policy (operator 2026-07-27): Fable 5 under 50% of the weekly
+    # window, Opus 5 at/after 50% or when usage is unknown; Sonnet is NEVER a
+    # leader-lane target. claude-fable-5/claude-opus-5 are live-verified plan
+    # CLI model ids (served-model receipts), not invented strings.
     def fake_verify(provider, **kwargs):
         if "anthropic" in provider or "claude" in provider:
             return _mock_usage(used_percent=40.0)  # 60% headroom
@@ -188,7 +191,18 @@ def test_no_invented_claude_model_ids(monkeypatch):
     monkeypatch.setattr(selector, "verified_usage_for", fake_verify)
     selected = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
     assert selected.lane == "claude_code"
-    assert selected.model == "claude-sonnet-4-6"  # Real configured top model, not invented string
+    assert selected.model == "claude-fable-5"
+    assert "sonnet" not in selected.model.lower()
+
+    def fake_verify_high_usage(provider, **kwargs):
+        if "anthropic" in provider or "claude" in provider:
+            return _mock_usage(used_percent=60.0)  # past the 50% tier switch
+        return _mock_usage(used_percent=90.0)
+
+    monkeypatch.setattr(selector, "verified_usage_for", fake_verify_high_usage)
+    selected = select_best_lane(config={"fleet": {"switch_delta": 0.0}})
+    assert selected.lane == "claude_code"
+    assert selected.model == "claude-opus-5"
 
 
 def test_disabled_lane_never_selected_or_in_fallback(monkeypatch):

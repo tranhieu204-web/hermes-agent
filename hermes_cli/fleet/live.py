@@ -19,6 +19,7 @@ from .adapters.live_routes import (
     _AGY_MODEL_LABELS,
     _agy_log_path,
     inspect_agy_subscription_receipt,
+    inspect_claude_cli_payload,
 )
 from .types import AdapterKind, LaneProfile, OverageState, Qualification
 from hermes_cli.fleet.usage_refresh import no_console_creationflags
@@ -42,6 +43,9 @@ _PROOF_CACHE_TTL = timedelta(minutes=5)
 _PROBE_TIMEOUT_SECONDS = 60
 _PROBE_PROMPT = "Reply with exactly: pong"
 _PROOF_CACHE_NAME = "doctor-live-proof.json"
+# Claude plan-CLI probes run at the cheapest effort; the receipt proves the
+# served MODEL, which is effort-independent.
+_CLAUDE_PROBE_EFFORT = "low"
 
 _RECEIPT_STATUS_DETAIL = {
     "display_label_mismatch": "live served-model receipt mismatch",
@@ -63,6 +67,8 @@ _RECEIPT_STATUS_DETAIL = {
     "process_exit_nonzero": "live served-model receipt nonzero exit",
     "empty_output": "live served-model receipt empty output",
     "unsupported_model": "live served-model receipt unsupported model",
+    "cli_reported_error": "live served-model receipt cli error envelope",
+    "malformed_output": "live served-model receipt malformed",
 }
 
 
@@ -136,6 +142,7 @@ class FleetQualificationDoctor:
         platform_name: str | None = None,
         run_process: Callable[..., object] | None = None,
         proof_cache_dir: str | Path | None = None,
+        claude_proof_cache_dir: str | Path | None = None,
         probe_timeout_seconds: int = _PROBE_TIMEOUT_SECONDS,
     ) -> None:
         if auth_status is None:
@@ -157,6 +164,11 @@ class FleetQualificationDoctor:
             Path(proof_cache_dir)
             if proof_cache_dir is not None
             else get_hermes_home() / "fleet" / "evidence" / "agy"
+        )
+        self.claude_proof_cache_dir = (
+            Path(claude_proof_cache_dir)
+            if claude_proof_cache_dir is not None
+            else get_hermes_home() / "fleet" / "evidence" / "claude"
         )
         self.probe_timeout_seconds = max(1, int(probe_timeout_seconds))
 
@@ -285,6 +297,194 @@ class FleetQualificationDoctor:
             log_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    def _claude_proof_cache_path(self) -> Path:
+        return Path(self.claude_proof_cache_dir) / _PROOF_CACHE_NAME
+
+    def _read_claude_proof_cache(
+        self, *, executable: str, version: str | None = None
+    ) -> Mapping[str, object] | None:
+        """Read the fresh per-model Claude plan-CLI proof, or None."""
+
+        try:
+            payload = json.loads(
+                self._claude_proof_cache_path().read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema_version") != _PROOF_CACHE_SCHEMA:
+            return None
+        if payload.get("lane_id") != "claude_code":
+            return None
+        if payload.get("executable") != executable:
+            return None
+        if version is not None and payload.get("version") != version:
+            return None
+        if not isinstance(payload.get("version"), str) or not payload.get("version"):
+            return None
+        if not isinstance(payload.get("models"), dict):
+            return None
+        expires_raw = payload.get("expires_at")
+        if not isinstance(expires_raw, str):
+            return None
+        try:
+            expires_at = datetime.fromisoformat(expires_raw)
+        except ValueError:
+            return None
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if self.now().astimezone(timezone.utc) >= expires_at.astimezone(timezone.utc):
+            return None
+        return payload
+
+    def _write_claude_proof_cache(self, payload: Mapping[str, object]) -> None:
+        path = self._claude_proof_cache_path()
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps(dict(payload), separators=(",", ":"), sort_keys=True),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _claude_matched_models(
+        profile: LaneProfile, statuses: Mapping[str, object]
+    ) -> tuple[str, ...]:
+        return tuple(
+            model
+            for model in profile.ordered_models
+            if statuses.get(model) == "matched"
+        )
+
+    def _run_claude_probe(self, argv: Sequence[str]) -> tuple[str, object]:
+        """Run one bounded plan-CLI probe; return (status, parsed payload)."""
+
+        try:
+            completed = self.run_process(
+                list(argv),
+                input=_PROBE_PROMPT,
+                capture_output=True,
+                text=True,
+                cwd=str(Path.cwd()),
+                env=safe_child_environment(self.environment),
+                timeout=self.probe_timeout_seconds,
+                shell=False,
+                check=False,
+                creationflags=no_console_creationflags(),
+            )
+        except subprocess.TimeoutExpired:
+            return "process_timeout", None
+        except OSError:
+            return "process_launch_failed", None
+        if getattr(completed, "returncode", 1) != 0:
+            return "process_exit_nonzero", None
+        stdout = getattr(completed, "stdout", "")
+        try:
+            payload = json.loads(stdout) if isinstance(stdout, str) else None
+        except json.JSONDecodeError:
+            payload = None
+        return "completed", payload
+
+    def _probe_claude_live_receipt(
+        self,
+        *,
+        profile: LaneProfile,
+        executable: str,
+        version: str,
+    ) -> tuple[tuple[str, ...], str | None]:
+        """Prove each ordered model with one bounded plan-CLI probe; cached.
+
+        The probe runs the exact execution shape the adapter uses — prompt on
+        stdin, ``-p --model <id> --output-format json`` — under the stripped
+        child environment, so a matched receipt proves the plan route the
+        workers will actually spend from (never the Anthropic API).
+        """
+
+        cached = self._read_claude_proof_cache(
+            executable=executable, version=version
+        )
+        if cached is not None:
+            cached_statuses = cached.get("models")
+            if isinstance(cached_statuses, Mapping):
+                matched = self._claude_matched_models(profile, cached_statuses)
+                if matched:
+                    return matched, None
+                first_status = next(
+                    (
+                        str(cached_statuses[model])
+                        for model in profile.ordered_models
+                        if cached_statuses.get(model)
+                    ),
+                    "missing_receipt",
+                )
+                return (), _sanitize_receipt_detail(first_status)
+
+        at = self.now().astimezone(timezone.utc)
+        statuses: dict[str, str] = {}
+        for model_id in profile.ordered_models:
+            run_status, payload = self._run_claude_probe(
+                (
+                    executable,
+                    "-p",
+                    "--model",
+                    model_id,
+                    "--effort",
+                    _CLAUDE_PROBE_EFFORT,
+                    "--output-format",
+                    "json",
+                )
+            )
+            if run_status != "completed":
+                statuses[model_id] = run_status
+                continue
+            check = inspect_claude_cli_payload(
+                payload, canonical_model_id=model_id
+            )
+            statuses[model_id] = str(check.get("status") or "missing_receipt")
+
+        self._write_claude_proof_cache(
+            {
+                "schema_version": _PROOF_CACHE_SCHEMA,
+                "lane_id": "claude_code",
+                "executable": executable,
+                "version": version,
+                "models": statuses,
+                "captured_at": at.isoformat(),
+                "expires_at": (at + _PROOF_CACHE_TTL).isoformat(),
+            }
+        )
+        matched = self._claude_matched_models(profile, statuses)
+        if matched:
+            return matched, None
+        first_status = next(iter(statuses.values()), "missing_receipt")
+        return (), _sanitize_receipt_detail(first_status)
+
+    def _cached_claude_receipt(
+        self, profile: LaneProfile, executable: str
+    ) -> tuple[str | None, tuple[str, ...], str | None]:
+        """Read exact Claude plan-CLI identity from proof cache, no commands."""
+
+        cached = self._read_claude_proof_cache(executable=executable)
+        if cached is None:
+            return None, (), "cached live served-model receipt unavailable"
+        statuses = cached.get("models")
+        matched = (
+            self._claude_matched_models(profile, statuses)
+            if isinstance(statuses, Mapping)
+            else ()
+        )
+        if not matched:
+            return None, (), "cached live served-model receipt unavailable"
+        return str(cached.get("version")), matched, None
 
     def _probe_agy_live_receipt(
         self,
@@ -422,6 +622,27 @@ class FleetQualificationDoctor:
         if version_code != 0 or not version_out.strip():
             return None, (), "version command failed"
         version = version_out.strip().splitlines()[0]
+
+        if profile.lane_id == "claude_code":
+            # The claude CLI has NO `models` subcommand — a bare `claude models`
+            # runs a full billed inference on the word "models". Model identity
+            # is proven per-model by the bounded live JSON receipt instead, and
+            # the subscription record must be live before spending a probe.
+            status = self.claude_oauth_status()
+            if (
+                status.get("logged_in") is not True
+                or status.get("auth_mode") != "claude_code_oauth"
+            ):
+                return None, (), "claude code subscription OAuth is not proven"
+            models, error = self._probe_claude_live_receipt(
+                profile=profile,
+                executable=executable,
+                version=version,
+            )
+            if error:
+                return None, (), error
+            return version, models, None
+
         code, stdout, _ = self.command((command_name, "models"))
         if code != 0:
             return None, (), "agy models command failed"
@@ -545,6 +766,10 @@ class FleetQualificationDoctor:
                     version, models, error = self._cached_external_receipt(
                         profile, executable
                     )
+                elif profile.lane_id == "claude_code" and not allow_live_probe:
+                    version, models, error = self._cached_claude_receipt(
+                        profile, executable
+                    )
                 else:
                     version, models, error = self._external_receipt(
                         profile, executable
@@ -555,13 +780,25 @@ class FleetQualificationDoctor:
                     )
                     continue
                 auth_kind = "cli_subscription"
-                auth_source = "antigravity:agy-live-receipt"
-                parent_session_proven = profile.lane_id == "antigravity"
+                auth_source = (
+                    "anthropic:claude-plan-cli-live-receipt"
+                    if profile.lane_id == "claude_code"
+                    else "antigravity:agy-live-receipt"
+                )
+                parent_session_proven = profile.lane_id in (
+                    "antigravity",
+                    "claude_code",
+                )
             if profile.lane_id == "claude_code":
                 policy_detail = (
-                    "observed evidence: live Claude Code OAuth credential, exact "
-                    "native Anthropic route, and forbidden billable API-key env absent; "
-                    "provider overage state requires separate billing telemetry"
+                    "policy evidence: claude executable/version, live Claude Code "
+                    "OAuth record, bounded per-model plan-CLI served-model JSON "
+                    "receipt (success envelope/modelUsage/session identity), and "
+                    "forbidden billable API-key env absent; the stripped child "
+                    "environment carries no API key, so the only reachable route "
+                    "is the plan CLI — never the Anthropic API; explicit bridge "
+                    "overage-on evidence still blocks admission; doctor proof "
+                    "cache TTL is short"
                 )
             elif profile.lane_id == "antigravity":
                 policy_detail = (
@@ -588,9 +825,15 @@ class FleetQualificationDoctor:
                 else {}
             )
             if (
-                profile.lane_id == "antigravity"
+                profile.lane_id in ("antigravity", "claude_code")
+                and profile.adapter_kind is AdapterKind.EXTERNAL_CLI
                 and "overage_state" not in billing
             ):
+                # claude_code note: the plan CLI cannot reach API billing (the
+                # child env carries no ANTHROPIC_API_KEY), but the account's
+                # own extra-usage balance would be spendable by the CLI if the
+                # operator ever tops it up — explicit bridge overage-on
+                # evidence therefore still wins and blocks admission below.
                 # Live consumer/no-key/no-fallback receipt proves the only
                 # admitted Antigravity route has no paid fallback path. This
                 # narrow default does not invent provider overage telemetry

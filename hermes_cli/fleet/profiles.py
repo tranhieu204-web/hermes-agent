@@ -27,14 +27,19 @@ def ordered_profiles() -> tuple[LaneProfile, ...]:
             supports_parent_session=True,
         ),
         LaneProfile(
+            # Plan-CLI lane (operator rule 2026-07-27: no agent ever runs through
+            # an API route). provider_id stays "anthropic" — the Claude Code route
+            # is an AUTH MODE of the anthropic provider, not its own provider; the
+            # 2026-07-27 revert was caused by inventing "claude-code-subscription".
             lane_id="claude_code",
             order=1,
-            adapter_kind=AdapterKind.NATIVE_PROVIDER,
+            adapter_kind=AdapterKind.EXTERNAL_CLI,
             provider_id="anthropic",
-            ordered_models=("claude-opus-4-8",),
-            supported_efforts=("low", "medium", "high", "max"),
+            ordered_models=("claude-fable-5", "claude-opus-5"),
+            supported_efforts=("low", "medium", "high", "xhigh", "max"),
             capabilities=frozenset({"workspace_read", "workspace_write", "shell"}),
-            allowed_auth_kinds=frozenset({"oauth_subscription"}),
+            allowed_auth_kinds=frozenset({"cli_subscription"}),
+            executable="claude",
             fast_mode_supported=False,
             fast_off_verifiable=True,
             supports_parent_session=True,

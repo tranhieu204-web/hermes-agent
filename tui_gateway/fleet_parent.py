@@ -115,6 +115,14 @@ def parent_route_metadata(pin: ParentPin) -> dict[str, Any]:
         display_label = (
             f"Antigravity · {user_model_label} · external CLI"
         )
+    elif (
+        pin.adapter_kind is AdapterKind.EXTERNAL_CLI
+        and pin.lane_id == "claude_code"
+        and pin.provider_id == "anthropic"
+    ):
+        # Model identity is enforced by the driver route check and the
+        # builder's qualification.models gate; this label is display-only.
+        display_label = "Claude · Fleet"
     else:
         raise ValueError("unsupported external fleet parent")
     return {

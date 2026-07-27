@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import threading
@@ -17,8 +18,10 @@ from hermes_cli.fleet.adapters.live_routes import (
     _agy_log_path,
     _finalize_agy_log,
     inspect_agy_subscription_receipt,
+    inspect_claude_cli_payload,
 )
 from hermes_cli.fleet.inspection import build_fleet_service
+from hermes_cli.fleet.profiles import profile_map
 from hermes_cli.fleet.state import FleetStore
 
 
@@ -38,6 +41,12 @@ def _route_model_label(model_id: str) -> str:
 
 _PROVIDER_ID = "antigravity-subscription"
 _DISPLAY_LABEL = "Antigravity · Gemini 3.1 Pro High · external CLI"
+_CLAUDE_LANE_ID = "claude_code"
+_CLAUDE_PROVIDER_ID = "anthropic"
+
+
+def _claude_plan_models() -> tuple[str, ...]:
+    return profile_map()[_CLAUDE_LANE_ID].ordered_models
 _MAX_OUTPUT_CHARS = 1_000_000
 _MAX_LOG_BYTES = 2_000_000
 _CONVERSATION_RE = re.compile(
@@ -393,14 +402,260 @@ class ExternalParentSessionDriver:
         }
 
 
+class ClaudeExternalParentSessionDriver:
+    """A non-AIAgent driver binding claude plan-CLI session identity to lineage.
+
+    Continuity contract (verified 2026-07-27 against claude 2.1.217): a
+    ``claude -p --resume <session_id>`` turn KEEPS the same ``session_id`` in
+    its JSON payload and recalls prior turns, so a resumed turn whose payload
+    reports a different session id is a broken resume and fails closed.
+    """
+
+    external_subscription = True
+
+    def __init__(
+        self,
+        *,
+        executable: str,
+        route: Mapping[str, Any],
+        cwd: Path,
+        session_id: str,
+        session_db,
+        store: FleetStore,
+        timeout_seconds: int,
+        process_factory: Callable[..., Any] = subprocess.Popen,
+    ) -> None:
+        if (
+            route.get("model_source") != "fleet_auto"
+            or route.get("fleet_adapter_kind") != "external_cli"
+            or route.get("fleet_lane_id") != _CLAUDE_LANE_ID
+            or route.get("fleet_route_purpose") != "desktop_parent"
+            or route.get("provider") != _CLAUDE_PROVIDER_ID
+            or str(route.get("model") or "") not in _claude_plan_models()
+            or any(
+                not str(route.get(key) or "").strip()
+                for key in (
+                    "fleet_profile_id",
+                    "fleet_lineage_root_id",
+                    "fleet_route_identity",
+                )
+            )
+        ):
+            raise ValueError("unsupported external parent route")
+        self.executable = str(Path(executable).resolve())
+        self.route = dict(route)
+        self.cwd = Path(cwd)
+        self.session_id = session_id
+        self._session_db = session_db
+        self.store = store
+        self.timeout_seconds = int(timeout_seconds)
+        self._process_factory = process_factory
+        self._process_lock = threading.Lock()
+        self._active_process = None
+        self._interrupt_requested = threading.Event()
+        self.model = str(route.get("model") or "")
+        self.provider = _CLAUDE_PROVIDER_ID
+        self.requested_provider = _CLAUDE_PROVIDER_ID
+        self.base_url = ""
+        self.api_key = ""
+        self.api_mode = "external_cli"
+        self.reasoning_config = {
+            "enabled": True,
+            "effort": str(route.get("reasoning_effort") or "medium"),
+        }
+        self.service_tier = None
+        self.tools: list = []
+        self.context_compressor = None
+        self.interim_assistant_callback = None
+        self.background_review_callback = None
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_reasoning_tokens = 0
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self.session_total_tokens = 0
+        self.session_api_calls = 0
+
+    @property
+    def profile_id(self) -> str:
+        return str(self.route["fleet_profile_id"])
+
+    @property
+    def lineage_root_id(self) -> str:
+        return str(self.route["fleet_lineage_root_id"])
+
+    def clear_interrupt(self) -> None:
+        self._interrupt_requested.clear()
+
+    def interrupt(self) -> None:
+        self._interrupt_requested.set()
+        with self._process_lock:
+            process = self._active_process
+        if process is not None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.interrupt()
+
+    def _argv(self, *, conversation_id: str | None) -> list[str]:
+        argv = [
+            self.executable,
+            "-p",
+            "--model",
+            self.model,
+            "--effort",
+            str(self.reasoning_config.get("effort") or "medium"),
+            "--output-format",
+            "json",
+        ]
+        if conversation_id:
+            argv.extend(("--resume", conversation_id))
+        return argv
+
+    def run_conversation(
+        self,
+        user_message: str,
+        *,
+        conversation_history: list[dict] | None = None,
+        stream_callback: Callable[[str], None] | None = None,
+        task_id: str | None = None,
+        **_kwargs,
+    ) -> dict[str, Any]:
+        if not isinstance(user_message, str) or not user_message.strip():
+            raise ValueError("external parent prompt must be non-empty text")
+        history = list(conversation_history or [])
+        roles = [str(message.get("role") or "") for message in history]
+        if any(role not in {"user", "assistant"} for role in roles):
+            raise ValueError("external parent history must contain only user/assistant")
+        if any(
+            role != ("user" if index % 2 == 0 else "assistant")
+            for index, role in enumerate(roles)
+        ) or (roles and roles[-1] != "assistant"):
+            raise ValueError("external parent history must alternate user/assistant")
+
+        conversation_id = self.store.read_external_parent_conversation(
+            self.profile_id,
+            self.lineage_root_id,
+        )
+        process = self._process_factory(
+            self._argv(conversation_id=conversation_id),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=self.cwd,
+            env=safe_child_environment(),
+            shell=False,
+        )
+        with self._process_lock:
+            self._active_process = process
+        try:
+            try:
+                stdout, stderr = process.communicate(
+                    user_message,
+                    timeout=self.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.wait()
+                raise TimeoutError(
+                    "Claude plan-CLI external parent turn timed out"
+                ) from exc
+        finally:
+            with self._process_lock:
+                self._active_process = None
+
+        if self._interrupt_requested.is_set():
+            return {
+                "final_response": "",
+                "messages": history,
+                "interrupted": True,
+            }
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                "Claude plan-CLI external parent process failed: "
+                f"returncode={process.returncode} "
+                f"stderr {_stderr_receipt(stderr)}"
+            )
+        try:
+            payload = json.loads(str(stdout or ""))
+        except json.JSONDecodeError:
+            payload = None
+        check = inspect_claude_cli_payload(
+            payload, canonical_model_id=self.model
+        )
+        if check.get("status") != "matched":
+            raise RuntimeError(
+                "Claude plan-CLI served-model receipt rejected: "
+                f"{check.get('status') or 'missing'}"
+            )
+        served_session_id = str(check["session_id"])
+        if conversation_id and served_session_id != conversation_id:
+            raise RuntimeError(
+                "Claude plan-CLI served-model receipt rejected: "
+                "conversation_resume_mismatch"
+            )
+        check["conversation_id"] = served_session_id
+        check["continued"] = bool(conversation_id)
+
+        output = str(payload["result"]).strip()
+        if not output or len(output) > _MAX_OUTPUT_CHARS:
+            raise RuntimeError(
+                "Claude plan-CLI external parent output was invalid"
+            )
+        self.store.bind_external_parent_conversation(
+            profile_id=self.profile_id,
+            lineage_root_id=self.lineage_root_id,
+            lane_id=_CLAUDE_LANE_ID,
+            conversation_id=served_session_id,
+        )
+
+        messages = [
+            *history,
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": output},
+        ]
+        if self._session_db is not None:
+            self._session_db.append_message(
+                self.session_id,
+                role="user",
+                content=user_message,
+            )
+            self._session_db.append_message(
+                self.session_id,
+                role="assistant",
+                content=output,
+            )
+        if stream_callback is not None:
+            stream_callback(output)
+        self.session_api_calls += 1
+        return {
+            "final_response": output,
+            "messages": messages,
+            "external_parent_receipt": check,
+        }
+
+
 def build_external_parent_driver(
     *,
     route: Mapping[str, Any],
     cwd: Path,
     session_id: str,
     session_db,
-) -> ExternalParentSessionDriver:
-    """Resolve the live agy subscription route without any API-key fallback."""
+) -> ExternalParentSessionDriver | ClaudeExternalParentSessionDriver:
+    """Resolve the live external subscription route, no API-key fallback."""
+
+    if str(route.get("fleet_lane_id") or "") == _CLAUDE_LANE_ID:
+        return _build_claude_external_parent_driver(
+            route=route,
+            cwd=cwd,
+            session_id=session_id,
+            session_db=session_db,
+        )
 
     service = build_fleet_service()
     qualification = service.qualifications.get("antigravity")
@@ -422,6 +677,45 @@ def build_external_parent_driver(
     if not executable.is_file():
         raise RuntimeError("qualified Antigravity executable is unavailable")
     return ExternalParentSessionDriver(
+        executable=str(executable),
+        route=route,
+        cwd=cwd,
+        session_id=session_id,
+        session_db=session_db,
+        store=service.store,
+        timeout_seconds=service.config.execution_timeout_seconds,
+    )
+
+
+def _build_claude_external_parent_driver(
+    *,
+    route: Mapping[str, Any],
+    cwd: Path,
+    session_id: str,
+    session_db,
+) -> ClaudeExternalParentSessionDriver:
+    """Resolve the live claude plan-CLI route without any API-key fallback."""
+
+    service = build_fleet_service()
+    qualification = service.qualifications.get(_CLAUDE_LANE_ID)
+    if (
+        qualification is None
+        or not qualification.qualified
+        or not qualification.parent_session_proven
+        or not qualification.subscription_only_proven
+        or not qualification.paid_fallback_absent
+        or qualification.auth_kind != "cli_subscription"
+        or qualification.provider_id != _CLAUDE_PROVIDER_ID
+        or str(route.get("model") or "") not in qualification.models
+        or not qualification.executable
+    ):
+        raise RuntimeError(
+            "live Claude plan-CLI subscription parent qualification unavailable"
+        )
+    executable = Path(qualification.executable).resolve()
+    if not executable.is_file():
+        raise RuntimeError("qualified claude executable is unavailable")
+    return ClaudeExternalParentSessionDriver(
         executable=str(executable),
         route=route,
         cwd=cwd,

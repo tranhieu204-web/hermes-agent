@@ -293,14 +293,25 @@ def test_native_parent_requires_exact_subscription_qualification(
     assert ReasonCode.SUBSCRIPTION_NOT_PROVEN in unproven.reasons
 
 
-def test_builtin_claude_lane_is_a_native_parent_not_a_cli_worker():
+def test_builtin_claude_lane_is_a_plan_cli_worker_and_parent():
+    """Operator rule 2026-07-27: claude runs on the plan CLI, never the API.
+
+    Supersedes the earlier native-parent guard: the Anthropic API route bills
+    third-party OAuth calls from extra usage (HTTP 400 with no balance), so
+    the lane executes through the claude executable. provider_id must stay
+    "anthropic" — inventing a separate provider id is what broke the first
+    attempt at this conversion.
+    """
+
     from hermes_cli.fleet.profiles import profile_map
 
     profile = profile_map()["claude_code"]
 
-    assert profile.adapter_kind is AdapterKind.NATIVE_PROVIDER
+    assert profile.adapter_kind is AdapterKind.EXTERNAL_CLI
     assert profile.provider_id == "anthropic"
-    assert profile.allowed_auth_kinds == frozenset({"oauth_subscription"})
+    assert profile.executable == "claude"
+    assert profile.allowed_auth_kinds == frozenset({"cli_subscription"})
+    assert profile.supports_task_worker is True
     assert profile.supports_parent_session is True
 
 

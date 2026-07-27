@@ -5624,7 +5624,9 @@ def _make_agent(
         and exact_route.get("fleet_adapter_kind") == "external_cli"
     ):
         from hermes_cli.fleet.adapters.live_routes import _AGY_MODEL_LABELS
+        from hermes_cli.fleet.profiles import profile_map
 
+        route_lane = str(exact_route.get("fleet_lane_id") or "").strip()
         route_model = str(exact_route.get("model") or "").strip()
         route_provider = str(exact_route.get("provider") or "").strip()
         override_model = (
@@ -5637,9 +5639,18 @@ def _make_agent(
             if isinstance(model_override, dict)
             else ""
         )
+        if route_lane == "claude_code":
+            lane_route_valid = (
+                route_model in profile_map()["claude_code"].ordered_models
+                and route_provider == "anthropic"
+            )
+        else:
+            lane_route_valid = (
+                route_model in _AGY_MODEL_LABELS
+                and route_provider == "antigravity-subscription"
+            )
         if (
-            route_model not in _AGY_MODEL_LABELS
-            or route_provider != "antigravity-subscription"
+            not lane_route_valid
             or override_model != route_model
             or override_provider != route_provider
         ):

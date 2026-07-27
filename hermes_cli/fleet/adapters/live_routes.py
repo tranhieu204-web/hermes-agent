@@ -243,6 +243,53 @@ def _finalize_agy_log(
         return "not_persisted"
 
 
+def inspect_claude_cli_payload(
+    payload: object, *, canonical_model_id: str
+) -> dict[str, object]:
+    """Payload-fact receipt for one `claude -p --output-format json` run.
+
+    Only facts the payload itself proves: success envelope, non-empty result,
+    the requested model present in ``modelUsage``, and a session identity.
+    Subscription-only proof (no API-key env, live OAuth record) is the
+    caller's evidence, not the payload's, and is recorded by the caller.
+    """
+
+    check: dict[str, object] = {"canonical_model_id": canonical_model_id}
+    if not isinstance(payload, dict):
+        check["status"] = "malformed_output"
+        return check
+    if payload.get("is_error") is not False or payload.get("subtype") != "success":
+        check["status"] = "cli_reported_error"
+        check["cli_subtype"] = str(payload.get("subtype") or "")
+        return check
+    result = payload.get("result")
+    if not isinstance(result, str) or not result.strip():
+        check["status"] = "empty_output"
+        return check
+    usage = payload.get("modelUsage")
+    if not isinstance(usage, dict) or not usage:
+        check["status"] = "missing_receipt"
+        return check
+    if canonical_model_id not in usage:
+        check["status"] = "served_model_mismatch"
+        check["served_model_ids"] = sorted(str(key) for key in usage)
+        return check
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        check["status"] = "missing_receipt"
+        return check
+    check.update(
+        {
+            "status": "matched",
+            "served_model_id": canonical_model_id,
+            "session_id": session_id,
+            "num_turns": payload.get("num_turns"),
+            "fallback_enabled": False,
+        }
+    )
+    return check
+
+
 def _stderr_receipt(stderr: str | bytes | None) -> str:
     """Return bounded diagnostics without retaining or echoing stderr text."""
 
@@ -600,6 +647,38 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
             payload = json.loads(output)
         except (TypeError, json.JSONDecodeError):
             return self._failure(request, qualification, ReasonCode.MALFORMED_OUTPUT)
+        if self.lane == "claude_code":
+            check = inspect_claude_cli_payload(
+                payload, canonical_model_id=request.model
+            )
+            if check.get("status") != "matched":
+                reason = (
+                    ReasonCode.MODEL_MISMATCH
+                    if check.get("status") == "served_model_mismatch"
+                    else ReasonCode.MALFORMED_OUTPUT
+                )
+                metadata["cli_receipt"] = check
+                return AdapterResult(
+                    ok=False,
+                    reason=reason,
+                    provider_id=request.profile.provider_id,
+                    model_id=request.model,
+                    auth_kind=qualification.auth_kind or "unknown",
+                    adapter_kind=AdapterKind.EXTERNAL_CLI,
+                    metadata=metadata,
+                )
+            output = payload["result"]
+            metadata["cli_receipt"] = check
+            return AdapterResult(
+                ok=True,
+                reason=ReasonCode.MET,
+                provider_id=request.profile.provider_id,
+                model_id=request.model,
+                auth_kind=qualification.auth_kind or "unknown",
+                adapter_kind=AdapterKind.EXTERNAL_CLI,
+                output=output,
+                metadata=metadata,
+            )
         if not isinstance(payload, dict) or not isinstance(payload.get("result"), str):
             return self._failure(request, qualification, ReasonCode.MALFORMED_OUTPUT)
         usage = payload.get("modelUsage")

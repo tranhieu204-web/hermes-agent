@@ -55,8 +55,31 @@ def _agy_version_models_command(stdout_models: str = CANONICAL_MODEL_ID):
     return run
 
 
+def _claude_probe_stdout(model_id: str, *, result: str = "pong") -> str:
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": result,
+            "session_id": "22222222-2222-2222-2222-222222222222",
+            "num_turns": 1,
+            "modelUsage": {model_id: {}},
+        }
+    )
+
+
 def _probe_process_factory(log_text: str, *, returncode: int = 0, stdout: str = "pong"):
+    """Serve both external live probes: agy (log receipt) and claude (JSON)."""
+
     def process(argv, **_kwargs):
+        if "--log-file" not in argv:
+            model_id = argv[argv.index("--model") + 1]
+            return SimpleNamespace(
+                returncode=returncode,
+                stdout=_claude_probe_stdout(model_id),
+                stderr="",
+            )
         log_path = Path(argv[argv.index("--log-file") + 1])
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(log_text, encoding="utf-8")
@@ -122,20 +145,33 @@ def test_live_doctor_qualifies_exact_subscription_routes_from_receipts(tmp_path,
     assert qualifications["chatgpt_codex"].overage_state is OverageState.UNKNOWN
     assert qualifications["grok"].models == ("grok-4.5",)
     assert qualifications["grok"].efforts[-2:] == ("max", "ultra")
-    assert qualifications["claude_code"].models == ("claude-opus-4-8",)
+    assert qualifications["claude_code"].qualified
+    assert qualifications["claude_code"].models == (
+        "claude-fable-5",
+        "claude-opus-5",
+    )
     assert qualifications["claude_code"].efforts == (
         "low",
         "medium",
         "high",
+        "xhigh",
         "max",
     )
+    assert qualifications["claude_code"].parent_session_proven is True
     assert qualifications["claude_code"].fast_off_supported
     assert "never-record" not in qualifications["claude_code"].detail
     assert qualifications["antigravity"].models == ("gemini-3.1-pro-high",)
     assert qualifications["antigravity"].efforts == ("low", "medium", "high")
     assert qualifications["antigravity"].qualified
     assert qualifications["antigravity"].parent_session_proven is True
-    assert not any(Path(command[0]).stem == "claude" for command in commands)
+    # claude is version-checked only — never a `models`/`auth` subcommand (a
+    # bare `claude models` would run a billed inference on the word "models").
+    claude_commands = [
+        command for command in commands if Path(command[0]).stem == "claude"
+    ]
+    assert len(claude_commands) == 1
+    assert Path(claude_commands[0][0]).name == "claude.exe"
+    assert claude_commands[0][1:] == ("--version",)
     assert any(command[1:] == ("models",) for command in commands)
     assert not any(Path(command[0]).stem == "agy" and "auth" in command for command in commands)
     assert "served-model receipt" in qualifications["antigravity"].detail
@@ -234,8 +270,8 @@ def test_live_claude_adapter_executes_cli_and_never_calls_native_inference(tmp_p
         qualified=True,
         captured_at=NOW,
         expires_at=NOW + timedelta(minutes=5),
-        auth_kind="oauth_subscription",
-        auth_source="anthropic:claude_code_oauth",
+        auth_kind="cli_subscription",
+        auth_source="anthropic:claude-plan-cli-live-receipt",
         overage_disabled=True,
         provider_id="anthropic",
         models=profile.ordered_models,
@@ -263,11 +299,8 @@ def test_live_claude_adapter_executes_cli_and_never_calls_native_inference(tmp_p
         process_calls.append((argv, kwargs))
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "result": "claude CLI complete",
-                    "modelUsage": {profile.ordered_models[0]: {}},
-                }
+            stdout=_claude_probe_stdout(
+                profile.ordered_models[0], result="claude CLI complete"
             ),
             stderr="",
         )
@@ -294,7 +327,7 @@ def test_live_claude_adapter_executes_cli_and_never_calls_native_inference(tmp_p
         executable,
         "-p",
         "--model",
-        "claude-opus-4-8",
+        "claude-fable-5",
         "--effort",
         "high",
         "--output-format",
@@ -398,9 +431,7 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         process_calls.append(argv)
         if "--output-format" in argv:
             model = argv[argv.index("--model") + 1]
-            stdout = json.dumps(
-                {"result": "claude complete", "modelUsage": {model: {}}}
-            )
+            stdout = _claude_probe_stdout(model, result="claude complete")
         else:
             log_path = Path(argv[argv.index("--log-file") + 1])
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -410,7 +441,7 @@ def test_default_service_qualifies_and_executes_each_live_lane(
 
     adapters = {
         "chatgpt_codex": NativeProviderAdapter(native),
-        "claude_code": NativeProviderAdapter(native),
+        "claude_code": ClaudeCodeAdapter(sys.executable, run_process=process),
         "grok": NativeProviderAdapter(native),
         "antigravity": AntigravityAdapter(sys.executable, run_process=process),
     }
@@ -446,9 +477,15 @@ def test_default_service_qualifies_and_executes_each_live_lane(
     assert result.pin is not None
     assert result.pin.lane_id == lane_id
     if lane_id == "claude_code":
-        assert process_calls == []
-        assert result.adapter_result.adapter_kind.value == "native_provider"
+        assert len(process_calls) == 1
+        argv = process_calls[0]
+        assert argv[:2] == [str(Path(sys.executable).resolve()), "-p"]
+        assert argv[argv.index("--model") + 1] == "claude-fable-5"
+        assert "--effort" in argv
+        assert argv[-2:] == ["--output-format", "json"]
+        assert result.adapter_result.adapter_kind.value == "external_cli"
         assert result.adapter_result.provider_id == "anthropic"
+        assert result.adapter_result.output == "claude complete"
     if lane_id == "antigravity":
         assert len(process_calls) == 1
         argv = process_calls[0]
@@ -466,6 +503,93 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         assert route_proof["model_qualification"] == "agy live backend receipt"
         assert route_proof["served_model_id"] == "gemini-3.1-pro-high"
         assert route_proof["served_model_label"] == "Gemini 3.1 Pro (High)"
+
+
+def test_claude_lane_never_qualifies_without_live_plan_cli_receipt(
+    tmp_path, monkeypatch
+):
+    """Executable/version/OAuth evidence alone must fail closed for claude."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    def failing_probe(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+    doctor = FleetQualificationDoctor(
+        claude_oauth_status=lambda: {
+            "logged_in": True,
+            "auth_mode": "claude_code_oauth",
+            "source": "claude_code_credentials_file",
+        },
+        which=lambda _: "C:/tools/claude.exe",
+        command=lambda argv: (0, "2.1.217 (Claude Code)", ""),
+        run_process=failing_probe,
+        environment={},
+        now=lambda: NOW,
+    )
+
+    qualification = doctor.qualify((profile_map()["claude_code"],))[
+        "claude_code"
+    ]
+
+    assert qualification.qualified is False
+    assert qualification.models == ()
+    assert "receipt" in qualification.detail.lower()
+
+
+def test_claude_adapter_rejects_cli_error_envelope(tmp_path):
+    """A payload with is_error/failed subtype must never ship as output."""
+
+    profile = profile_map()["claude_code"]
+    executable = str(Path(sys.executable).resolve())
+    qualification = Qualification(
+        qualified=True,
+        captured_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        auth_kind="cli_subscription",
+        auth_source="anthropic:claude-plan-cli-live-receipt",
+        overage_disabled=True,
+        provider_id="anthropic",
+        models=profile.ordered_models,
+        efforts=profile.supported_efforts,
+        fast_off_supported=True,
+        capabilities=profile.capabilities,
+        executable=executable,
+        version="synthetic-claude-code",
+        evidence_id="synthetic-cli-qualification",
+        subscription_only_proven=True,
+        paid_fallback_absent=True,
+        overage_state=OverageState.OFF,
+    )
+    adapter = ClaudeCodeAdapter(executable)
+    adapter._run_process = lambda argv, **kwargs: SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": "something broke",
+                "session_id": "33333333-3333-3333-3333-333333333333",
+                "modelUsage": {profile.ordered_models[0]: {}},
+            }
+        ),
+        stderr="",
+    )
+    request = AdapterRequest(
+        task_id="claude-cli-error-envelope",
+        cwd=tmp_path,
+        prompt="bounded Claude CLI task",
+        profile=profile,
+        model=profile.ordered_models[0],
+        effort="high",
+        timeout_seconds=17,
+    )
+
+    result = adapter.execute(request, qualification)
+
+    assert not result.ok
+    assert result.metadata["cli_receipt"]["status"] == "cli_reported_error"
 
 
 def test_catalog_model_list_alone_never_qualifies_antigravity(tmp_path, monkeypatch):
@@ -1092,4 +1216,10 @@ def test_native_lanes_unchanged_when_antigravity_probe_injected(tmp_path, monkey
     assert qualifications["claude_code"].qualified is True
     assert qualifications["grok"].qualified is True
     assert qualifications["antigravity"].qualified is True
-    assert len(probe_calls) == 1
+    # One agy live probe plus one claude plan-CLI probe per ordered model.
+    agy_probes = [argv for argv in probe_calls if "--log-file" in argv]
+    claude_probes = [argv for argv in probe_calls if "--log-file" not in argv]
+    assert len(agy_probes) == 1
+    assert len(claude_probes) == len(
+        profile_map()["claude_code"].ordered_models
+    )
