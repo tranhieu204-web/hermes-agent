@@ -308,7 +308,53 @@ def _fetch_auto_lane_pct(
         snapshot = fetch_usage(provider_id)  # type: ignore[misc]
     except Exception as exc:  # pragma: no cover - provider network failures
         raise UsageRefreshError(f"{provider_id} usage fetch failed: {exc}") from exc
+
+    # Anthropic usage goes dark the moment the OAuth token expires: the usage
+    # resolver is STRICTLY READ-ONLY by design (no refresh, no credential writes,
+    # no pool persistence) and honestly returns None rather than refreshing. The
+    # router then scores the lane at ZERO headroom and stops selecting it — which
+    # is how an 84%-headroom lane silently dropped out of rotation.
+    #
+    # The fix must NOT make Hermes refresh credentials; that is the exact risk the
+    # read-only hardening removed. Instead ask Claude Code to refresh its OWN
+    # token, which it does as a side effect of any invocation, then re-read.
+    if snapshot is None and str(provider_id) == "anthropic":
+        if _poke_claude_code_to_refresh_token():
+            try:
+                snapshot = fetch_usage(provider_id)  # type: ignore[misc]
+            except Exception:
+                snapshot = None
     return _weekly_used_from_snapshot(snapshot, lane_id=lane_id)
+
+
+def _poke_claude_code_to_refresh_token(timeout_seconds: float = 90.0) -> bool:
+    """Invoke Claude Code minimally so IT refreshes its own OAuth token.
+
+    Hermes never writes the credential: Claude Code owns that file and refreshes
+    it on any invocation. This is a metering-support action, not inference work —
+    the prompt is a single token and the result is discarded.
+
+    Returns True if the CLI ran. Never raises: a failed poke must degrade to
+    "usage unknown", never break the refresh sweep.
+    """
+    import shutil
+    import subprocess
+
+    try:
+        exe = shutil.which("claude") or str(
+            Path.home() / ".local" / "bin" / "claude.exe"
+        )
+        if not exe or not os.path.isfile(exe):
+            return False
+        subprocess.run(
+            [exe, "-p", "ok"],
+            capture_output=True,
+            timeout=timeout_seconds,
+            creationflags=no_console_creationflags(),
+        )
+        return True
+    except Exception:
+        return False
 
 
 def _empty_document(*, now: datetime | None = None) -> dict[str, Any]:
