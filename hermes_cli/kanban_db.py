@@ -741,6 +741,63 @@ def evaluate_worker_progress(
 
 
 
+# --------------------------------------------------------------------------
+# Restart safety (operator rule, 2026-07-27)
+# --------------------------------------------------------------------------
+# "Before Hermes ever restarts, check for any running task and WAIT for it
+# instead of killing it mid-task. If any task is running, schedule the restart
+# for the next safe point."
+#
+# Stopping the gateway kills the dispatcher and orphans in-flight workers: the
+# task stays claimed, its worker dies with the process tree, and the work is
+# lost. Several gateway restarts were performed during this session without
+# this check.
+
+
+def running_tasks_blocking_restart(conn: sqlite3.Connection) -> list:
+    """Tasks that would be interrupted by stopping the gateway right now.
+
+    Returns ``[(task_id, title, worker_pid, running_for_seconds)]`` — empty means
+    it is safe to restart. Host-scoped: a task claimed by another host is not
+    ours to wait for.
+    """
+    out: list = []
+    try:
+        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        now = int(time.time())
+        rows = conn.execute(
+            "SELECT id, title, worker_pid, claim_lock, started_at FROM tasks "
+            "WHERE status = 'running'"
+        ).fetchall()
+        for row in rows:
+            lock = row["claim_lock"] or ""
+            if not lock.startswith(host_prefix):
+                continue
+            started = row["started_at"] or now
+            out.append((row["id"], row["title"], row["worker_pid"], max(0, now - started)))
+    except Exception:
+        # Fail SAFE-LOUD: if we cannot tell, report a sentinel so the caller
+        # blocks rather than assuming the board is idle. Silence here would
+        # reintroduce exactly the "assume it's fine" failure this guards.
+        return [("<unknown>", "could not read the board", None, 0)]
+    return out
+
+
+def format_restart_block(running: list) -> str:
+    """Operator-facing explanation of why a restart is being deferred."""
+    lines = [
+        f"{len(running)} task(s) are RUNNING — restarting now would kill them mid-task:"
+    ]
+    for task_id, title, pid, secs in running[:10]:
+        mins = secs // 60
+        lines.append(f"  {task_id}  pid={pid}  running {mins}m — {str(title)[:52]}")
+    if len(running) > 10:
+        lines.append(f"  ... and {len(running) - 10} more")
+    lines.append("Wait for them to finish, or pass --force to stop anyway (work WILL be lost).")
+    return chr(10).join(lines)
+
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 

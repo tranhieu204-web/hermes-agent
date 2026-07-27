@@ -1577,8 +1577,40 @@ def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
     return pids
 
 
-def stop() -> None:
+def running_task_restart_block(force: bool = False):
+    # Returns str (block reason) or None. Deliberately un-annotated: this
+    # module does not import typing.Optional, and an annotation is evaluated
+    # at def time — a NameError here would make the gateway unstoppable.
+    """Return a block message when stopping would kill in-flight kanban work.
+
+    Operator rule 2026-07-27: before the gateway ever restarts, check for a
+    running task and WAIT rather than killing it mid-task. Stopping the gateway
+    takes the dispatcher down with it and orphans live workers — the task stays
+    claimed, the worker dies with the process tree, and the work is lost.
+
+    Returns None when it is safe to proceed (or when ``force`` is set, which the
+    operator must choose deliberately). Never raises: a guard that explodes must
+    not become a reason the gateway can't be stopped at all.
+    """
+    if force:
+        return None
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        with _kb.connect() as conn:
+            running = _kb.running_tasks_blocking_restart(conn)
+        if not running:
+            return None
+        return _kb.format_restart_block(running)
+    except Exception:
+        return None
+
+
+def stop(force: bool = False) -> None:
     """Stop the gateway.
+
+    Refuses while kanban tasks are running unless ``force`` is set — see
+    ``running_task_restart_block``.
 
     Writes the planned-stop marker first so the gateway can drain
     in-flight agents and persist ``resume_pending`` before exit (the
@@ -1588,6 +1620,11 @@ def stop() -> None:
     known gateway PID(s).
     """
     _assert_windows()
+    block = running_task_restart_block(force)
+    if block:
+        print("✗ Refusing to stop the gateway — work is in flight.")
+        print(block)
+        raise SystemExit(3)
     from gateway.status import get_running_pid
 
     # Phase 1: ask the running gateway (if any) to drain itself by writing
