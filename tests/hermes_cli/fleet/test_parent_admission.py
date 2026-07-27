@@ -229,6 +229,65 @@ def test_auto_admission_stays_fleet_disabled_without_auto_parents(tmp_path):
     assert result.pin is None
 
 
+def test_explicit_sonnet_pick_admits_when_configured_and_qualified(tmp_path):
+    """Sonnet is barred from AUTO selection only (operator 2026-07-27).
+
+    An explicit pick of a Sonnet id that is configured in the lane's
+    ordered_models AND present in the live qualification receipt admits;
+    it can never be the lead model, so rotation/auto never reaches it.
+    """
+
+    bridge = tmp_path / "usage.json"
+    _bridge(bridge)
+    profile = LaneProfile(
+        lane_id="chatgpt_codex",
+        order=0,
+        adapter_kind=AdapterKind.NATIVE_PROVIDER,
+        provider_id="openai-codex",
+        ordered_models=("gpt-parent", "claude-sonnet-5"),
+        supported_efforts=("low", "high"),
+        capabilities=CAPABILITIES,
+        allowed_auth_kinds=frozenset({"oauth_subscription"}),
+        supports_parent_session=True,
+    )
+    config = parse_fleet_config(
+        {
+            "fleet": {
+                "enabled": True,
+                "parent_desktop_enabled": True,
+                "bridge_usage_file": str(bridge),
+                "lanes": {"chatgpt_codex": {"enabled": True}},
+            }
+        }
+    )
+    service = FleetService(
+        config=config,
+        store=FleetStore(tmp_path / "fleet" / "state.db"),
+        profiles=(profile,),
+        qualifications={"chatgpt_codex": _qualification(profile)},
+        adapters={},
+        capacity_source=BridgeUsageAdapter(bridge),
+        now=lambda: NOW,
+        owner_uuid="parent-service-owner",
+    )
+
+    explicit = _admit(
+        service,
+        preferred_lane_id="chatgpt_codex",
+        preferred_provider_id="openai-codex",
+        preferred_model_id="claude-sonnet-5",
+    )
+    auto = _admit(service, lineage="lineage-auto", session_id="stored-session-2")
+
+    assert explicit.reason is ReasonCode.MET
+    assert explicit.pin is not None
+    assert explicit.pin.model_id == "claude-sonnet-5"
+    # Auto admission still lands on the lead model, never Sonnet.
+    assert auto.reason is ReasonCode.MET
+    assert auto.pin is not None
+    assert auto.pin.model_id == "gpt-parent"
+
+
 def test_partial_preference_never_bypasses_disabled_auto_parents(tmp_path):
     service = _service(tmp_path, parent_desktop_enabled=False)
 

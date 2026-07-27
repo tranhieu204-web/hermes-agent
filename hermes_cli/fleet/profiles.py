@@ -35,7 +35,16 @@ def ordered_profiles() -> tuple[LaneProfile, ...]:
             order=1,
             adapter_kind=AdapterKind.EXTERNAL_CLI,
             provider_id="anthropic",
-            ordered_models=("claude-fable-5", "claude-opus-5"),
+            # Order is load-bearing: the FIRST model is the only auto-selection
+            # target (and the doctor's live route probe). Sonnet/Haiku are
+            # exposed for EXPLICIT operator picks only (operator 2026-07-27
+            # evening) — auto routing never reaches them.
+            ordered_models=(
+                "claude-fable-5",
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-haiku-4-5",
+            ),
             supported_efforts=("low", "medium", "high", "xhigh", "max"),
             capabilities=frozenset({"workspace_read", "workspace_write", "shell"}),
             allowed_auth_kinds=frozenset({"cli_subscription"}),
@@ -64,15 +73,14 @@ def ordered_profiles() -> tuple[LaneProfile, ...]:
             order=3,
             adapter_kind=AdapterKind.EXTERNAL_CLI,
             provider_id="antigravity-subscription",
+            # Newest generations only (operator 2026-07-27 evening): 3.1 Pro +
+            # 3.6 Flash tiers; the 3.5 Flash family is retired from the picker.
             ordered_models=(
                 "gemini-3.1-pro-high",
                 "gemini-3.1-pro-low",
                 "gemini-3.6-flash-high",
                 "gemini-3.6-flash-medium",
                 "gemini-3.6-flash-low",
-                "gemini-3.5-flash-high",
-                "gemini-3.5-flash-medium",
-                "gemini-3.5-flash-low",
             ),
             supported_efforts=("low", "medium", "high"),
             capabilities=frozenset({"workspace_read", "workspace_write", "shell"}),

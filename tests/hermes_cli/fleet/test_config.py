@@ -77,8 +77,16 @@ def test_profiles_are_fixed_order_and_truthful_for_current_live_lanes():
     assert profiles[1].selected_effort == "xhigh"
     assert profiles[1].supports_task_worker
     assert profiles[1].supports_parent_session
-    assert profiles[1].ordered_models == ("claude-fable-5", "claude-opus-5")
-    assert "sonnet" not in " ".join(profiles[1].ordered_models).lower()
+    assert profiles[1].ordered_models == (
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    )
+    # Sonnet/Haiku are explicit-pick options only: never the lead model, so
+    # auto selection (first ordered ∈ qualification) can never reach them.
+    assert "sonnet" not in profiles[1].ordered_models[0].lower()
+    assert profiles[1].ordered_models[0] == "claude-fable-5"
     assert profiles[2].provider_id == "xai-oauth"
     assert profiles[2].supported_efforts[-2:] == ("max", "ultra")
     assert profiles[2].selected_effort == "max"

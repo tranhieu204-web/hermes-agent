@@ -274,6 +274,15 @@ class FleetQualificationDoctor:
         )
         if cached is None or cached.get("status") != "matched":
             return None, (), "cached live served-model receipt unavailable"
+        cached_catalog = cached.get("qualified_models")
+        if isinstance(cached_catalog, list):
+            models = tuple(
+                model
+                for model in profile.ordered_models
+                if model in cached_catalog
+            )
+            if models:
+                return version, models, None
         return version, (model_id,), None
 
     def _write_proof_cache(self, payload: Mapping[str, object]) -> None:
@@ -359,11 +368,20 @@ class FleetQualificationDoctor:
     def _claude_matched_models(
         profile: LaneProfile, statuses: Mapping[str, object]
     ) -> tuple[str, ...]:
-        return tuple(
-            model
-            for model in profile.ordered_models
-            if statuses.get(model) == "matched"
-        )
+        """Full curated list once the LEAD model's route probe matched.
+
+        One bounded probe on the lead model proves executable, auth record and
+        the plan billing route for the lane. Per-model identity is enforced on
+        EVERY execution by the modelUsage receipt (worker adapter and parent
+        driver both fail closed on a served-model mismatch), mirroring the
+        antigravity catalog contract — so the trailing models ride the lead
+        proof instead of one billed probe each.
+        """
+
+        lead = profile.ordered_models[0] if profile.ordered_models else None
+        if lead is not None and statuses.get(lead) == "matched":
+            return profile.ordered_models
+        return ()
 
     def _run_claude_probe(self, argv: Sequence[str]) -> tuple[str, object]:
         """Run one bounded plan-CLI probe; return (status, parsed payload)."""
@@ -430,7 +448,7 @@ class FleetQualificationDoctor:
 
         at = self.now().astimezone(timezone.utc)
         statuses: dict[str, str] = {}
-        for model_id in profile.ordered_models:
+        for model_id in profile.ordered_models[:1]:
             run_status, payload = self._run_claude_probe(
                 (
                     executable,
@@ -494,6 +512,7 @@ class FleetQualificationDoctor:
         version: str,
         model_id: str,
         display_label: str,
+        catalog_models: tuple[str, ...] = (),
     ) -> tuple[Mapping[str, object] | None, str | None]:
         """Run one bounded print-mode probe; return sanitized proof or error."""
 
@@ -607,6 +626,7 @@ class FleetQualificationDoctor:
                     "log_sha256": receipt.get("log_sha256"),
                     "log_bytes": receipt.get("log_bytes"),
                     "receipt_count": receipt.get("receipt_count"),
+                    "qualified_models": list(catalog_models or (model_id,)),
                 }
             )
         self._write_proof_cache(proof)
@@ -658,7 +678,11 @@ class FleetQualificationDoctor:
         if profile.lane_id != "antigravity":
             return version, qualified_models, None
 
-        # Static catalog listing is never sufficient for Antigravity admission.
+        # Static catalog listing is never sufficient for Antigravity admission:
+        # the LEAD model still needs the bounded live consumer-subscription
+        # receipt. Once that route is proven, the full catalog∩profile list is
+        # exposed — every execution re-verifies its own served-model label via
+        # the per-turn log receipt, so trailing models ride the lead proof.
         model_id = qualified_models[0]
         display_label = _AGY_MODEL_LABELS.get(model_id)
         if display_label is None:
@@ -669,10 +693,11 @@ class FleetQualificationDoctor:
             version=version,
             model_id=model_id,
             display_label=display_label,
+            catalog_models=qualified_models,
         )
         if error:
             return None, (), error
-        return version, (model_id,), None
+        return version, qualified_models, None
 
     def _external_executable(self, profile: LaneProfile) -> str | None:
         executable = self.which(profile.executable or "")

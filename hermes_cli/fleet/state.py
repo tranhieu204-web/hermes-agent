@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .policy import evaluate_lane, select_lane
-from .parent_models import is_sonnet_model
 from .types import (
     AdapterKind,
     CapacityRead,
@@ -945,16 +944,18 @@ class FleetStore:
                         )
                         # Exact model preference binds to SERVED-model truth:
                         # the id must be configured for the lane
-                        # (ordered_models), must never be a catalog-only Sonnet
-                        # (parent_models bars Sonnet as a Desktop parent), and
-                        # must appear in the live qualification.models receipt so
-                        # a silently substituted served model cannot satisfy the
-                        # requested id.
+                        # (ordered_models) and must appear in the live
+                        # qualification.models receipt so a silently
+                        # substituted served model cannot satisfy the
+                        # requested id. Sonnet stays barred from AUTO
+                        # selection (policy MODEL_NOT_ADMITTED and it is
+                        # never a lane's lead model), but an EXPLICIT
+                        # operator pick of a configured+qualified Sonnet id
+                        # admits (operator decision 2026-07-27 evening).
                         and (
                             not preferred_model
                             or (
                                 preferred_model in item.profile.ordered_models
-                                and not is_sonnet_model(preferred_model)
                                 and inputs_by_lane[item.lane_id].qualification
                                 is not None
                                 and preferred_model

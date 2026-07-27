@@ -149,6 +149,8 @@ def test_live_doctor_qualifies_exact_subscription_routes_from_receipts(tmp_path,
     assert qualifications["claude_code"].models == (
         "claude-fable-5",
         "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
     )
     assert qualifications["claude_code"].efforts == (
         "low",
@@ -776,7 +778,11 @@ def test_live_doctor_qualifies_only_the_model_proven_by_live_receipt(
     qualification = doctor.qualify((profile,))["antigravity"]
 
     assert qualification.qualified is True
-    assert qualification.models == (CANONICAL_MODEL_ID,)
+    # Lead-model live receipt proves the consumer route; the full
+    # catalog∩profile list then qualifies (per-turn receipts re-verify each
+    # served model on every execution). Models absent from `agy models`
+    # never qualify — see the catalog-intersection assertions elsewhere.
+    assert qualification.models == (CANONICAL_MODEL_ID, "gemini-3.6-flash-high")
 
 
 @pytest.mark.parametrize(
@@ -1216,10 +1222,12 @@ def test_native_lanes_unchanged_when_antigravity_probe_injected(tmp_path, monkey
     assert qualifications["claude_code"].qualified is True
     assert qualifications["grok"].qualified is True
     assert qualifications["antigravity"].qualified is True
-    # One agy live probe plus one claude plan-CLI probe per ordered model.
+    # One agy live probe plus ONE claude plan-CLI probe (lead model only —
+    # trailing models ride the lead route proof + per-turn receipts).
     agy_probes = [argv for argv in probe_calls if "--log-file" in argv]
     claude_probes = [argv for argv in probe_calls if "--log-file" not in argv]
     assert len(agy_probes) == 1
-    assert len(claude_probes) == len(
-        profile_map()["claude_code"].ordered_models
+    assert len(claude_probes) == 1
+    assert claude_probes[0][claude_probes[0].index("--model") + 1] == (
+        profile_map()["claude_code"].ordered_models[0]
     )

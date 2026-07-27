@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import re
 
-# Exact Claude parent model only. Sonnet remains catalog-only outside fleet.
-ADMITTED_CLAUDE_PARENT_MODEL = "claude-opus-4-8"
+# Lead Claude parent model (auto-selection target on the plan-CLI lane).
+# Sonnet is never AUTO-selected; explicit operator picks are validated
+# against the lane's ordered_models + live qualification instead of this
+# allowlist (operator decision 2026-07-27 evening).
+ADMITTED_CLAUDE_PARENT_MODEL = "claude-fable-5"
 ADMITTED_PARENT_MODELS = frozenset(
     {
         "gpt-5.6-sol",
         ADMITTED_CLAUDE_PARENT_MODEL,
+        "claude-opus-5",
         "grok-4.5",
         "gemini-3.1-pro-high",
     }
@@ -60,6 +64,7 @@ def is_admitted_parent_model(model: object) -> bool:
 def reject_sonnet_parent_reason(model: object) -> str:
     shown = str(model or "").strip() or "<empty>"
     return (
-        f"Sonnet is not an admitted fleet parent route ({shown}). "
-        f"Claude fleet parent is exact {ADMITTED_CLAUDE_PARENT_MODEL} only."
+        f"Sonnet is not an auto-routed fleet parent target ({shown}). "
+        "Pick it explicitly from the Claude · Fleet section of the model "
+        "picker instead."
     )

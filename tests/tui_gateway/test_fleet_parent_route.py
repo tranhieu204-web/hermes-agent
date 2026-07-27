@@ -1021,7 +1021,7 @@ def test_manual_sonnet_is_rejected_when_fleet_parent_is_on(monkeypatch):
 
     assert response["error"]["code"] == 4004
     assert "Sonnet" in response["error"]["message"]
-    assert "claude-opus-4-8" in response["error"]["message"]
+    assert "explicitly" in response["error"]["message"]
     assert server._sessions == {}
 
 
