@@ -469,7 +469,7 @@ def select_best_lane_for(
     """Select the best fallback routing lane using usage-headroom rules.
 
     Args:
-        importance: Task importance level. One of "money_critical", "critically_important",
+        importance: Task importance level. One of "ultra", "critically_important",
                    "semi_critical", "normal" (default). Applies importance-based grading
                    to Claude/Codex/Kimi; Grok and Antigravity always pin to "high".
     """

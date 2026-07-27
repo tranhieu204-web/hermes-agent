@@ -28,7 +28,7 @@ def conn(tmp_path, monkeypatch):
 # ------------------------------------------------------------------- storage
 @pytest.mark.parametrize(
     "importance",
-    ["money_critical", "critically_important", "semi_critical", "normal"],
+    ["ultra", "critically_important", "semi_critical", "normal"],
 )
 def test_importance_round_trips(conn, importance):
     task_id = kb.create_task(conn, title="t", assignee="claude", importance=importance)
@@ -48,7 +48,9 @@ def test_typo_importance_raises_not_silently_ungraded(conn):
 
 
 def test_normalizer_accepts_spelling_variants():
-    assert kb._normalized_task_importance(" Money-Critical ") == "money_critical"
+    assert kb._normalized_task_importance(" Ultra ") == "ultra"
+    # retired spelling still accepted, canonicalized to the new name
+    assert kb._normalized_task_importance("money_critical") == "ultra"
     assert kb._normalized_task_importance("") is None
     assert kb._normalized_task_importance(None) is None
 
@@ -98,14 +100,14 @@ def _spawn_capturing_env(monkeypatch, tmp_path, importance):
 
 
 def test_dispatch_exports_importance(monkeypatch, tmp_path):
-    env = _spawn_capturing_env(monkeypatch, tmp_path, "money_critical")
+    env = _spawn_capturing_env(monkeypatch, tmp_path, "ultra")
     assert env is not None, "production _default_spawn never reached Popen"
-    assert env.get(TASK_IMPORTANCE_ENV) == "money_critical"
+    assert env.get(TASK_IMPORTANCE_ENV) == "ultra"
 
 
 def test_dispatch_omits_importance_when_ungraded(monkeypatch, tmp_path):
     """An ungraded task must not inherit a stale importance from the dispatcher."""
-    monkeypatch.setenv(TASK_IMPORTANCE_ENV, "money_critical")
+    monkeypatch.setenv(TASK_IMPORTANCE_ENV, "ultra")
     env = _spawn_capturing_env(monkeypatch, tmp_path, None)
     assert env is not None, "production _default_spawn never reached Popen"
     assert TASK_IMPORTANCE_ENV not in env

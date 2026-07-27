@@ -1256,7 +1256,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the amnesia that let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0,
     -- Task importance for effort grading. One of the IMPORTANCE_LEVELS keys
-    -- ("money_critical", "critically_important", "semi_critical", "normal") or
+    -- ("ultra", "critically_important", "semi_critical", "normal") or
     -- NULL. When set, the dispatcher exports it as HERMES_TASK_IMPORTANCE so
     -- the worker's reasoning-effort resolution grades the lane. NULL = ungraded
     -- (falls through to the lane default, preserving pre-column behaviour).
