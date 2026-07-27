@@ -828,12 +828,12 @@ def refresh_usage_before_routing(max_age_seconds: float = 600.0) -> bool:
                 f"{r.lane_id}={'ok' if r.updated else 'stale'}"
                 for r in getattr(report, "results", []) or []
             )
-            logger.info("pre-routing usage refresh: %s", details or "no lanes")
+            _log.info("pre-routing usage refresh: %s", details or "no lanes")
         except Exception:
             pass
         return True
     except Exception as exc:
-        logger.warning("pre-routing usage refresh failed (routing on cached "
+        _log.warning("pre-routing usage refresh failed (routing on cached "
                        "attestation): %s", exc)
         return False
 
@@ -5644,7 +5644,7 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
 #
 # On the FIRST scratch workspace materialization across the whole install
 # we:
-#   1. Log a warning line on the dispatcher logger.
+#   1. Log a warning line on the dispatcher _log.
 #   2. Append a ``tip_scratch_workspace`` event on the task so it's visible
 #      via ``hermes kanban show <id>`` and the dashboard.
 #   3. Touch a sentinel file under ``kanban_home() / '.scratch_tip_shown'``
@@ -7813,7 +7813,7 @@ def observe_and_enforce_progress(
             _record_task_failure(conn, task_id, error_text, outcome="stalled")
         except Exception:
             # The slot is already freed; a bookkeeping failure must not undo that.
-            logger.warning("stall: failed to record failure for %s", task_id, exc_info=True)
+            _log.warning("stall: failed to record failure for %s", task_id, exc_info=True)
 
     return stalled
 
@@ -9312,7 +9312,7 @@ def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, bo
     if model:
         cmd.extend(["--model", model])
 
-    logger.info("kanban dispatch %s: CLAUDE PLAN ROUTE via %s (model=%s)",
+    _log.info("kanban dispatch %s: CLAUDE PLAN ROUTE via %s (model=%s)",
                 task.id, exe, model or "<default>")
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -9484,7 +9484,7 @@ def _default_spawn(
     _routed_model, _routed_provider, _route_reason = resolve_dispatch_lane(
         task, _load_fleet_config_for_routing()
     )
-    logger.info("kanban dispatch %s: %s", task.id, _route_reason)
+    _log.info("kanban dispatch %s: %s", task.id, _route_reason)
     if _routed_model and not task.model_override:
         cmd.extend(["-m", _routed_model])
         if _routed_provider:
