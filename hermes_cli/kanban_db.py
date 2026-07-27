@@ -8817,7 +8817,7 @@ def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, bo
     handle = open(log_dir / f"{task.id}.log", "ab", buffering=0)
     proc = subprocess.Popen(
         cmd, cwd=workspace, env=env, stdout=handle, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, creationflags=no_console_creationflags(),
+        stdin=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return proc.pid
 
