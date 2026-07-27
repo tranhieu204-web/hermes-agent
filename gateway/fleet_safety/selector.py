@@ -84,6 +84,8 @@ _PROVIDER_TO_LANE: Dict[str, str] = {
     "gpt-5.6-sol": "chatgpt_codex",
     "gpt-5.6": "chatgpt_codex",
     "gpt-5.5": "chatgpt_codex",
+    # Plan/subscription CLI route — the ONLY permitted route for this lane.
+    "claude-code-subscription": "claude_code",
     "anthropic": "claude_code",
     "claude": "claude_code",
     "claude-sonnet-4-6": "claude_code",
