@@ -225,7 +225,22 @@ class FleetService:
         existing = self.store.read_parent_pin(profile_id, lineage_root_id)
         if existing is not None:
             return ParentAdmission(ReasonCode.MET, existing)
-        if not self.config.enabled or not self.config.parent_desktop_enabled:
+        if not self.config.enabled:
+            return ParentAdmission(ReasonCode.FLEET_DISABLED, None)
+        # parent_desktop_enabled governs AUTO-commissioning only (default
+        # sessions the fleet routes by itself). An explicit operator pick of
+        # lane+provider+model from the picker is its own consent and admits
+        # while the auto toggle is off — every downstream gate (lane enabled,
+        # qualification, parent_session_proven, capacity, occupancy) still
+        # applies unchanged. Operator decision 2026-07-27: default chat stays
+        # on the configured model with auto-parents off, while explicit
+        # "Claude · Fleet" (or any lane) picks keep working.
+        explicit_pick = bool(
+            str(preferred_lane_id or "").strip()
+            and str(preferred_provider_id or "").strip()
+            and str(preferred_model_id or "").strip()
+        )
+        if not explicit_pick and not self.config.parent_desktop_enabled:
             return ParentAdmission(ReasonCode.FLEET_DISABLED, None)
         at = self._now().astimezone(timezone.utc)
         return self.store.admit_parent(

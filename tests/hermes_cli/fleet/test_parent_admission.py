@@ -113,6 +113,7 @@ def _service(
     store_path: Path | None = None,
     bridge_path: Path | None = None,
     canary: str = "",
+    parent_desktop_enabled: bool = True,
 ) -> FleetService:
     bridge = bridge_path or (tmp_path / "usage.json")
     if not bridge.exists():
@@ -122,7 +123,7 @@ def _service(
         {
             "fleet": {
                 "enabled": True,
-                "parent_desktop_enabled": True,
+                "parent_desktop_enabled": parent_desktop_enabled,
                 "bridge_usage_file": str(bridge),
                 "lanes": {
                     "chatgpt_codex": {"enabled": True},
@@ -194,6 +195,47 @@ def test_parent_admission_atomically_persists_pin_advances_cursor_and_audits(
     events = service.store.audit(task_id="parent:default:lineage-1")
     assert [event["event_type"] for event in events] == ["PARENT_ROUTE_SELECTED"]
     assert events[0]["reason_code"] == ReasonCode.ROTATION.value
+
+
+def test_explicit_pick_admits_while_auto_parents_disabled(tmp_path):
+    """parent_desktop_enabled=False gates AUTO-commissioning only.
+
+    An explicit operator pick of lane+provider+model is its own consent
+    (operator decision 2026-07-27): default chats stay on the configured
+    model, while a deliberate picker selection still admits.
+    """
+
+    service = _service(tmp_path, parent_desktop_enabled=False)
+
+    result = _admit(
+        service,
+        preferred_lane_id="chatgpt_codex",
+        preferred_provider_id="openai-codex",
+        preferred_model_id="gpt-parent",
+    )
+
+    assert result.reason is ReasonCode.MET
+    assert isinstance(result.pin, ParentPin)
+    assert result.pin.lane_id == "chatgpt_codex"
+    assert result.pin.model_id == "gpt-parent"
+
+
+def test_auto_admission_stays_fleet_disabled_without_auto_parents(tmp_path):
+    service = _service(tmp_path, parent_desktop_enabled=False)
+
+    result = _admit(service)
+
+    assert result.reason is ReasonCode.FLEET_DISABLED
+    assert result.pin is None
+
+
+def test_partial_preference_never_bypasses_disabled_auto_parents(tmp_path):
+    service = _service(tmp_path, parent_desktop_enabled=False)
+
+    result = _admit(service, preferred_lane_id="chatgpt_codex")
+
+    assert result.reason is ReasonCode.FLEET_DISABLED
+    assert result.pin is None
 
 
 def test_exact_parent_preference_is_authoritative_and_pinned(tmp_path):
