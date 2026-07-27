@@ -768,6 +768,83 @@ def describe_terminal_record(record: dict) -> str:
     return " ".join(bits)
 
 
+SUPERVISOR_RECORD_SUFFIX = ".supervisor.json"
+
+# Deterministic exit evidence -> stable cause slug. The supervisor OBSERVES these
+# (wait status, signal, sentinel exit codes). No inference is involved, which is
+# why they outrank a worker's own declaration.
+_SUPERVISOR_CAUSE_BY_KIND = {
+    "rate_limited": "provider_rate_limited",
+    "protocol_violation": "worker_protocol_violation",
+    "signaled": "killed_by_signal",
+    "nonzero_exit": "nonzero_exit",
+    "unknown": "process_vanished",
+}
+
+
+def supervisor_record_path(task_id: str, board: Optional[str] = None,
+                           run_id: object = None) -> Path:
+    stem = str(task_id) if run_id in (None, "") else f"{task_id}.run{run_id}"
+    return worker_logs_dir(board=board) / f"{stem}{SUPERVISOR_RECORD_SUFFIX}"
+
+
+def write_supervisor_record(task_id: str, *, kind: str, code: object = None,
+                            pid: object = None, board: Optional[str] = None,
+                            run_id: object = None) -> bool:
+    """Record what the SUPERVISOR observed at reap time. Never raises.
+
+    Inspector ruling: deterministic supervisor evidence (exit status, signal,
+    provider envelope) outranks an LLM-authored cause. This is that evidence.
+    """
+    try:
+        path = supervisor_record_path(task_id, board=board, run_id=run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": TERMINAL_RECORD_VERSION,
+            "task_id": str(task_id),
+            "run_id": None if run_id in (None, "") else str(run_id),
+            "source": "supervisor",
+            "cause": _SUPERVISOR_CAUSE_BY_KIND.get(str(kind), "nonzero_exit"),
+            "exit_kind": str(kind),
+            "code": code,
+            "pid": pid,
+            "written_at": int(time.time()),
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception:
+        return False
+
+
+def read_supervisor_record(task_id: str, board: Optional[str] = None,
+                           run_id: object = None) -> tuple:
+    """Tri-state read of the supervisor's deterministic record."""
+    try:
+        path = supervisor_record_path(task_id, board=board, run_id=run_id)
+        if not path.is_file():
+            return ("absent", None)
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return ("absent", None)
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return ("invalid", {"reason": "unparseable"})
+    if not isinstance(data, dict):
+        return ("invalid", {"reason": "not_an_object"})
+    if int(data.get("version", 0) or 0) != TERMINAL_RECORD_VERSION:
+        return ("invalid", {"reason": "version_mismatch"})
+    if not data.get("cause"):
+        return ("invalid", {"reason": "no_cause"})
+    if str(data.get("task_id", "")) != str(task_id):
+        return ("invalid", {"reason": "task_id_mismatch"})
+    if run_id not in (None, "") and str(data.get("run_id") or "") != str(run_id):
+        return ("invalid", {"reason": "run_id_mismatch"})
+    return ("valid", data)
+
+
 def diagnose_worker_failure(task_id: str, board: Optional[str] = None,
                             run_id: object = None) -> Optional[str]:
     """Best-effort terminal cause for a dead worker, read from its own log.
@@ -779,6 +856,19 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None,
     """
     # PREFER the worker's own declaration. A field lookup cannot be fooled by the
     # worker discussing, testing or writing about an error.
+    # PRECEDENCE observed > declared > inferred. Observation cannot be argued with.
+    sup_state, sup = read_supervisor_record(task_id, board=board, run_id=run_id)
+    if sup_state == "valid":
+        bits = ["observed:" + str(sup.get("cause"))]
+        if sup.get("code") not in (None, ""):
+            bits.append(f"code={sup['code']}")
+        w_state, w_rec = read_terminal_record(task_id, board=board, run_id=run_id)
+        if w_state == "valid":
+            # Preserve the worker's claim alongside: the two answer different
+            # questions (what happened to the process vs what it believed).
+            bits.append("| " + describe_terminal_record(w_rec))
+        return " ".join(bits)
+
     state, record = read_terminal_record(task_id, board=board, run_id=run_id)
     if state == "valid":
         return describe_terminal_record(record)
@@ -7559,7 +7649,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            # current_run_id is REQUIRED here: without it diagnose_worker_failure is
+            # called with no run_id and the run-scoped record reader is
+            # unreachable from production — the run-binding becomes decoration.
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -7644,7 +7738,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # here raises NameError and would break crash detection outright.
                 # The default resolves the current board, which is correct for a
                 # host-local dispatcher.
-                diagnosed = diagnose_worker_failure(row["id"])
+                _rid = row["current_run_id"] if "current_run_id" in row.keys() else None
+                if not write_supervisor_record(
+                    row["id"], kind=kind, code=code, pid=pid, run_id=_rid
+                ):
+                    _log.warning(
+                        "terminal evidence NOT recorded for %s — diagnosis will "
+                        "fall back to inference", row["id"])
+                diagnosed = diagnose_worker_failure(row["id"], run_id=_rid)
                 if diagnosed:
                     error_text = f"{error_text} — {diagnosed}"
                 event_kind = "crashed"
