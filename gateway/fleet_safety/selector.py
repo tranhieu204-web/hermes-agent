@@ -58,7 +58,7 @@ class SelectedLane:
 
 DEFAULT_LANES: Dict[str, LaneConfig] = {
     "chatgpt_codex": LaneConfig("chatgpt_codex", "openai-codex", "gpt-5.6-sol", 8.0, True),
-    "claude_code": LaneConfig("claude_code", "anthropic", "claude-sonnet-4-6", 2.0, True),
+    "claude_code": LaneConfig("claude_code", "anthropic", "claude-opus-5", 2.0, True),
     "grok": LaneConfig("grok", "xai-oauth", "grok-4.5", 5.0, True),
     "antigravity": LaneConfig("antigravity", "antigravity", "gemini-3.1-pro-high", 5.0, True),
 }
@@ -348,9 +348,34 @@ def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = ""
     return _clamp_effort_to_ladder(raw_effort, ladder)
 
 
-def _resolve_claude_model(used_percent: Optional[float], default_model: str = "claude-sonnet-4-6") -> str:
-    """Return configured model for Claude without inventing non-existent model IDs."""
-    return default_model
+# Operator policy 2026-07-27: every fleet lane runs its TOP model. Claude alone
+# is usage-tiered — Fable (top) for the first half of the weekly window, then
+# Opus 5 for the remainder, so the premium tier is spent early and the lane
+# still finishes the week on a top-class model rather than degrading to Sonnet.
+CLAUDE_PREMIUM_MODEL = "claude-fable-5"
+CLAUDE_SUSTAINED_MODEL = "claude-opus-5"
+CLAUDE_TIER_SWITCH_PCT = 50.0
+
+
+def _resolve_claude_model(
+    used_percent: Optional[float], default_model: str = CLAUDE_SUSTAINED_MODEL
+) -> str:
+    """Claude's model for the current weekly-usage position.
+
+    < 50% used -> Fable 5 (top). >= 50% -> Opus 5 for the rest of the week.
+
+    Unknown usage resolves to Opus 5, NOT Fable: without a reading we cannot
+    prove we are still in the first half, and quietly spending the premium tier
+    on an unverified assumption is the wrong default. Never returns Sonnet —
+    this lane is a leader lane and both tiers are top-class.
+    """
+    if used_percent is None:
+        return CLAUDE_SUSTAINED_MODEL
+    try:
+        used = float(used_percent)
+    except (TypeError, ValueError):
+        return CLAUDE_SUSTAINED_MODEL
+    return CLAUDE_PREMIUM_MODEL if used < CLAUDE_TIER_SWITCH_PCT else CLAUDE_SUSTAINED_MODEL
 
 
 def select_best_lane(
@@ -462,6 +487,10 @@ def select_best_lane(
             reason_str = f"selected {best_lane.name} (headroom {best_hr:.1f}% exceeds floor {best_lane.reserve_floor_pct}%)"
 
         model_id = best_lane.model
+        # The tiering helper existed with ZERO callers, so Claude resolved to the
+        # lane default (Sonnet) regardless of usage. Wire it in.
+        if best_lane.name == "claude_code":
+            model_id = _resolve_claude_model(best_used)
         effort_val = resolve_effort_from_map(effort_map, model_id, best_lane.provider, importance)
         return SelectedLane(
             lane=best_lane.name,
