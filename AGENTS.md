@@ -1432,3 +1432,21 @@ test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
 If the logic lives inline in a god-file (`main.ts`, `cli.py`,
 `gateway/run.py`) and extracting it feels disruptive: that's the actual
 signal to do the extraction, not to regex around it.
+
+## L0 — FORBIDDEN: concluding from what LOOKS right (operator rule, Sakaan 2026-07-27)
+
+**Outranks every other working rule here.**
+
+> Never trust anything because it looks right. Always test, verify or check against the system
+> before concluding anything that matters.
+
+A matching name, a stale-looking flag, a healthy-looking number, a green test, a clean compile are
+**not evidence**. Evidence is the system answering a question you actually asked it.
+
+The tell: **verifying the half you BUILT, not the half the SYSTEM uses.** Never invent an
+identifier — enumerate what exists and pick from it. A warning comment IS evidence; prove its
+precondition rather than deleting it. Test BEFORE landing. "It should be" / "presumably" / "same
+pattern as" IS the violation.
+
+Full text + incidents: `SakaanFleetGovernance\LESSONS-RECURRENCE-PREVENTION.md` (L0), `SOUL.md`.
+Operator rules are ALWAYS recorded in both the governance docs and the fleet's own rules.
