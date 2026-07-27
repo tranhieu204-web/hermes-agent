@@ -798,6 +798,173 @@ def format_restart_block(running: list) -> str:
 
 
 
+# --------------------------------------------------------------------------
+# Fleet router authority over dispatch (L1: a router nothing consumes is inert)
+# --------------------------------------------------------------------------
+# `select_best_lane` computed the correct lane all along and the kanban
+# dispatcher never asked it: routing came from whatever profile a planner typed
+# into `assignee`. On 2026-07-27 that put a build on a 60%-headroom lane while an
+# 86%-headroom lane idled, and put five review tasks on a lane at 0% headroom
+# where they 403'd and died in 61s each. The rule existed; it had no authority.
+
+
+def refresh_usage_before_routing(max_age_seconds: float = 600.0) -> bool:
+    """Refresh live usage for every lane so the router decides on fresh data.
+
+    Returns True when a refresh ran. Best-effort: a refresh failure must never
+    block dispatch, but it IS logged, because routing on stale attestation is
+    how an 85%-headroom lane gets scored as zero and skipped.
+    """
+    try:
+        # NOTE: the function is refresh_usage_document, not refresh_usage. The
+        # wrong name would have been swallowed by the except below and the
+        # refresh would silently never run — a silent no-op is exactly the
+        # failure class this whole session has been chasing.
+        from hermes_cli.fleet.usage_refresh import refresh_usage_document
+
+        report = refresh_usage_document()
+        try:
+            details = "; ".join(
+                f"{r.lane_id}={'ok' if r.updated else 'stale'}"
+                for r in getattr(report, "results", []) or []
+            )
+            logger.info("pre-routing usage refresh: %s", details or "no lanes")
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        logger.warning("pre-routing usage refresh failed (routing on cached "
+                       "attestation): %s", exc)
+        return False
+
+
+def _load_fleet_config_for_routing() -> dict:
+    """Best-effort load of the live config for routing decisions.
+
+    Returns {} on any failure — routing then falls back to the profile default
+    rather than blocking dispatch entirely.
+    """
+    try:
+        import yaml
+
+        from hermes_cli.paths import get_default_hermes_root
+
+        cfg_path = get_default_hermes_root() / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        return {}
+
+
+class LaneBelowReserveFloor(RuntimeError):
+    """Raised when a dispatch would target a lane under its reserve floor."""
+
+
+def lane_headroom(lane: str, config: Optional[dict] = None) -> Optional[float]:
+    """Remaining weekly headroom for a lane, or None when unverifiable."""
+    try:
+        from gateway.fleet_safety.selector import select_best_lane
+
+        chosen = select_best_lane(config or {}, is_heavy=True)
+        if chosen and str(chosen.lane).strip().lower() == str(lane).strip().lower():
+            return chosen.remaining_headroom
+        # Lane profiles live in hermes_cli.fleet.profiles, NOT in the selector.
+        # Importing the wrong module made this swallow the ImportError and return
+        # None, which silently disabled the reserve-floor refusal entirely.
+        from gateway.fleet_safety.usage_verify import verified_usage_for
+        from hermes_cli.fleet.profiles import ordered_profiles
+
+        for prof in ordered_profiles():
+            if prof.lane_id == lane:
+                v = verified_usage_for(prof.provider_id)
+                used = getattr(v, "used_percent", None)
+                if used is None:
+                    # UNVERIFIABLE, not depleted. Returning 0.0 here made healthy
+                    # lanes look empty and flipped the router's own choice away
+                    # from an 86%-headroom lane — the same mistake as treating
+                    # silence as proof of a hang. Refusal requires POSITIVE
+                    # evidence of depletion; absence of evidence is not evidence.
+                    return None
+                return max(0.0, 100.0 - float(used))
+    except Exception:
+        return None
+    return None
+
+
+def resolve_dispatch_lane(task, config: Optional[dict] = None) -> tuple:
+    """Decide the lane for a dispatch. Returns ``(model, provider, reason)``.
+
+    STRICT (operator rule, 2026-07-27): the router is consulted for every
+    dispatch, and a lane below its reserve floor is REFUSED even when a plan
+    explicitly names it. An explicit override is honoured only while the lane is
+    dispatchable, and is always reported so a deliberate role-separation choice
+    is a RECORDED override rather than a silent bypass.
+
+    Raises ``LaneBelowReserveFloor`` when the target lane is depleted.
+    """
+    from gateway.fleet_safety.selector import (
+        get_lane_name,
+        select_best_lane,
+    )
+
+    override_model = getattr(task, "model_override", None)
+    override_provider = getattr(task, "provider_override", None)
+
+    # OPERATOR RULE 2026-07-27: refresh live usage for ALL lanes BEFORE routing.
+    # The router's answer is only as good as its attestation freshness — the same
+    # call returned claude_code (85% headroom) and chatgpt_codex (60%) minutes
+    # apart purely because Anthropic's attestation lapsed out of the 900s
+    # verification window in between. Routing must not depend on that accident.
+    refresh_usage_before_routing()
+
+    chosen = None
+    try:
+        chosen = select_best_lane(config or {}, is_heavy=True)
+    except Exception:
+        chosen = None
+
+    if override_provider or override_model:
+        lane = get_lane_name(override_provider or override_model or "")
+        # A lane the router itself fell back to (all lanes below floor) or one it
+        # can see is depleted must not be dispatched to just because a plan said so.
+        if chosen is not None and lane and lane != chosen.lane:
+            head = lane_headroom(lane, config)
+            floor = _lane_reserve_floor(lane, config)
+            if head is not None and floor is not None and head < floor:
+                raise LaneBelowReserveFloor(
+                    f"refusing dispatch to lane {lane!r}: headroom {head:.1f}% "
+                    f"is below its reserve floor {floor:.1f}% "
+                    f"(router would pick {chosen.lane!r} at "
+                    f"{chosen.remaining_headroom}%)"
+                )
+        return (
+            override_model,
+            override_provider,
+            f"explicit override to lane {lane!r} (router preferred "
+            f"{getattr(chosen, 'lane', None)!r}) — RECORDED OVERRIDE",
+        )
+
+    if chosen is None:
+        return (None, None, "router unavailable — profile default")
+    return (
+        chosen.model,
+        chosen.provider,
+        f"router selected {chosen.lane!r} ({chosen.reason})",
+    )
+
+
+def _lane_reserve_floor(lane: str, config: Optional[dict] = None) -> Optional[float]:
+    """Configured reserve floor for a lane, or None when not resolvable."""
+    try:
+        lanes = ((config or {}).get("fleet_safety") or {}).get("lanes") or {}
+        entry = lanes.get(lane) or {}
+        val = entry.get("reserve_floor_pct")
+        return None if val is None else float(val)
+    except Exception:
+        return None
+
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -9228,6 +9395,17 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
+    # ROUTER AUTHORITY: ask the fleet router for every dispatch and refuse a lane
+    # below its reserve floor even when a plan named it explicitly. Without this
+    # the router was computing the right lane and nothing consumed it.
+    _routed_model, _routed_provider, _route_reason = resolve_dispatch_lane(
+        task, _load_fleet_config_for_routing()
+    )
+    logger.info("kanban dispatch %s: %s", task.id, _route_reason)
+    if _routed_model and not task.model_override:
+        cmd.extend(["-m", _routed_model])
+        if _routed_provider:
+            cmd.extend(["--provider", _routed_provider])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker
