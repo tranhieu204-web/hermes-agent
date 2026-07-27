@@ -664,8 +664,19 @@ TERMINAL_RECORD_SUFFIX = ".terminal.json"
 TERMINAL_RECORD_VERSION = 1
 
 
-def terminal_record_path(task_id: str, board: Optional[str] = None) -> Path:
-    return worker_logs_dir(board=board) / f"{task_id}{TERMINAL_RECORD_SUFFIX}"
+TERMINAL_RECORD_INVALID = "terminal_record_invalid"
+
+
+def terminal_record_path(task_id: str, board: Optional[str] = None,
+                         run_id: object = None) -> Path:
+    """Sidecar path. RUN-BOUND: a declaration belongs to one run, not one task.
+
+    Inspector HOLD: a task-scoped path let a STALE declaration from a previous
+    run be read as this run's cause — a cleaner false positive than the one this
+    feature exists to remove.
+    """
+    stem = str(task_id) if run_id in (None, "") else f"{task_id}.run{run_id}"
+    return worker_logs_dir(board=board) / f"{stem}{TERMINAL_RECORD_SUFFIX}"
 
 
 def write_terminal_record(
@@ -679,6 +690,7 @@ def write_terminal_record(
     final: bool = True,
     detail: str = "",
     board: Optional[str] = None,
+    run_id: object = None,
 ) -> bool:
     """Declare why this worker is terminating. Atomic; never raises.
 
@@ -687,11 +699,12 @@ def write_terminal_record(
     inference drawn from its output.
     """
     try:
-        path = terminal_record_path(task_id, board=board)
+        path = terminal_record_path(task_id, board=board, run_id=run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "version": TERMINAL_RECORD_VERSION,
             "task_id": str(task_id),
+            "run_id": None if run_id in (None, "") else str(run_id),
             "cause": str(cause),
             "provider": str(provider or ""),
             "model": str(model or ""),
@@ -709,25 +722,42 @@ def write_terminal_record(
         return False
 
 
-def read_terminal_record(task_id: str, board: Optional[str] = None) -> Optional[dict]:
-    """The worker's own declared terminal record, or None when it declared none."""
+def read_terminal_record(task_id: str, board: Optional[str] = None,
+                         run_id: object = None) -> tuple:
+    """TRI-STATE: returns ``(state, record)`` where state is one of
+    "absent" / "valid" / "invalid".
+
+    Inspector HOLD: treating an unusable declaration as absent silently
+    reactivated the known-false-positive heuristic as though nothing had been
+    declared, erasing the fact that a declaration was ATTEMPTED AND FAILED.
+    Invalid is now a first-class signal.
+    """
     try:
-        path = terminal_record_path(task_id, board=board)
+        path = terminal_record_path(task_id, board=board, run_id=run_id)
         if not path.is_file():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or not data.get("cause"):
-            return None
-        if int(data.get("version", 0)) != TERMINAL_RECORD_VERSION:
-            return None
-        return data
+            return ("absent", None)
     except Exception:
-        return None
+        return ("absent", None)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ("invalid", {"reason": "unparseable"})
+    if not isinstance(data, dict):
+        return ("invalid", {"reason": "not_an_object"})
+    if int(data.get("version", 0) or 0) != TERMINAL_RECORD_VERSION:
+        return ("invalid", {"reason": "version_mismatch"})
+    if not data.get("cause"):
+        return ("invalid", {"reason": "no_cause"})
+    if str(data.get("task_id", "")) != str(task_id):
+        return ("invalid", {"reason": "task_id_mismatch"})
+    if run_id not in (None, "") and str(data.get("run_id") or "") != str(run_id):
+        return ("invalid", {"reason": "run_id_mismatch"})
+    return ("valid", data)
 
 
 def describe_terminal_record(record: dict) -> str:
     """Operator-facing one-liner from a declared record."""
-    bits = [str(record.get("cause", "unknown"))]
+    bits = ["declared:" + str(record.get("cause", "unknown"))]
     prov, model = record.get("provider"), record.get("model")
     if prov:
         bits.append(f"provider={prov}" + (f"/{model}" if model else ""))
@@ -738,7 +768,8 @@ def describe_terminal_record(record: dict) -> str:
     return " ".join(bits)
 
 
-def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Optional[str]:
+def diagnose_worker_failure(task_id: str, board: Optional[str] = None,
+                            run_id: object = None) -> Optional[str]:
     """Best-effort terminal cause for a dead worker, read from its own log.
 
     Returns a short human cause, or None when nothing recognizable is present —
@@ -748,9 +779,13 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Option
     """
     # PREFER the worker's own declaration. A field lookup cannot be fooled by the
     # worker discussing, testing or writing about an error.
-    record = read_terminal_record(task_id, board=board)
-    if record is not None:
+    state, record = read_terminal_record(task_id, board=board, run_id=run_id)
+    if state == "valid":
         return describe_terminal_record(record)
+    if state == "invalid":
+        # Do NOT fall through to the heuristic: a failed declaration is a fact in
+        # its own right and must not be replaced by a guess.
+        return f"{TERMINAL_RECORD_INVALID} ({(record or {}).get('reason', 'unknown')})"
 
     try:
         log_path = worker_logs_dir(board=board) / f"{task_id}.log"
@@ -770,7 +805,8 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Option
     for cause, needles in _WORKER_FAILURE_SIGNATURES:
         for needle in needles:
             if needle in blob:
-                return cause
+                # Quarantined legacy advisory — explicitly NOT authoritative.
+                return f"legacy-inference(low-confidence): {cause}"
     return None
 
 
