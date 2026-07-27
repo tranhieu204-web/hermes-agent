@@ -961,7 +961,9 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     return None
 
 
-def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
+def resolve_reasoning_config(
+    cfg: dict | None, model: str = "", importance: str = ""
+) -> dict | None:
     """Resolve the effective reasoning config for *model* from a config dict.
 
     Single chokepoint for reasoning-effort resolution, shared by every
@@ -1015,8 +1017,34 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     effort = agent_cfg.get("reasoning_effort", "")
     if isinstance(effort, dict):
         try:
-            from gateway.fleet_safety.selector import resolve_effort_from_map
-            effort = resolve_effort_from_map(effort, model=model)
+            from gateway.fleet_safety.selector import (
+                resolve_effort_from_map,
+                resolve_task_importance,
+                shadowed_graded_lanes,
+            )
+            # Importance in force: explicit arg > HERMES_TASK_IMPORTANCE (set by
+            # the kanban dispatcher on the worker) > configured default. Empty
+            # means "ungraded" and preserves the pre-existing lane defaults.
+            eff_importance = resolve_task_importance(
+                importance,
+                default_importance=(agent_cfg.get("default_importance") or ""),
+            )
+            if eff_importance:
+                # An explicit per-lane entry outranks grading (PRIORITY 1), so a
+                # config naming a graded lane silently disables the grade the
+                # operator asked for. Say so instead of failing quietly.
+                shadowed = shadowed_graded_lanes(effort)
+                if shadowed:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "importance=%s requested but agent.reasoning_effort pins %s — "
+                        "grading is shadowed for %s; remove those keys to let "
+                        "importance govern.",
+                        eff_importance, ", ".join(shadowed), ", ".join(shadowed),
+                    )
+            effort = resolve_effort_from_map(
+                effort, model=model, importance=eff_importance
+            )
         except Exception:
             m_lower = str(model).strip().lower()
             effort = effort.get(m_lower) or effort.get("default") or "medium"

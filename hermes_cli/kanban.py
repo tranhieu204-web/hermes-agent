@@ -349,6 +349,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "two retries. Omit to use the dispatcher's "
                                "kanban.failure_limit config "
                                f"(default {kb.DEFAULT_FAILURE_LIMIT}).")
+    p_create.add_argument("--importance", default=None,
+                          choices=["money_critical", "critically_important",
+                                   "semi_critical", "normal"],
+                          help="Task importance, which grades the worker's "
+                               "reasoning effort on the graded lanes "
+                               "(Claude/Codex/Kimi): money_critical=max, "
+                               "critically_important=xhigh, "
+                               "semi_critical=high, normal=medium. Grok and "
+                               "Antigravity are always pinned to high. Omit "
+                               "to leave the task ungraded (lane default).")
     p_create.add_argument("--model", default=None, dest="model_override",
                           help="Pin the worker to this model (passed as "
                                "-m <model>) without changing the profile's "
@@ -1497,6 +1507,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            importance=getattr(args, "importance", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
