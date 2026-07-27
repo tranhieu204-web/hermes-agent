@@ -44,6 +44,8 @@ import time
 EXIT_RECEIPT_SCHEMA = "hermes.kanban.exit-receipt"
 EXIT_RECEIPT_VERSION = 1
 RECEIPT_SOURCE = "windows_popen_observer"
+RECOVERY_HANDSHAKE_SCHEMA = "hermes.kanban.recovery-handshake"
+RECOVERY_HANDSHAKE_VERSION = 1
 
 # Exit codes of the OBSERVER process itself (diagnostic only; the dispatcher
 # never trusts them — it trusts the receipt).
@@ -222,6 +224,8 @@ def _parse_args(argv):
     parser.add_argument("--recover", action="store_true")
     parser.add_argument("--worker-pid", type=int, default=None)
     parser.add_argument("--worker-pid-start", type=int, default=None)
+    parser.add_argument("--recovery-token", default=None)
+    parser.add_argument("--recovery-handshake", default=None)
     if "--" in argv:
         split = argv.index("--")
         args = parser.parse_args(argv[:split])
@@ -416,6 +420,16 @@ def _run_recovery(args) -> int:
     ``--exit-contract`` (read from the launched receipt), so a recovered
     Claude-route exit 75 stays a generic nonzero exit — recovery re-observes
     a launch, it never re-labels it.
+
+    Before waiting, this process writes a one-shot token-bound HANDSHAKE
+    artifact carrying its ACTUAL ``os.getpid()`` identity: on a redirecting
+    venv launcher the dispatcher's ``Popen.pid`` names a shim, not this
+    process, and binding that shim pid would turn every later receipt into
+    an identity conflict. No handshake published → no waiting: an
+    identity-unbound recovery observer must not exist, because the
+    dispatcher could neither trust its receipt nor terminate it on CAS
+    loss. The handshake is a SEPARATE artifact, never the exit receipt —
+    a racing final receipt is settled evidence this process preserves.
     """
     import ctypes
     from ctypes import wintypes
@@ -437,6 +451,14 @@ def _run_recovery(args) -> int:
     if blocked:
         print(f"recovery refused: {blocked}", file=sys.stderr)
         return EXIT_OBSERVER_ERROR
+    if not args.recovery_token or not args.recovery_handshake:
+        # After the settled-evidence check: a final receipt needs no
+        # handshake to be honoured, but an actual re-attach does — without
+        # it the dispatcher can never bind (or later terminate) this
+        # process, so refusing IS the fail-closed behaviour.
+        print("--recover requires --recovery-token and --recovery-handshake "
+              "(identity handshake fail-closed)", file=sys.stderr)
+        return EXIT_USAGE
 
     pid = int(args.worker_pid)
     live_start = _pid_start(pid)
@@ -485,6 +507,43 @@ def _run_recovery(args) -> int:
                 f"pid {pid} start changed to {live_start} after open",
             )
             return EXIT_OBSERVER_ERROR
+
+        # Bootstrap handshake: publish the ACTUAL observer identity before
+        # waiting. Both fields are mandatory — an unfingerprinted observer
+        # could never be identity-terminated on CAS loss, so it must not
+        # attach (fail closed; also true when psutil is missing, which is a
+        # broken environment, not a tolerable degradation).
+        my_start = _pid_start(os.getpid())
+        if my_start is None:
+            print(f"recovery refused: no start fingerprint for observer "
+                  f"pid {os.getpid()} (identity fail-closed)",
+                  file=sys.stderr)
+            return EXIT_BOOTSTRAP_FAILED
+        handshake = {
+            "schema": RECOVERY_HANDSHAKE_SCHEMA,
+            "version": RECOVERY_HANDSHAKE_VERSION,
+            "task_id": args.task,
+            "run_id": str(args.run),
+            "board": args.board,
+            "launch_id": args.launch,
+            "recovery_token": args.recovery_token,
+            "claim_lock_sha256": args.claim_lock_sha256,
+            "host_id": _host_id(),
+            "boot_id": _boot_id(),
+            "observer_pid": os.getpid(),
+            "observer_pid_start": int(my_start),
+            "worker_pid": pid,
+            "worker_pid_start": int(args.worker_pid_start),
+            "written_at": _utc_now(),
+        }
+        try:
+            _atomic_write_receipt(args.recovery_handshake, handshake,
+                                  launch_id=args.launch, sequence=1)
+        except Exception as exc:
+            # No handshake → no waiting. Exit WITHOUT touching the launched
+            # receipt so a later attach attempt can still recover this run.
+            print(f"recovery handshake write failed: {exc}", file=sys.stderr)
+            return EXIT_BOOTSTRAP_FAILED
 
         receipt = _base_receipt(
             args, worker_pid=pid,

@@ -879,6 +879,11 @@ WINDOWS_EXIT_OBSERVER_ENV = "HERMES_KANBAN_WINDOWS_EXIT_OBSERVER"
 
 _EXIT_OBSERVER_BOOTSTRAP_TIMEOUT_SECONDS = 5.0
 _EXIT_OBSERVER_BOOTSTRAP_POLL_SECONDS = 0.04
+# Recovery attach waits longer than the primary bootstrap: the recovery
+# observer imports this module (for the shared receipt validator) before it
+# can hand its identity back, and a cold interpreter start on a loaded box
+# can exceed the primary's 5s budget.
+_RECOVERY_HANDSHAKE_TIMEOUT_SECONDS = 10.0
 # A dead observer with a launched-only receipt gets this long (measured from
 # the first tick that saw the state) before the run is closed as observer
 # loss — covers the "reader raced the final os.replace" window without
@@ -1236,6 +1241,87 @@ def _receipt_identity_mismatch(
         if int(got) != int(expected):
             return field
     return None
+
+
+_RECOVERY_HANDSHAKE_SCHEMA = "hermes.kanban.recovery-handshake"
+_RECOVERY_HANDSHAKE_VERSION = 1
+# Closed key set, same philosophy as the exit receipt: a handshake carrying
+# extra or missing keys is invalid as a whole — no partial trust.
+_RECOVERY_HANDSHAKE_KEYS = frozenset({
+    "schema", "version", "task_id", "run_id", "board", "launch_id",
+    "recovery_token", "claim_lock_sha256", "host_id", "boot_id",
+    "observer_pid", "observer_pid_start", "worker_pid", "worker_pid_start",
+    "written_at",
+})
+
+
+def _read_recovery_handshake(
+    path: Path,
+    *,
+    task_id: str,
+    run_id: object,
+    board: Optional[str],
+    launch_id: str,
+    token: str,
+    claim_lock: object,
+    worker_pid: int,
+    worker_pid_start: int,
+) -> Optional[tuple]:
+    """Read + validate the one-shot recovery bootstrap handshake.
+
+    The recovery observer writes this artifact (atomic, token-named) with
+    its OWN ``os.getpid()`` identity before it starts waiting — the only
+    identity safe to bind, because on a redirecting venv launcher
+    ``Popen.pid`` names a shim that re-executes the real interpreter as a
+    child and the two disagree. Every field must match this exact recovery
+    attempt (task/run/board/launch/token/claim-lock/worker identity) and
+    both observer fields must be present: an unfingerprinted recovery
+    observer could never be identity-terminated on CAS loss, so it must
+    never be bound (fail closed). Returns ``(observer_pid,
+    observer_pid_start)`` or ``None``; the token is an exclusion nonce
+    binding the artifact to one reservation, not a secret.
+    """
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or set(data.keys()) != _RECOVERY_HANDSHAKE_KEYS:
+        return None
+    if data.get("schema") != _RECOVERY_HANDSHAKE_SCHEMA:
+        return None
+    if data.get("version") != _RECOVERY_HANDSHAKE_VERSION:
+        return None
+    slug = _normalize_board_slug(board) or get_current_board()
+    for field_name, expected in (
+        ("task_id", str(task_id)),
+        ("run_id", str(run_id)),
+        ("board", slug),
+        ("launch_id", launch_id),
+        ("recovery_token", token),
+        ("claim_lock_sha256", _claim_lock_sha256(claim_lock)),
+        ("host_id", _claimer_id().split(":", 1)[0]),
+        ("boot_id", _boot_id()),
+    ):
+        if data.get(field_name) != expected:
+            return None
+
+    def _is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    for field_name in ("observer_pid", "observer_pid_start",
+                       "worker_pid", "worker_pid_start"):
+        if not _is_int(data.get(field_name)):
+            return None
+    if data["observer_pid"] <= 0:
+        return None
+    if (data["worker_pid"] != int(worker_pid)
+            or data["worker_pid_start"] != int(worker_pid_start)):
+        return None
+    return (int(data["observer_pid"]), int(data["observer_pid_start"]))
 
 
 def _map_receipt_exit(rec: dict) -> tuple:
@@ -1648,6 +1734,18 @@ def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
     same token. A post-spawn CAS is not a launch exclusion — the loser
     would already hold an open handle on the worker and may have replaced
     the shared receipt before being told to die.
+
+    Identity binding is HANDSHAKE-BASED, never ``Popen.pid``: on a
+    redirecting venv launcher (uv-created ``Scripts\\python.exe``) the
+    ``Popen`` pid names a shim whose real interpreter runs as a child, so
+    binding ``proc.pid`` poisons every later receipt-identity check into
+    ``exit_evidence_conflict``. The ACTUAL observer writes a one-shot
+    run/token/launch-bound handshake artifact before it waits; the
+    dispatcher validates it and CAS-binds the handshake identity. On CAS
+    loss the handshaken observer (not the possibly-exited shim) is
+    terminated, identity-guarded. The exit receipt is deliberately NOT
+    used as the handshake channel — ``_run_recovery`` preserves a racing
+    final receipt, and the handshake must never overwrite evidence.
     """
     if row["worker_pid_start"] is None:
         # FAIL CLOSED: without a spawn-time fingerprint the recovery
@@ -1668,11 +1766,45 @@ def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
             # Another dispatcher holds the reservation (or the row moved on).
             return False
 
+    receipt_path = exit_receipt_path(task_id, board=board, run_id=run_id)
+    # Reap artifacts of previous FAILED attempts before spawning a fresh
+    # one: a leaked never-bound recovery observer still holds a worker
+    # handle and can race the receipt with an identity the DB never bound.
+    # Its handshake file names it; kill only a fingerprint-confirmed match,
+    # then drop the stale artifact. (A live BOUND observer can never appear
+    # here — reconcile only reaches this spawn after proving the bound
+    # observer gone.)
+    try:
+        stale_handshakes = list(receipt_path.parent.glob(
+            f"{receipt_path.name}.recovery.*.handshake.json"))
+    except OSError:
+        stale_handshakes = []
+    for stale in stale_handshakes:
+        stale_pid = stale_start = None
+        try:
+            stale_data = json.loads(stale.read_text(encoding="utf-8"))
+            stale_pid = stale_data.get("observer_pid")
+            stale_start = stale_data.get("observer_pid_start")
+        except Exception:
+            pass
+        if stale_pid and _pid_confirmed_ours(stale_pid, stale_start):
+            try:
+                from gateway.status import terminate_pid
+
+                terminate_pid(int(stale_pid), force=True)
+            except Exception:
+                pass
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+    handshake_path = receipt_path.with_name(
+        f"{receipt_path.name}.recovery.{token}.handshake.json")
     new_argv = [
         sys.executable, "-m", "hermes_cli.kanban_exit_observer",
         "--recover",
-        "--receipt", str(exit_receipt_path(task_id, board=board,
-                                           run_id=run_id)),
+        "--receipt", str(receipt_path),
         "--task", str(task_id),
         "--run", str(run_id),
         "--launch", str(row["worker_launch_id"]),
@@ -1683,6 +1815,8 @@ def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
         "--log", str(worker_logs_dir(board=board) / f"{task_id}.log"),
         "--worker-pid", str(int(row["worker_pid"])),
         "--worker-pid-start", str(int(row["worker_pid_start"])),
+        "--recovery-token", token,
+        "--recovery-handshake", str(handshake_path),
     ]
     env = dict(os.environ)
     pkg_root = str(Path(__file__).resolve().parent.parent)
@@ -1705,13 +1839,59 @@ def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
                 (run_id, token),
             )
         return False
-    new_start = _process_start_time(proc.pid)
+
+    # Bounded bootstrap handshake: wait for the ACTUAL observer to hand its
+    # identity back. ``proc.poll()`` is deliberately NOT a break condition —
+    # a redirecting launcher may exit while the real observer lives on.
+    handshake = None
+    deadline = time.monotonic() + _RECOVERY_HANDSHAKE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        handshake = _read_recovery_handshake(
+            handshake_path, task_id=task_id, run_id=run_id, board=board,
+            launch_id=row["worker_launch_id"], token=token,
+            claim_lock=row["claim_lock"],
+            worker_pid=int(row["worker_pid"]),
+            worker_pid_start=int(row["worker_pid_start"]),
+        )
+        if handshake is not None:
+            break
+        time.sleep(_EXIT_OBSERVER_BOOTSTRAP_POLL_SECONDS)
+
+    if handshake is None:
+        # No identity to bind: terminate the launcher's TREE (reaches the
+        # real observer through a still-live shim), release the
+        # reservation, and let a later tick retry. A straggler that
+        # handshakes after this point is reaped by the next attempt's
+        # stale-handshake sweep and its receipt write stays fail-closed
+        # behind the identity checks.
+        try:
+            from gateway.status import terminate_pid
+
+            terminate_pid(proc.pid, force=True)
+        except Exception:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            handshake_path.unlink()
+        except OSError:
+            pass
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET observer_recovery_token = NULL "
+                "WHERE id = ? AND observer_recovery_token = ?",
+                (run_id, token),
+            )
+        return False
+
+    obs_pid, obs_start = handshake
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE task_runs SET observer_pid = ?, observer_pid_start = ? "
             "WHERE id = ? AND task_id = ? AND worker_launch_id = ? "
             "  AND observer_recovery_token = ? AND ended_at IS NULL",
-            (proc.pid, new_start, run_id, task_id,
+            (obs_pid, obs_start, run_id, task_id,
              row["worker_launch_id"], token),
         )
         won = cur.rowcount == 1
@@ -1719,20 +1899,37 @@ def _spawn_recovery_observer(task_id: str, run_id: int, row: dict,
             conn.execute(
                 "UPDATE tasks SET observer_pid = ?, observer_pid_start = ? "
                 "WHERE id = ? AND current_run_id = ?",
-                (proc.pid, new_start, task_id, run_id),
+                (obs_pid, obs_start, task_id, run_id),
             )
             _append_event(
                 conn, task_id, "exit_observer_recovery",
-                {"observer_pid": proc.pid,
+                {"observer_pid": obs_pid,
+                 "observer_pid_start": obs_start,
+                 "launcher_pid": proc.pid,
                  "launch_id": row["worker_launch_id"],
                  "worker_pid": int(row["worker_pid"])},
                 run_id=run_id,
             )
     if not won:
+        # CAS loss: the loser to kill is the HANDSHAKEN observer — the
+        # ``Popen`` handle may name only an already-exited redirector, and
+        # killing just that leaks the real observer with an open worker
+        # handle. Identity-guarded, like every kill in this module.
+        if _pid_confirmed_ours(obs_pid, obs_start):
+            try:
+                from gateway.status import terminate_pid
+
+                terminate_pid(obs_pid, force=True)
+            except Exception:
+                pass
         try:
             proc.kill()
         except OSError:
             pass
+    try:
+        handshake_path.unlink()
+    except OSError:
+        pass
     return won
 
 
@@ -8111,6 +8308,14 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    spawn_failed: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, error)`` for every spawn attempt that failed THIS tick,
+    including non-auto-blocking ones. Before this bucket a claimed row whose
+    spawn failed without tripping the breaker left EVERY result bucket empty
+    — indistinguishable from "no candidate was considered" (the exact
+    misread behind the t_64687442 nine-failures diagnosis). Observability
+    only: retry/backoff/auto-block semantics are unchanged, and
+    ``auto_blocked`` entries also appear here with their error text."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -10010,6 +10215,7 @@ def _dispatch_once_locked(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
             )
+            result.spawn_failed.append((claimed.id, f"workspace: {exc}"[:500]))
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
@@ -10059,6 +10265,7 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            result.spawn_failed.append((claimed.id, str(exc)[:500]))
             if auto:
                 result.auto_blocked.append(claimed.id)
 
@@ -10106,6 +10313,7 @@ def _dispatch_once_locked(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
             )
+            result.spawn_failed.append((claimed.id, f"workspace: {exc}"[:500]))
             if auto:
                 result.auto_blocked.append(claimed.id)
             continue
@@ -10142,6 +10350,7 @@ def _dispatch_once_locked(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
             )
+            result.spawn_failed.append((claimed.id, str(exc)[:500]))
             if auto:
                 result.auto_blocked.append(claimed.id)
     return result

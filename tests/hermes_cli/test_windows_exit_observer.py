@@ -34,6 +34,28 @@ pytestmark = pytest.mark.skipif(
     os.name != "nt", reason="Windows-only exit-observer seam"
 )
 
+# ---------------------------------------------------------------------------
+# ENVIRONMENT PREFLIGHT (t_983fcb90 item 7): psutil is a DECLARED CORE
+# DEPENDENCY (pyproject.toml). Without it every Windows start-fingerprint
+# probe returns None and the observer correctly FAILS CLOSED at bootstrap —
+# which silently degrades this suite into ~8 spawn-failure test failures
+# that look like unrelated production defects (the exact misdiagnosis that
+# cost a full builder run). An interpreter without psutil is the WRONG
+# interpreter; abort the whole session loudly instead of reporting noise.
+# ---------------------------------------------------------------------------
+if os.name == "nt":
+    import importlib.util
+
+    if importlib.util.find_spec("psutil") is None:
+        pytest.exit(
+            "PREFLIGHT FAILURE: psutil (a declared core dependency) is not "
+            f"importable from this interpreter: {sys.executable}. Results "
+            "from this environment are meaningless for the exit-observer "
+            "suite — run it with the installed project venv "
+            "(hermes-agent/venv/Scripts/python.exe).",
+            returncode=4,
+        )
+
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
@@ -338,8 +360,15 @@ def test_observer_branch_matrix_through_production_boundary(
                         spying_reconcile)
 
     with kb.connect() as conn:
+        # sleep_s > 0 keeps the child ALIVE through the observer's
+        # fingerprint read: an instantly-exiting child selects
+        # ``_run_primary``'s already-exited exemption, which let all three
+        # matrix cases pass with psutil missing (t_983fcb90 item 6). A live
+        # child makes the live-fingerprint requirement — and the assertions
+        # below — unconditional.
         tid, task = _spawn_via_production_route(
-            conn, monkeypatch, tmp_path, exit_code, max_retries=1,
+            conn, monkeypatch, tmp_path, exit_code, sleep_s=0.4,
+            max_retries=1,
         )
         run_id = task.current_run_id
         assert run_id, "claimed dispatch must carry a run id"
@@ -348,12 +377,23 @@ def test_observer_branch_matrix_through_production_boundary(
         # the observer (mutation guard #4: observer-pid-instead-of-child).
         trow = conn.execute(
             "SELECT worker_pid, worker_launch_id, worker_pid_start, "
-            "observer_pid FROM tasks WHERE id = ?", (tid,)).fetchone()
+            "observer_pid, observer_pid_start FROM tasks WHERE id = ?",
+            (tid,)).fetchone()
         assert trow["worker_launch_id"]
         assert trow["observer_pid"] and trow["observer_pid"] != trow["worker_pid"]
+        # BOTH start fingerprints must actually be bound (t_983fcb90 item
+        # 6: selecting worker_pid_start without asserting it let this suite
+        # go green in an environment that cannot fingerprint at all).
+        assert trow["worker_pid_start"] is not None, (
+            "live launch must bind a worker start fingerprint")
+        assert trow["observer_pid_start"] is not None, (
+            "live launch must bind an observer start fingerprint")
         rrow = _latest_run(conn, tid)
         assert rrow["worker_launch_id"] == trow["worker_launch_id"]
         assert rrow["worker_pid"] == trow["worker_pid"]
+        assert rrow["worker_pid_start"] == trow["worker_pid_start"]
+        assert rrow["observer_pid"] == trow["observer_pid"]
+        assert rrow["observer_pid_start"] == trow["observer_pid_start"]
 
         _wait_pid_gone(task.worker_pid)
         # Give the detached observer a beat to finalize the receipt.
@@ -366,6 +406,13 @@ def test_observer_branch_matrix_through_production_boundary(
             time.sleep(0.1)
         assert state == "exited", f"final receipt missing: {state}"
         assert rec["exit_code"] == exit_code
+        # The receipt's identity is the DB-bound identity, fingerprints
+        # included — this is what the reconciler's fail-closed
+        # ``_receipt_identity_mismatch`` will bind against.
+        assert rec["worker_pid"] == trow["worker_pid"]
+        assert rec["worker_pid_start"] == trow["worker_pid_start"]
+        assert rec["observer_pid"] == trow["observer_pid"]
+        assert rec["observer_pid_start"] == trow["observer_pid_start"]
 
         # CONSUME through the top-level production boundary: a SECOND real
         # dispatch tick, not a direct helper call.
@@ -558,10 +605,13 @@ def test_observer_loss_recovery_through_dispatch_tick(
         res2 = kb.dispatch_once(conn)
         assert res2.spawned == [] and tid not in res2.crashed
         rrow = conn.execute(
-            "SELECT observer_pid FROM task_runs WHERE id = ?",
-            (run_id,)).fetchone()
+            "SELECT observer_pid, observer_pid_start FROM task_runs "
+            "WHERE id = ?", (run_id,)).fetchone()
         assert rrow["observer_pid"] and rrow["observer_pid"] != obs_pid, (
             "the production tick must attach a recovery observer")
+        assert rrow["observer_pid_start"] is not None, (
+            "recovery must bind an observer start fingerprint (an unbound "
+            "one could never be identity-terminated)")
         ev = conn.execute(
             "SELECT 1 FROM task_events WHERE task_id = ? AND "
             "kind = 'exit_observer_recovery'", (tid,)).fetchone()
@@ -577,6 +627,21 @@ def test_observer_loss_recovery_through_dispatch_tick(
             time.sleep(0.1)
         assert state == "exited", "recovery observer must finalize the receipt"
         assert rec["exit_code"] == 42
+
+        # BEFORE crash classification: the DB-bound recovery identity must
+        # EQUAL the receipt's own identity (t_983fcb90 item 5). Binding the
+        # launcher's Popen.pid instead of the handshaken actual observer
+        # pid diverges exactly here and turns the crash tick below into an
+        # exit_evidence_conflict → triage instead of a coded crash.
+        assert rrow["observer_pid"] == rec["observer_pid"], (
+            "task_runs.observer_pid must be the ACTUAL recovery observer "
+            "from the handshake, never a redirecting launcher's Popen.pid")
+        assert rrow["observer_pid_start"] == rec["observer_pid_start"]
+        trow2 = conn.execute(
+            "SELECT observer_pid, observer_pid_start FROM tasks "
+            "WHERE id = ?", (tid,)).fetchone()
+        assert trow2["observer_pid"] == rec["observer_pid"]
+        assert trow2["observer_pid_start"] == rec["observer_pid_start"]
 
         res3 = kb.dispatch_once(conn)
         assert tid in res3.crashed
@@ -609,6 +674,12 @@ def test_bootstrap_failure_is_spawn_failed_never_untracked(
 
         result = kb.dispatch_once(conn)
         assert not result.spawned
+        # The failure is first-class in the result, not only a DB event:
+        # a non-auto-blocking spawn failure with every bucket empty reads
+        # as "no candidate was considered" (t_983fcb90 item 8).
+        assert [t for t, _err in result.spawn_failed] == [tid], (
+            "a spawn failure must surface in DispatchResult.spawn_failed")
+        assert result.auto_blocked == []
         task = kb.get_task(conn, tid)
         assert task.status == "ready"
         assert task.consecutive_failures == 1
@@ -1266,6 +1337,154 @@ def test_recovery_observer_inherits_original_contract(observer_on, tmp_path):
                 worker.kill()
 
 
+def test_recovery_binds_actual_observer_across_redirecting_launcher(
+    observer_on, tmp_path, monkeypatch
+):
+    """t_983fcb90 regression: a venv ``python.exe`` can be a REDIRECTING
+    launcher — ``Popen.pid`` names a shim that re-executes the real
+    interpreter as a CHILD, so shim pid != actual observer pid. Recovery
+    must bind the HANDSHAKEN actual identity, never ``Popen.pid``.
+
+    The redirection is FORCED via a wrapper interpreter hop at the
+    definition-module ``Popen`` seam, so this regression holds even when
+    the suite runs under a non-redirecting interpreter."""
+    launcher_pids = []
+    real_popen = subprocess.Popen
+
+    def redirecting_popen(argv, **kw):
+        if isinstance(argv, (list, tuple)) and "--recover" in argv:
+            wrapped = [sys.executable, "-c",
+                       "import subprocess, sys; "
+                       "sys.exit(subprocess.call(sys.argv[1:]))"] + list(argv)
+            proc = real_popen(wrapped, **kw)
+            launcher_pids.append(proc.pid)
+            return proc
+        return real_popen(argv, **kw)
+
+    monkeypatch.setattr(kb.subprocess, "Popen", redirecting_popen)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="redirect", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        rid = task.current_run_id
+        worker = subprocess.Popen(
+            [sys.executable, "-c",
+             "import time,sys; time.sleep(8); sys.exit(9)"])
+        try:
+            wstart = kb._process_start_time(worker.pid)
+            assert wstart is not None, "environment cannot fingerprint"
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait(timeout=30)
+            _bind_launch(conn, tid, rid, worker.pid, wstart, dead.pid,
+                         "c" * 32)
+            receipt_path = kb.exit_receipt_path(tid, run_id=rid)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.write_text(json.dumps(_launched_receipt_for(
+                tid, rid, task.claim_lock, worker_pid=worker.pid,
+                worker_pid_start=wstart, observer_pid=dead.pid)),
+                encoding="utf-8")
+
+            kb.reconcile_windows_exit_receipts(conn)
+            assert launcher_pids, "recovery never spawned via Popen"
+            row = conn.execute(
+                "SELECT observer_pid, observer_pid_start FROM task_runs "
+                "WHERE id = ?", (rid,)).fetchone()
+            assert row["observer_pid"], (
+                "recovery must bind an observer identity")
+            assert row["observer_pid"] not in launcher_pids, (
+                "DB bound the redirecting LAUNCHER pid — the actual "
+                "observer's handshake identity was ignored")
+            assert row["observer_pid_start"] is not None
+
+            worker.wait(timeout=30)
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                state, rec = kb.read_exit_receipt(receipt_path)
+                if state == "exited":
+                    break
+                time.sleep(0.1)
+            assert state == "exited", "recovery observer must finalize"
+            assert rec["exit_code"] == 9
+            # Receipt identity and DB-bound identity AGREE — the exact
+            # divergence that produced exit_evidence_conflict/triage.
+            assert rec["observer_pid"] == row["observer_pid"]
+            assert rec["observer_pid_start"] == row["observer_pid_start"]
+            assert kb._receipt_identity_mismatch(
+                rec, task_id=tid, run_id=rid, board="default",
+                launch_id="c" * 32, claim_lock=task.claim_lock,
+                worker_pid=worker.pid, worker_pid_start=wstart,
+                observer_pid=row["observer_pid"],
+                observer_pid_start=row["observer_pid_start"]) is None
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+
+
+def test_recovery_cas_loss_terminates_actual_observer_not_launcher(
+    observer_on, tmp_path, monkeypatch
+):
+    """t_983fcb90 loser-cleanup proof: when the identity-bind CAS is lost
+    AFTER the handshake, the process that must die is the HANDSHAKEN actual
+    observer — a ``proc.kill()`` on the (possibly already-exited) launcher
+    would leak a live observer holding an open worker handle. The worker
+    itself must survive the cleanup untouched."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="cas-loss", assignee="worker")
+        task = kb.claim_task(conn, tid)
+        rid = task.current_run_id
+        stolen = {}
+        real_read = kb._read_recovery_handshake
+
+        def stealing_read(path, **kw):
+            hs = real_read(path, **kw)
+            if hs is not None and "identity" not in stolen:
+                stolen["identity"] = hs
+                # A competing actor invalidates the reservation between
+                # the handshake and the bind CAS.
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE task_runs SET observer_recovery_token = "
+                        "NULL WHERE id = ?", (rid,))
+            return hs
+
+        monkeypatch.setattr(kb, "_read_recovery_handshake", stealing_read)
+        worker = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            wstart = kb._process_start_time(worker.pid)
+            assert wstart is not None, "environment cannot fingerprint"
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead.wait(timeout=30)
+            _bind_launch(conn, tid, rid, worker.pid, wstart, dead.pid,
+                         "c" * 32)
+            receipt_path = kb.exit_receipt_path(tid, run_id=rid)
+            receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            receipt_path.write_text(json.dumps(_launched_receipt_for(
+                tid, rid, task.claim_lock, worker_pid=worker.pid,
+                worker_pid_start=wstart, observer_pid=dead.pid)),
+                encoding="utf-8")
+
+            kb.reconcile_windows_exit_receipts(conn)
+            assert "identity" in stolen, "handshake was never observed"
+            loser_pid, _loser_start = stolen["identity"]
+            # The ACTUAL handshaken observer must be terminated…
+            _wait_pid_gone(loser_pid, timeout=15)
+            # …while the worker it was attached to survives untouched.
+            assert kb._pid_alive(worker.pid), (
+                "loser cleanup must never take the worker down")
+            row = conn.execute(
+                "SELECT observer_pid FROM task_runs WHERE id = ?",
+                (rid,)).fetchone()
+            assert row["observer_pid"] == dead.pid, (
+                "a lost CAS must not bind any observer identity")
+            ev = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND "
+                "kind = 'exit_observer_recovery'", (tid,)).fetchone()
+            assert ev is None, "no recovery event without a won bind"
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+
+
 def test_recovery_refuses_to_overwrite_final_receipt(observer_on, tmp_path):
     """A late recovery observer must treat a final receipt as settled
     evidence — exit 0, bytes untouched."""
@@ -1867,6 +2086,10 @@ def test_every_new_seam_has_exact_production_callers():
         "_observed_worker_exit": {"detect_crashed_workers": 1},
         "reconcile_windows_exit_receipts": {"_dispatch_once_locked": 1},
         "_spawn_recovery_observer": {"reconcile_windows_exit_receipts": 1},
+        # t_983fcb90: the recovery bootstrap handshake is read in exactly
+        # one place — the reserve-spawn-bind protocol. A second consumer
+        # (or a removed one) is an unreviewed protocol change.
+        "_read_recovery_handshake": {"_spawn_recovery_observer": 1},
         # canonical writer: crash common path + late-receipt reconciler +
         # the platform-gated initiated-termination helper
         "write_supervisor_observation": {
