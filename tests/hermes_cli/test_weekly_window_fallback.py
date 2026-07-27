@@ -29,12 +29,13 @@ class _W:
 
 
 class _Snap:
-    def __init__(self, *windows):
+    def __init__(self, *windows, source="usage_api"):
         self.windows = tuple(windows)
+        self.source = source
 
 
-def _pcts(*windows, lane_id="chatgpt_codex"):
-    return weekly_used_percents(_Snap(*windows), lane_id=lane_id, now=NOW)
+def _pcts(*windows, lane_id="chatgpt_codex", source="usage_api"):
+    return weekly_used_percents(_Snap(*windows, source=source), lane_id=lane_id, now=NOW)
 
 
 # ------------------------------------------------------------ label is primary
@@ -87,7 +88,29 @@ def test_window_without_percentage_is_not_usable():
     assert _pcts(_W("Session", None, 5.7)) == []
 
 
-def test_unknown_lane_gets_no_fallback_by_label_but_still_needs_evidence():
-    """An unknown lane has no relevant labels; the same narrow rule applies."""
-    assert _pcts(_W("Session", 39.0, 5.7), lane_id="mystery_lane") == [39.0]
-    assert _pcts(_W("Session", 39.0, 1.0), lane_id="mystery_lane") == []
+def test_unknown_lane_never_gets_the_fallback():
+    """FAIL-CLOSED (inspector finding): an unknown lane must stay unmeasured.
+
+    A lane absent from RELEVANT_WEEKLY_WINDOWS has an empty relevant-label set,
+    so no label can ever match — which would make the fallback its ONLY path and
+    hand an unvalidated lane inferred capacity. Knowing the lane is a
+    precondition for inferring its usage.
+    """
+    assert _pcts(_W("Session", 39.0, 5.7), lane_id="mystery_lane") == []
+    assert _pcts(_W("Weekly", 39.0, 5.7), lane_id="mystery_lane") == []
+
+
+@pytest.mark.parametrize("source", ["console_probe", "manual", "", "cache", "unknown"])
+def test_fallback_requires_provider_usage_api_provenance(source):
+    """Inferring from a reset time is only sound on real usage-API data."""
+    assert _pcts(_W("Session", 39.0, 5.7), source=source) == []
+
+
+@pytest.mark.parametrize("source", ["usage_api", "oauth_usage_api"])
+def test_fallback_accepts_known_usage_api_sources(source):
+    assert _pcts(_W("Session", 39.0, 5.7), source=source) == [39.0]
+
+
+def test_label_match_works_regardless_of_provenance():
+    """The provenance gate constrains only the INFERENCE, not labelled truth."""
+    assert _pcts(_W("Weekly", 61.0, 5.7), source="console_probe") == [61.0]

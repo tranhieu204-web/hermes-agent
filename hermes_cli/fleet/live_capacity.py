@@ -37,6 +37,11 @@ from .types import (
 WEEKLY_HORIZON_MIN_DAYS = 5.0
 WEEKLY_HORIZON_MAX_DAYS = 8.0
 
+# The fallback infers meaning from a reset time, so it is only trustworthy on a
+# snapshot that actually came from a provider usage API. Console-probe, manual
+# or unknown provenance must never be horizon-inferred.
+WEEKLY_FALLBACK_SOURCES = frozenset({"usage_api", "oauth_usage_api"})
+
 RELEVANT_WEEKLY_WINDOWS = {
     "chatgpt_codex": frozenset({"weekly"}),
     # Claude's aggregate weekly cap and the Opus-specific cap can both
@@ -76,9 +81,14 @@ def weekly_used_percents(
     ``secondary_window`` percentage — so chatgpt_codex was unmeasurable and the
     router chose lanes blind.
 
+    The fallback is gated three ways, all of which must hold: the lane must be
+    KNOWN (present in RELEVANT_WEEKLY_WINDOWS), the snapshot must come from a
+    provider usage API (WEEKLY_FALLBACK_SOURCES), and the single-window/horizon
+    evidence must hold.
+
     Anything else returns [] and the lane stays UNMEASURED. Unmeasured is the
-    safe failure: fabricating weekly headroom from a short burn window would
-    corrupt routing and the reserve floor.
+    safe failure: fabricating weekly headroom from a short burn window — or from
+    an unvalidated lane — would corrupt routing and the reserve floor.
     """
     relevant = RELEVANT_WEEKLY_WINDOWS.get(lane_id, frozenset())
     windows = list(getattr(source, "windows", ()) or ())
@@ -95,6 +105,18 @@ def weekly_used_percents(
             labelled.append(float(used))
     if labelled:
         return labelled
+
+    # FAIL-CLOSED on unknown lanes. When a lane has no configured weekly labels,
+    # `relevant` is empty and NO label can ever match — which would silently make
+    # the fallback the only path and hand an unvalidated lane inferred capacity.
+    # A lane must be known before its usage may be inferred.
+    if not relevant:
+        return []
+
+    # Provenance gate: only infer from a real provider usage API.
+    source_name = str(getattr(source, "source", "") or "").strip().casefold()
+    if source_name not in WEEKLY_FALLBACK_SOURCES:
+        return []
 
     if len(usable) != 1:
         return []
