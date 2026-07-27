@@ -153,6 +153,46 @@ def _antigravity_parent_provider_row(*, force_fresh: bool = False) -> dict | Non
     }
 
 
+def _claude_parent_provider_row(*, force_fresh: bool = False) -> dict | None:
+    """Expose only receipt-proven Claude plan-CLI models unless refreshed."""
+    try:
+        from hermes_cli.fleet.live import FleetQualificationDoctor
+        from hermes_cli.fleet.profiles import profile_map
+
+        qualification = FleetQualificationDoctor().qualify(
+            (profile_map()["claude_code"],),
+            allow_live_probe=bool(force_fresh),
+        )["claude_code"]
+    except Exception:
+        return None
+    if not qualification.qualified:
+        return None
+    models = list(qualification.models)
+    if not models:
+        return None
+    return {
+        "slug": "anthropic",
+        "name": "Claude · Fleet",
+        "models": models,
+        "total_models": len(models),
+        "authenticated": True,
+        "auth_type": "external_cli",
+        "key_env": "",
+        "warning": "",
+        "is_current": False,
+        "is_user_defined": False,
+        "base_url": "",
+        "selection_kind": "fleet_parent",
+        "fleet_lane_id": "claude_code",
+        "selectable": True,
+        "blocked_reason": None,
+        "source": "fleet_auto",
+        "capabilities": {
+            m: {"fast": False, "reasoning": True} for m in models
+        },
+    }
+
+
 def build_model_options_payload(
     ctx: ConfigContext,
     *,
@@ -321,6 +361,16 @@ def build_models_payload(
             r
             for r in rows
             if str(r.get("slug", "")).lower() != "antigravity-subscription"
+        ]
+
+    claude_row = (
+        _claude_parent_provider_row(force_fresh=True)
+        if refresh
+        else _claude_parent_provider_row()
+    )
+    if claude_row is not None:
+        rows = [claude_row] + [
+            r for r in rows if str(r.get("slug", "")).lower() != "anthropic"
         ]
 
     if include_unconfigured:
