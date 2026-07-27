@@ -994,6 +994,12 @@ def test_recovery_refuses_to_overwrite_final_receipt(observer_on, tmp_path):
     "{not json at all",                       # unparseable
     '{"state": "weird", "final": false}',     # parseable, not launched
     '{"final": 1, "state": "launched"}',      # incoherent final flag
+    # Launched-LOOK-ALIKE missing the entire identity/schema key set: only
+    # an exact-schema-valid launched receipt may ever be replaced.
+    '{"state": "launched", "final": false}',
+    # Exact-schema-valid launched receipt bound to a DIFFERENT launch id.
+    json.dumps(dict(_mk_receipt(task_id="t_r2", run_id="1",
+                                launch_id="f" * 32))),
 ])
 def test_recovery_preserves_non_launched_receipts(observer_on, tmp_path,
                                                   blob):

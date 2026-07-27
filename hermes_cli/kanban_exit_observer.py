@@ -315,35 +315,41 @@ def _write_error_receipt(args, error: str, detail: str) -> None:
         pass
 
 
-def _existing_receipt_blocks_recovery(path: str) -> str:
+def _existing_receipt_blocks_recovery(path: str, args=None) -> str:
     """Return a reason when the on-disk receipt must not be replaced.
 
-    Recovery may write ONLY over a well-formed launched-state receipt (or
-    nothing at all). Everything else is evidence that must be preserved:
-    a final receipt is settled; an unreadable, unparseable, or otherwise
-    not-launched document is first-class ``observer_invalid`` material for
-    the dispatcher — papering over it would erase exactly the bytes the
-    conflict/invalid handling exists to examine.
-    Returns "" when recovery may proceed.
+    Recovery may write ONLY over an EXACT-SCHEMA-VALID launched-state
+    receipt whose identity matches the launch this recovery was dispatched
+    for (or over no receipt at all). Everything else is evidence that must
+    be preserved: a final receipt is settled; unreadable, unparseable,
+    schema-invalid, launched-look-alike, or wrong-identity documents are
+    first-class ``observer_invalid``/``conflict`` material for the
+    dispatcher — papering over them would erase exactly the bytes those
+    handlers exist to examine. Validation is delegated to the dispatcher's
+    own reader (``kanban_db.read_exit_receipt``) so the two sides can never
+    disagree about what "valid" means; if that validator cannot be loaded,
+    recovery fails closed. Returns "" when recovery may proceed.
     """
     try:
-        raw = open(path, "rb").read()
-    except FileNotFoundError:
+        from hermes_cli.kanban_db import read_exit_receipt
+    except Exception:
+        return "receipt_validator_unavailable"
+    state, rec = read_exit_receipt(path)
+    if state == "absent":
         # No receipt at all: the identity we were dispatched with is the
         # only binding left; proceeding writes the launch-bound evidence.
         return ""
-    except OSError:
-        return "receipt_unreadable"
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return "receipt_invalid_preserved"
-    if isinstance(data, dict) and data.get("final") is True:
+    if state in ("exited", "observer_error"):
         return "receipt_already_final"
-    if (isinstance(data, dict) and data.get("state") == "launched"
-            and data.get("final") is False):
-        return ""
-    return "receipt_not_launched_preserved"
+    if state != "launched":
+        return f"receipt_{state}_preserved"
+    if args is not None:
+        for field, expected in (("task_id", args.task),
+                                ("run_id", str(args.run)),
+                                ("launch_id", args.launch)):
+            if rec.get(field) != expected:
+                return "receipt_identity_mismatch"
+    return ""
 
 
 def _run_recovery(args) -> int:
@@ -364,7 +370,7 @@ def _run_recovery(args) -> int:
         print("--recover requires --worker-pid", file=sys.stderr)
         return EXIT_USAGE
 
-    blocked = _existing_receipt_blocks_recovery(args.receipt)
+    blocked = _existing_receipt_blocks_recovery(args.receipt, args)
     if blocked == "receipt_already_final":
         return EXIT_OK  # settled evidence; nothing to recover
     if blocked:
@@ -430,7 +436,7 @@ def _run_recovery(args) -> int:
         # (exit 0, someone else won), and anything invalid/unreadable that
         # appeared mid-wait must be preserved for the dispatcher's
         # observer_invalid handling, not overwritten.
-        blocked = _existing_receipt_blocks_recovery(args.receipt)
+        blocked = _existing_receipt_blocks_recovery(args.receipt, args)
         if blocked == "receipt_already_final":
             return EXIT_OK
         if blocked:
