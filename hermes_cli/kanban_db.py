@@ -863,6 +863,36 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
+# Env var the dispatcher exports so a worker inherits its task's importance.
+# Imported from the grading module so the name has exactly one definition.
+from gateway.fleet_safety.selector import TASK_IMPORTANCE_ENV  # noqa: E402
+
+
+def _normalized_task_importance(value: object) -> Optional[str]:
+    """Validate a task-importance label for storage.
+
+    Returns None for blank/absent (ungraded, the default). Raises ValueError on
+    an unrecognized non-blank label rather than silently storing NULL — a typo'd
+    ``--importance criticaly_important`` must fail at task creation, not quietly
+    dispatch at the ungraded default and look like it worked.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    from gateway.fleet_safety.selector import IMPORTANCE_LEVELS, normalize_importance
+
+    normalized = normalize_importance(text)
+    if not normalized:
+        raise ValueError(
+            f"unknown importance {text!r}; expected one of: "
+            + ", ".join(sorted(IMPORTANCE_LEVELS))
+        )
+    return normalized
+
+
 @dataclass
 class Task:
     """In-memory view of a row from the ``tasks`` table."""
@@ -949,6 +979,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Effort-grading importance for this task. See the column comment in
+    # SCHEMA_SQL. None = ungraded.
+    importance: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1038,6 +1071,7 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            importance=row["importance"] if "importance" in keys else None,
         )
 
 
@@ -1220,7 +1254,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Task importance for effort grading. One of the IMPORTANCE_LEVELS keys
+    -- ("money_critical", "critically_important", "semi_critical", "normal") or
+    -- NULL. When set, the dispatcher exports it as HERMES_TASK_IMPORTANCE so
+    -- the worker's reasoning-effort resolution grades the lane. NULL = ungraded
+    -- (falls through to the lane default, preserving pre-column behaviour).
+    importance           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2372,6 +2412,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "importance" not in cols:
+        # Effort-grading importance. Existing rows stay NULL = ungraded, which
+        # preserves the lane-default effort they already resolved to.
+        _add_column_if_missing(conn, "tasks", "importance", "importance TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2797,6 +2842,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    importance: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3089,8 +3135,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, importance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3115,6 +3161,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        _normalized_task_importance(importance),
                     ),
                 )
                 for pid in parents:
@@ -8810,6 +8857,14 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # Effort grading: hand the worker this task's importance so its
+    # reasoning-effort resolution can grade the lane. Without this export the
+    # grading table is unreachable from a real dispatch (it shipped inert once
+    # already). Unset for ungraded tasks so they keep the lane default.
+    if task.importance:
+        env[TASK_IMPORTANCE_ENV] = str(task.importance)
+    else:
+        env.pop(TASK_IMPORTANCE_ENV, None)
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

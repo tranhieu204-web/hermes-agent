@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -221,6 +222,66 @@ def _map_importance_to_effort(importance: str, lane: str) -> Optional[str]:
         return None
 
     return effort_map.get(imp_score)
+
+
+# Cross-process channel for a dispatched task's importance. The kanban
+# dispatcher sets this in the worker's environment (same idiom as
+# ``HERMES_SESSION_ID``); the worker's effort resolution reads it back.
+# Without this the grading table below is unreachable from a real dispatch.
+TASK_IMPORTANCE_ENV = "HERMES_TASK_IMPORTANCE"
+
+
+def normalize_importance(value: object) -> str:
+    """Canonicalize a task-importance label.
+
+    Returns "" for absent/blank/unrecognized input — deliberately NOT "normal".
+    An absent label must fall through to ``DEFAULT_LANE_EFFORTS`` (xhigh for the
+    graded lanes), because defaulting it to "normal" would silently downgrade
+    every untagged dispatch xhigh -> medium. Grading applies only when the
+    operator explicitly tags a task, or opts in via ``default_importance``.
+    """
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return text if text in IMPORTANCE_LEVELS else ""
+
+
+def resolve_task_importance(
+    explicit: object = "",
+    env: Optional[Mapping[str, str]] = None,
+    default_importance: object = "",
+) -> str:
+    """Resolve the importance in force, in precedence order.
+
+    explicit argument > ``HERMES_TASK_IMPORTANCE`` in the environment >
+    the configured ``default_importance`` > "" (ungraded).
+    """
+    chosen = normalize_importance(explicit)
+    if chosen:
+        return chosen
+    src = os.environ if env is None else env
+    chosen = normalize_importance(src.get(TASK_IMPORTANCE_ENV, ""))
+    if chosen:
+        return chosen
+    return normalize_importance(default_importance)
+
+
+def graded_lanes() -> List[str]:
+    """Lanes whose effort is importance-graded (Grok/Antigravity are pinned)."""
+    return sorted(IMPORTANCE_TO_EFFORT_GRADING)
+
+
+def shadowed_graded_lanes(effort_map: Any) -> List[str]:
+    """Graded lanes whose explicit config entry SHADOWS importance grading.
+
+    ``resolve_effort_from_map`` gives an explicit ``effort_map`` entry PRIORITY 1,
+    above importance grading. So an ``agent.reasoning_effort`` that names a graded
+    lane (e.g. ``claude_code: xhigh``) silently disables grading for that lane —
+    the exact defect that left the grading table unreachable after it shipped.
+    Callers surface this so it can never regress into a silent no-op again.
+    """
+    if not isinstance(effort_map, dict):
+        return []
+    keys = {str(k).strip().lower() for k in effort_map}
+    return [lane for lane in graded_lanes() if lane in keys]
 
 
 def resolve_effort_from_map(effort_map: Any, model: str = "", provider: str = "", importance: str = "") -> str:
