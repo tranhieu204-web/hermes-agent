@@ -5282,7 +5282,7 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
 #
 # On the FIRST scratch workspace materialization across the whole install
 # we:
-#   1. Log a warning line on the dispatcher logger.
+#   1. Log a warning line on the dispatcher _log.
 #   2. Append a ``tip_scratch_workspace`` event on the task so it's visible
 #      via ``hermes kanban show <id>`` and the dashboard.
 #   3. Touch a sentinel file under ``kanban_home() / '.scratch_tip_shown'``
@@ -8810,7 +8810,7 @@ def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, bo
     if model:
         cmd.extend(["--model", model])
 
-    logger.info("kanban dispatch %s: CLAUDE PLAN ROUTE via %s (model=%s)",
+    _log.info("kanban dispatch %s: CLAUDE PLAN ROUTE via %s (model=%s)",
                 task.id, exe, model or "<default>")
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
