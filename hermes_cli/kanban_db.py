@@ -647,6 +647,97 @@ _WORKER_FAILURE_SIGNATURES: tuple = (
 _WORKER_LOG_SCAN_BYTES = 200_000
 
 
+# --------------------------------------------------------------------------
+# Structured terminal record (inspector finding D1, durable fix)
+# --------------------------------------------------------------------------
+# Text-mining worker logs cannot reliably identify a cause. Free-form logs mix
+# terminal reports with prose, source and diffs: one 52-minute build was
+# diagnosed "provider quota exhausted" because the worker was WRITING A TEST FILE
+# containing "run out of credits". Three rounds of heuristic tuning each traded
+# one error class for another.
+#
+# A worker therefore DECLARES its terminal cause in a sidecar file. Diagnosis
+# becomes a field lookup. The log heuristic remains only as a clearly-marked
+# last resort for workers that declare nothing.
+
+TERMINAL_RECORD_SUFFIX = ".terminal.json"
+TERMINAL_RECORD_VERSION = 1
+
+
+def terminal_record_path(task_id: str, board: Optional[str] = None) -> Path:
+    return worker_logs_dir(board=board) / f"{task_id}{TERMINAL_RECORD_SUFFIX}"
+
+
+def write_terminal_record(
+    task_id: str,
+    *,
+    cause: str,
+    provider: str = "",
+    model: str = "",
+    code: object = None,
+    retryable: Optional[bool] = None,
+    final: bool = True,
+    detail: str = "",
+    board: Optional[str] = None,
+) -> bool:
+    """Declare why this worker is terminating. Atomic; never raises.
+
+    ``cause`` is a short stable slug (e.g. "provider_quota_exhausted",
+    "iteration_ceiling", "completed"). It is the worker's own statement, not an
+    inference drawn from its output.
+    """
+    try:
+        path = terminal_record_path(task_id, board=board)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": TERMINAL_RECORD_VERSION,
+            "task_id": str(task_id),
+            "cause": str(cause),
+            "provider": str(provider or ""),
+            "model": str(model or ""),
+            "code": code,
+            "retryable": retryable,
+            "final": bool(final),
+            "detail": str(detail or "")[:500],
+            "written_at": int(time.time()),
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception:
+        return False
+
+
+def read_terminal_record(task_id: str, board: Optional[str] = None) -> Optional[dict]:
+    """The worker's own declared terminal record, or None when it declared none."""
+    try:
+        path = terminal_record_path(task_id, board=board)
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not data.get("cause"):
+            return None
+        if int(data.get("version", 0)) != TERMINAL_RECORD_VERSION:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def describe_terminal_record(record: dict) -> str:
+    """Operator-facing one-liner from a declared record."""
+    bits = [str(record.get("cause", "unknown"))]
+    prov, model = record.get("provider"), record.get("model")
+    if prov:
+        bits.append(f"provider={prov}" + (f"/{model}" if model else ""))
+    if record.get("code") not in (None, ""):
+        bits.append(f"code={record['code']}")
+    if record.get("retryable") is not None:
+        bits.append("retryable" if record["retryable"] else "non-retryable")
+    return " ".join(bits)
+
+
 def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Optional[str]:
     """Best-effort terminal cause for a dead worker, read from its own log.
 
@@ -655,6 +746,12 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None) -> Option
     diagnosis is an enrichment and must NEVER prevent a run from being closed
     out, or a crashed task could never be released.
     """
+    # PREFER the worker's own declaration. A field lookup cannot be fooled by the
+    # worker discussing, testing or writing about an error.
+    record = read_terminal_record(task_id, board=board)
+    if record is not None:
+        return describe_terminal_record(record)
+
     try:
         log_path = worker_logs_dir(board=board) / f"{task_id}.log"
         if not log_path.is_file():
@@ -9306,6 +9403,14 @@ def _spawn_claude_plan_worker(task, workspace, env, prompt, *, log_path=None, bo
         + "When the work is done you MUST close the card yourself by running:" + nl
         + "  hermes kanban complete " + str(task.id) + " --result \"<one line>\"" + nl
         + "If you cannot finish, run: hermes kanban block " + str(task.id) + nl
+        + "If you stop for ANY reason other than success, first DECLARE why by"
+        + " writing this file:" + nl
+        + "  " + str(terminal_record_path(task.id, board=board)) + nl
+        + '  {"version": 1, "task_id": "' + str(task.id) + '", "cause": "<slug>",'
+        + ' "provider": "anthropic", "final": true}' + nl
+        + "Use a short slug such as provider_quota_exhausted, iteration_ceiling,"
+        + " blocked_needs_input. Declaring the cause is how the board learns what"
+        + " actually happened — do not leave it to be guessed from your output." + nl
         + "Do not stop without doing one of those two."
     )
     cmd = [exe, "-p", contract, "--dangerously-skip-permissions"]

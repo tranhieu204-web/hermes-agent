@@ -110,3 +110,50 @@ def test_scan_is_bounded_to_the_tail(logdir):
     head_only = "APIConnectionError\n" + ("x" * 400_000) + "\nclean shutdown\n"
     _write(logdir, "t_x", head_only)
     assert kb.diagnose_worker_failure("t_x") is None
+
+
+# ------------------------ structured terminal record (durable D1 fix) --------
+# Text-mining cannot separate a terminal report from a worker discussing,
+# testing or WRITING ABOUT an error. A worker therefore declares its cause and
+# diagnosis becomes a field lookup.
+
+def test_declared_record_beats_the_log_heuristic(logdir):
+    """THE case that defeated every heuristic round.
+
+    The log looks exactly like quota exhaustion because the worker was authoring
+    a test containing those strings. The declaration is authoritative.
+    """
+    _write(logdir, "t_x",
+           '+ log_text="run out of credits"\n'
+           '+ "personal-team-blocked:spending-limit"\n'
+           + ("filler\n" * 500))
+    assert "quota" in (kb.diagnose_worker_failure("t_x") or "")   # heuristic is fooled
+
+    kb.write_terminal_record("t_x", cause="iteration_ceiling",
+                             provider="openai-codex", code=180, retryable=True)
+    out = kb.diagnose_worker_failure("t_x")
+    assert out.startswith("iteration_ceiling")
+    assert "quota" not in out
+
+
+def test_record_round_trips(logdir):
+    assert kb.write_terminal_record("t_x", cause="provider_quota_exhausted",
+                                    provider="xai-oauth", code=403, retryable=False)
+    rec = kb.read_terminal_record("t_x")
+    assert rec["cause"] == "provider_quota_exhausted"
+    assert rec["retryable"] is False
+
+
+@pytest.mark.parametrize("blob", ['{not json', '{"version":99,"cause":"x"}', '{"version":1}'])
+def test_unusable_record_is_ignored_not_trusted(logdir, blob):
+    """A corrupt, mis-versioned or causeless record must fall through, never
+    become a fabricated diagnosis."""
+    (logdir / f"t_x{kb.TERMINAL_RECORD_SUFFIX}").write_text(blob, encoding="utf-8")
+    assert kb.read_terminal_record("t_x") is None
+
+
+def test_write_never_raises(logdir, monkeypatch):
+    """Declaring a cause must never be able to kill the worker doing it."""
+    monkeypatch.setattr(kb, "worker_logs_dir",
+                        lambda board=None: (_ for _ in ()).throw(OSError("gone")))
+    assert kb.write_terminal_record("t_x", cause="whatever") is False
