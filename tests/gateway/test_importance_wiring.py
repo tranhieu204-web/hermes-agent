@@ -122,3 +122,30 @@ def test_config_pin_actually_shadows_grading(monkeypatch):
     monkeypatch.setenv(TASK_IMPORTANCE_ENV, "normal")
     shadowed = {"agent": {"reasoning_effort": {"claude_code": "xhigh", "default": "medium"}}}
     assert _effort(shadowed, "claude-opus-5") == "xhigh"
+
+
+# ------------------------------------------------- operator default (2026-07-27)
+# Operator decision: untagged work is normal work. `agent.default_importance:
+# normal` makes an untagged dispatch grade to medium instead of inheriting the
+# xhigh lane default. This is the live production shape, so it gets a guard.
+DEFAULT_NORMAL_CFG = {
+    "agent": {
+        "default_importance": "normal",
+        "reasoning_effort": {"grok": "high", "antigravity": "high", "default": "medium"},
+    }
+}
+
+
+def test_default_importance_normal_grades_untagged_to_medium():
+    assert _effort(DEFAULT_NORMAL_CFG, "claude-opus-5") == "medium"
+    assert _effort(DEFAULT_NORMAL_CFG, "gpt-5.6-sol") == "medium"
+
+
+def test_default_importance_does_not_override_an_explicit_tag(monkeypatch):
+    monkeypatch.setenv(TASK_IMPORTANCE_ENV, "money_critical")
+    assert _effort(DEFAULT_NORMAL_CFG, "claude-opus-5") == "max"
+
+
+def test_default_importance_never_lifts_pinned_lanes():
+    assert _effort(DEFAULT_NORMAL_CFG, "grok-4") == "high"
+    assert _effort(DEFAULT_NORMAL_CFG, "gemini-3.1-pro-high") == "high"
