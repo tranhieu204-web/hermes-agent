@@ -43,7 +43,8 @@ def _write(logdir, task_id, text):
 )
 def test_recognises_real_failure_signatures(logdir, blob, expected):
     _write(logdir, "t_x", blob)
-    assert kb.diagnose_worker_failure("t_x") == expected
+    got = kb.diagnose_worker_failure("t_x")
+    assert got == "legacy-inference(low-confidence): " + expected
 
 
 def test_quota_outranks_auth(logdir):
@@ -54,7 +55,8 @@ def test_quota_outranks_auth(logdir):
     """
     _write(logdir, "t_x", 'PermissionDeniedError [HTTP 403] {"code":"personal-team-blocked:'
                           'spending-limit","error":"run out of credits"}')
-    assert kb.diagnose_worker_failure("t_x") == "provider quota exhausted (out of credits/subscription)"
+    assert kb.diagnose_worker_failure("t_x") == (
+        "legacy-inference(low-confidence): provider quota exhausted (out of credits/subscription)")
 
 
 # ------------------------------------------------- false positives MUST be None
@@ -95,7 +97,8 @@ def test_unreadable_log_never_raises(logdir, monkeypatch):
 def test_scans_the_tail_of_a_large_log(logdir):
     """The cause is at the END of a long run; scanning the head would miss it."""
     _write(logdir, "t_x", ("noise line\n" * 60_000) + "\nAPIConnectionError\n")
-    assert kb.diagnose_worker_failure("t_x") == "provider unreachable (connection/TLS)"
+    assert kb.diagnose_worker_failure("t_x") == (
+        "legacy-inference(low-confidence): provider unreachable (connection/TLS)")
 
 
 def test_scan_is_bounded_to_the_tail(logdir):
@@ -132,14 +135,15 @@ def test_declared_record_beats_the_log_heuristic(logdir):
     kb.write_terminal_record("t_x", cause="iteration_ceiling",
                              provider="openai-codex", code=180, retryable=True)
     out = kb.diagnose_worker_failure("t_x")
-    assert out.startswith("iteration_ceiling")
+    assert out.startswith("declared:iteration_ceiling")
     assert "quota" not in out
 
 
 def test_record_round_trips(logdir):
     assert kb.write_terminal_record("t_x", cause="provider_quota_exhausted",
                                     provider="xai-oauth", code=403, retryable=False)
-    rec = kb.read_terminal_record("t_x")
+    state, rec = kb.read_terminal_record("t_x")
+    assert state == "valid"
     assert rec["cause"] == "provider_quota_exhausted"
     assert rec["retryable"] is False
 
@@ -149,7 +153,71 @@ def test_unusable_record_is_ignored_not_trusted(logdir, blob):
     """A corrupt, mis-versioned or causeless record must fall through, never
     become a fabricated diagnosis."""
     (logdir / f"t_x{kb.TERMINAL_RECORD_SUFFIX}").write_text(blob, encoding="utf-8")
-    assert kb.read_terminal_record("t_x") is None
+    state, _ = kb.read_terminal_record("t_x")
+    assert state == "invalid"
+
+
+# --------------------- inspector HOLD findings: run-binding + tri-state -------
+def test_declaration_is_bound_to_the_run(logdir):
+    """A declaration from a PREVIOUS run must not be read as this run's cause.
+
+    Inspector HOLD: the task-scoped path allowed exactly that — a cleaner false
+    positive than the one this feature exists to remove.
+    """
+    kb.write_terminal_record("t_x", cause="iteration_ceiling", run_id=7)
+    assert kb.diagnose_worker_failure("t_x", run_id=7).startswith("declared:")
+    assert kb.diagnose_worker_failure("t_x", run_id=8) is None
+
+
+def test_record_content_must_agree_with_the_run_it_is_filed_under(logdir):
+    """Defence in depth: the PATH separates runs, but a record whose CONTENT
+    names a different run must still be rejected rather than trusted.
+
+    Without this the in-record run_id check is unreachable — the earlier
+    mutation removing it passed, because the path alone hid the mismatch.
+    """
+    path = logdir / f"t_x.run8{kb.TERMINAL_RECORD_SUFFIX}"
+    path.write_text(
+        '{"version":1,"task_id":"t_x","run_id":"7","cause":"iteration_ceiling"}',
+        encoding="utf-8")
+    state, rec = kb.read_terminal_record("t_x", run_id=8)
+    assert state == "invalid"
+    assert rec["reason"] == "run_id_mismatch"
+
+
+def test_invalid_record_does_not_reactivate_the_heuristic(logdir):
+    """Invalid is a FACT, not an absence — it must not be replaced by a guess."""
+    _write(logdir, "t_x", "Error: APIConnectionError")   # heuristic would fire
+    (logdir / f"t_x{kb.TERMINAL_RECORD_SUFFIX}").write_text("{corrupt", encoding="utf-8")
+    out = kb.diagnose_worker_failure("t_x")
+    assert out.startswith(kb.TERMINAL_RECORD_INVALID)
+    assert "legacy-inference" not in out
+
+
+@pytest.mark.parametrize("blob,reason", [
+    ("{corrupt", "unparseable"),
+    ('["not","an","object"]', "not_an_object"),
+    ('{"version":99,"cause":"x","task_id":"t_x"}', "version_mismatch"),
+    ('{"version":1,"task_id":"t_x"}', "no_cause"),
+    ('{"version":1,"cause":"x","task_id":"OTHER"}', "task_id_mismatch"),
+])
+def test_invalid_reasons_are_specific(logdir, blob, reason):
+    (logdir / f"t_x{kb.TERMINAL_RECORD_SUFFIX}").write_text(blob, encoding="utf-8")
+    state, rec = kb.read_terminal_record("t_x")
+    assert state == "invalid"
+    assert rec["reason"] == reason
+
+
+def test_legacy_inference_is_labelled_low_confidence(logdir):
+    """The residual heuristic is quarantined advisory, never presented as fact."""
+    _write(logdir, "t_x", "Error: APIConnectionError")
+    assert kb.diagnose_worker_failure("t_x").startswith("legacy-inference(low-confidence):")
+
+
+def test_declared_cause_is_labelled_declared(logdir):
+    """Never 'diagnosed' or 'authoritative' — it is the worker's own claim."""
+    kb.write_terminal_record("t_x", cause="provider_quota_exhausted")
+    assert kb.diagnose_worker_failure("t_x").startswith("declared:")
 
 
 def test_write_never_raises(logdir, monkeypatch):
