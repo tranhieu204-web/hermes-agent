@@ -1426,7 +1426,22 @@ def test_recovery_cas_loss_terminates_actual_observer_not_launcher(
     AFTER the handshake, the process that must die is the HANDSHAKEN actual
     observer — a ``proc.kill()`` on the (possibly already-exited) launcher
     would leak a live observer holding an open worker handle. The worker
-    itself must survive the cleanup untouched."""
+    itself must survive the cleanup untouched.
+
+    Redirection is FORCED (same wrapper hop as the binding regression) so a
+    launcher-only ``proc.kill()`` deterministically leaves the actual
+    observer alive and fails this test on any interpreter."""
+    real_popen = subprocess.Popen
+
+    def redirecting_popen(argv, **kw):
+        if isinstance(argv, (list, tuple)) and "--recover" in argv:
+            wrapped = [sys.executable, "-c",
+                       "import subprocess, sys; "
+                       "sys.exit(subprocess.call(sys.argv[1:]))"] + list(argv)
+            return real_popen(wrapped, **kw)
+        return real_popen(argv, **kw)
+
+    monkeypatch.setattr(kb.subprocess, "Popen", redirecting_popen)
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="cas-loss", assignee="worker")
         task = kb.claim_task(conn, tid)
