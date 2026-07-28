@@ -45,6 +45,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
+from agent.tool_call_identity import TurnToolCallIdentityAllocator
 
 logger = logging.getLogger(__name__)
 

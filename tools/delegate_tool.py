@@ -2642,6 +2642,25 @@ def delegate_task(
 
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
+    # Capture usage ownership before child construction can clobber ambient
+    # session state or a delayed completion can observe a rotated parent.
+    _raw_dispatch_parent_session_id = getattr(parent_agent, "session_id", "")
+    _dispatch_parent_session_id = (
+        _raw_dispatch_parent_session_id
+        if isinstance(_raw_dispatch_parent_session_id, str)
+        else ""
+    )
+    _dispatch_parent_telemetry = getattr(parent_agent, "_progress_telemetry", None)
+    _dispatch_usage_receipt_sink = None
+    if _dispatch_parent_session_id:
+        from agent.usage_provenance import capture_delegated_usage_receipt_sink
+
+        _dispatch_usage_receipt_sink = capture_delegated_usage_receipt_sink(
+            parent_agent,
+            parent_session_id=_dispatch_parent_session_id,
+            telemetry=_dispatch_parent_telemetry,
+        )
+
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
     # set_current_session_id(child.session_id), which clobbers the
@@ -2877,7 +2896,7 @@ def delegate_task(
         # concurrent invocation.  Role was captured into the entry dict in
         # _run_single_child (or the fabricated-entry branches above) before the
         # child was closed.
-        _parent_session_id = getattr(parent_agent, "session_id", None)
+        _parent_session_id = _dispatch_parent_session_id or None
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
         except Exception:
@@ -3092,7 +3111,7 @@ def delegate_task(
             _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
             if _agent_session_id:
                 _session_key = _agent_session_id
-        _parent_session_id = getattr(parent_agent, "session_id", None)
+        _parent_session_id = _dispatch_parent_session_id or None
         _child_agents = [c for (_, _, c) in children]
 
         # Detach every child from the parent's interrupt-propagation list — the

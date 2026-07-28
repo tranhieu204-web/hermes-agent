@@ -2639,6 +2639,11 @@ def run_conversation(
                     continue  # Retry the API call
 
                 agent._turn_received_provider_response = True
+                _record_model_response_usage(
+                    agent,
+                    response,
+                    api_request_id=api_request_id,
+                )
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":

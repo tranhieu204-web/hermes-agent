@@ -33,6 +33,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.tool_call_identity import (
+    ToolCallIdentityError,
+    TurnToolCallIdentityAllocator,
+)
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -74,12 +79,27 @@ class CodexEventProjector:
 
     def __init__(self) -> None:
         self._pending_reasoning: list[str] = []
+        self._tool_call_identity_allocator = TurnToolCallIdentityAllocator(1)
 
     def project(self, notification: dict) -> ProjectionResult:
         """Project a single notification. Idempotent for non-completion events;
         only `item/completed` and `turn/completed` materialize messages."""
         method = notification.get("method", "")
         params = notification.get("params", {}) or {}
+
+        item = params.get("item") or {}
+        item_type = item.get("type") or ""
+        item_id = item.get("id") or ""
+        call_id: Optional[str] = None
+        if method in {"item/started", "item/completed"} and item_type in {
+            "commandExecution",
+            "fileChange",
+            "mcpToolCall",
+            "dynamicToolCall",
+        }:
+            call_id = self._tool_call_id(
+                notification, item, item_type, item_id, method
+            )
 
         # We only materialize messages on `item/completed`. Streaming deltas
         # (`item/<type>/outputDelta`, `item/<type>/delta`) are display-only and
@@ -88,10 +108,6 @@ class CodexEventProjector:
         if method != "item/completed":
             return ProjectionResult()
 
-        item = params.get("item") or {}
-        item_type = item.get("type") or ""
-        item_id = item.get("id") or ""
-
         if item_type == "agentMessage":
             return self._project_agent_message(item)
         if item_type == "reasoning":
@@ -99,13 +115,13 @@ class CodexEventProjector:
             self._pending_reasoning.extend(item.get("content") or [])
             return ProjectionResult()
         if item_type == "commandExecution":
-            return self._project_command(item, item_id)
+            return self._project_command(item, call_id)
         if item_type == "fileChange":
-            return self._project_file_change(item, item_id)
+            return self._project_file_change(item, call_id)
         if item_type == "mcpToolCall":
-            return self._project_mcp_tool_call(item, item_id)
+            return self._project_mcp_tool_call(item, call_id)
         if item_type == "dynamicToolCall":
-            return self._project_dynamic_tool_call(item, item_id)
+            return self._project_dynamic_tool_call(item, call_id)
         if item_type == "userMessage":
             return self._project_user_message(item)
 
@@ -113,6 +129,48 @@ class CodexEventProjector:
         # — record as opaque assistant note so memory review can still see
         # *something* happened, but don't fabricate tool_call structure.
         return self._project_opaque(item, item_type)
+
+    def _tool_call_id(
+        self,
+        notification: dict,
+        item: dict,
+        item_type: str,
+        item_id: str,
+        method: str,
+    ) -> str:
+        if item_type == "commandExecution":
+            tool_name, id_type = "exec_command", "exec"
+        elif item_type == "fileChange":
+            tool_name = id_type = "apply_patch"
+        elif item_type == "mcpToolCall":
+            server = item.get("server") or "mcp"
+            tool = item.get("tool") or "unknown"
+            tool_name, id_type = f"mcp.{server}.{tool}", f"mcp__{server}__{tool}"
+        else:
+            tool = item.get("tool") or "unknown"
+            tool_name, id_type = tool, f"dyn_{tool}"
+
+        if item_id:
+            return _deterministic_call_id(id_type, item_id)
+
+        event_sequence = notification.get("sequence")
+        if event_sequence is None:
+            raise ToolCallIdentityError(
+                "tool-call identity unavailable for Codex item"
+            )
+        return self._tool_call_identity_allocator.allocate_missing(
+            tool_name=tool_name,
+            provider_metadata={
+                "source": "codex_app_server",
+                "item_type": item_type,
+                "server": str(item.get("server") or ""),
+            },
+            event_identity={
+                "source": "codex_app_server",
+                "event_sequence": event_sequence,
+            },
+            lifecycle="start" if method == "item/started" else "complete",
+        )
 
     # ---------- per-type projections ----------
 
@@ -139,8 +197,7 @@ class CodexEventProjector:
             messages=[{"role": "user", "content": "\n".join(text_parts)}]
         )
 
-    def _project_command(self, item: dict, item_id: str) -> ProjectionResult:
-        call_id = _deterministic_call_id("exec", item_id)
+    def _project_command(self, item: dict, call_id: str) -> ProjectionResult:
         args = {
             "command": item.get("command") or "",
             "cwd": item.get("cwd") or "",
@@ -175,8 +232,7 @@ class CodexEventProjector:
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
 
-    def _project_file_change(self, item: dict, item_id: str) -> ProjectionResult:
-        call_id = _deterministic_call_id("apply_patch", item_id)
+    def _project_file_change(self, item: dict, call_id: str) -> ProjectionResult:
         # Reduce the codex changes array to a digest the agent loop will
         # find readable. We record per-file change kinds (Add/Update/Delete)
         # without inlining full file contents — those can be huge.
@@ -214,12 +270,11 @@ class CodexEventProjector:
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
 
-    def _project_mcp_tool_call(self, item: dict, item_id: str) -> ProjectionResult:
+    def _project_mcp_tool_call(self, item: dict, call_id: str) -> ProjectionResult:
         server = item.get("server") or "mcp"
         tool = item.get("tool") or "unknown"
         # Mirror the native MCP tool-name convention (mcp__server__tool) so the
         # deterministic call_id input stays consistent with registration names.
-        call_id = _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -258,10 +313,9 @@ class CodexEventProjector:
         )
 
     def _project_dynamic_tool_call(
-        self, item: dict, item_id: str
+        self, item: dict, call_id: str
     ) -> ProjectionResult:
         tool = item.get("tool") or "unknown"
-        call_id = _deterministic_call_id(f"dyn_{tool}", item_id)
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}

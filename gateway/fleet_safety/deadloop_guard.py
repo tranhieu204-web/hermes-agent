@@ -30,7 +30,15 @@ import enum
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, Optional
+from typing import Any, Deque, Dict, Optional
+
+from agent.usage_provenance import (
+    UsageAggregate,
+    UsageComponentReceipt,
+    UsageProvenance,
+    aggregate_usage,
+    usage_aggregate_from_mapping,
+)
 
 from agent.usage_provenance import (
     UsageAggregate,
@@ -208,6 +216,41 @@ class SessionObservation:
         # Identity is bound by the runtime, not by terminal payloads.
         object.__setattr__(self, "terminal_session_id", bound_session_id)
 
+    def __post_init__(self) -> None:
+        bound_session_id = str(self.session_id or "").strip()
+        if not bound_session_id:
+            raise ValueError("session observation requires a nonempty session_id")
+        terminal_session_id = str(self.terminal_session_id or "").strip()
+        usage = usage_aggregate_from_mapping(
+            bound_session_id,
+            self.usage,
+            default_component_id="session-observation-usage",
+            fallback_session_id=terminal_session_id or bound_session_id,
+            missing_reason="missing_observation_usage",
+        )
+        if terminal_session_id and terminal_session_id != bound_session_id:
+            usage = aggregate_usage(
+                bound_session_id,
+                (
+                    *usage.components,
+                    UsageComponentReceipt(
+                        component_id="session-observation-terminal-session",
+                        session_id=terminal_session_id,
+                        provenance=UsageProvenance.UNKNOWN,
+                        reason="session_mismatch",
+                    ),
+                ),
+            )
+        object.__setattr__(self, "session_id", bound_session_id)
+        object.__setattr__(
+            self,
+            "token_count_provenance",
+            UsageProvenance.coerce(self.token_count_provenance),
+        )
+        object.__setattr__(self, "usage", usage)
+        # Identity is bound by the runtime, not by terminal payloads.
+        object.__setattr__(self, "terminal_session_id", bound_session_id)
+
 
 @dataclass(frozen=True)
 class GuardEvaluationResult:
@@ -314,6 +357,7 @@ class _SessionState:
     samples: Deque[tuple] = field(default_factory=deque)  # (now, api_call_count, tokens_used)
     turn_generation: Optional[int] = None
     last_error_code: Optional[int] = None
+    last_failure_signature: Optional[str] = None
     repeated_error_count: int = 0
     last_attempt_seq: Optional[int] = None
     last_failure_seq: Optional[int] = None
@@ -565,9 +609,14 @@ class RunawayGuard:
         # safety stop. Resource volume and elapsed time open a renewable,
         # default-continue checkpoint instead.
         if st.repeated_error_count >= t.repeated_error_limit:
+            failure_label = (
+                f"HTTP {st.last_error_code}"
+                if st.last_error_code is not None
+                else (st.last_failure_signature or "code-free non-retryable failure")
+            )
             return _mk(
                 TripReason.REPEATED_ERROR,
-                f"HTTP {st.last_error_code} repeated {st.repeated_error_count}x "
+                f"{failure_label} repeated {st.repeated_error_count}x "
                 f"(limit {t.repeated_error_limit})",
             )
         if st.stalled_samples >= t.no_progress_samples:

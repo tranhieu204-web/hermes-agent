@@ -1,6 +1,7 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import pytest
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch

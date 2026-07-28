@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.tool_call_identity import allocator_for_owner
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -52,6 +53,42 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+def _establish_missing_tool_call_ids(agent, tool_calls: list[Any]) -> None:
+    """Bind every missing ID before callbacks, middleware, or tool side effects."""
+
+    missing = [tc for tc in tool_calls if not str(getattr(tc, "id", "") or "").strip()]
+    if not missing:
+        return
+    api_request_id = str(getattr(agent, "_current_api_request_id", "") or "").strip()
+    if not api_request_id:
+        raise RuntimeError("tool-call identity unavailable before execution")
+    allocator = allocator_for_owner(agent)
+    for batch_index, tool_call in enumerate(tool_calls):
+        if str(getattr(tool_call, "id", "") or "").strip():
+            continue
+        function = getattr(tool_call, "function", None)
+        tool_name = str(getattr(function, "name", "") or "").strip()
+        call_id = allocator.allocate_missing(
+            tool_name=tool_name,
+            provider_metadata={
+                "source": "standard",
+                "item_type": "function",
+                "api_mode": str(getattr(agent, "api_mode", "") or "unknown"),
+            },
+            event_identity={
+                "source": "standard",
+                "api_request_id": api_request_id,
+                "batch_index": batch_index,
+            },
+        )
+        try:
+            tool_call.id = call_id
+        except Exception as exc:
+            raise RuntimeError(
+                "tool-call identity could not be attached before execution"
+            ) from exc
 
 
 def _ensure_file_checkpoint(
@@ -419,6 +456,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     mixed batch and the segmented dispatcher owns the turn-end work.
     """
     tool_calls = assistant_message.tool_calls
+    _establish_missing_tool_call_ids(agent, tool_calls)
     num_tools = len(tool_calls)
 
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
@@ -1140,6 +1178,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
     """
+    # Establish the entire batch before even the first handler can run.  A
+    # partial batch would let later missing IDs cross a prior call's side effect.
+    _establish_missing_tool_call_ids(agent, assistant_message.tool_calls)
+
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):

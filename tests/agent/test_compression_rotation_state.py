@@ -93,6 +93,65 @@ def refresh_state_db(tmp_path: Path):
         db.close()
 
 
+class TestUsageLedgerRotatesOnCompression:
+    def test_rotation_freezes_parent_ledger_and_binds_fresh_child_lineage(
+        self, tmp_path: Path
+    ):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_USAGE_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent, platform="cli")
+        parent_ledger = agent._progress_telemetry
+        parent_ledger.record_usage_component(
+            component_id="parent-response:1",
+            source="model_response",
+            session_id=parent,
+            provenance="measured",
+            authority="provider_response",
+            authoritative=True,
+            accepted_event_id="parent-event:1",
+            total_tokens=17,
+        )
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        child = agent.session_id
+        child_ledger = agent._progress_telemetry
+        assert child != parent
+        assert child_ledger is not parent_ledger
+        assert child_ledger.session_id == child
+        assert child_ledger.parent_session_id == parent
+        assert child_ledger.parent_ledger_id == parent_ledger.ledger_id
+        assert child_ledger.usage_aggregate.known_total == 0
+        assert parent_ledger.usage_aggregate.known_total == 17
+        assert parent_ledger.frozen is True
+        with pytest.raises(RuntimeError, match="frozen"):
+            parent_ledger.record_usage_component(
+                component_id="late-parent-response",
+                source="model_response",
+                session_id=parent,
+                provenance="measured",
+                authority="provider_response",
+                authoritative=True,
+                total_tokens=99,
+            )
+
+        # The first paid response after rotation is accepted by the fresh child
+        # ledger instead of being rejected by a stale parent-session binding.
+        child_ledger.record_usage_component(
+            component_id="child-response:1",
+            source="model_response",
+            session_id=child,
+            provenance="measured",
+            authority="provider_response",
+            authoritative=True,
+            accepted_event_id="child-event:1",
+            total_tokens=23,
+        )
+        assert child_ledger.usage_aggregate.known_total == 23
+        assert parent_ledger.usage_aggregate.known_total == 17
+
+
 class TestGoalMigratesOnRotation:
     def test_goal_follows_compression_rotation(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")

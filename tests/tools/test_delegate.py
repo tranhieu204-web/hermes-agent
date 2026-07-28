@@ -481,6 +481,66 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
 
+    def test_common_runtime_registry_tracks_child_with_exact_owner_authority(self):
+        from tools.child_runtime_registry import child_runtime_registry
+
+        parent = _make_mock_parent(depth=0)
+        parent.session_id = "owner-session"
+        started = threading.Event()
+        release = threading.Event()
+        result_box = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.session_id = "child-session"
+
+            def _run_child(*_args, **_kwargs):
+                started.set()
+                assert release.wait(5), "test child was not released"
+                return {"final_response": "done", "completed": True, "api_calls": 1}
+
+            mock_child.run_conversation.side_effect = _run_child
+            MockAgent.return_value = mock_child
+            thread = threading.Thread(
+                target=lambda: result_box.append(
+                    delegate_task(goal="Track exact owner", parent_agent=parent)
+                )
+            )
+            thread.start()
+            self.assertTrue(started.wait(5), "delegated child never started")
+
+            active = child_runtime_registry.snapshot(owner_session_id="owner-session")
+            self.assertEqual(len(active), 1)
+            handle = active[0]
+            self.assertEqual(handle["child_session_id"], "child-session")
+            self.assertEqual(handle["mode"], "foreground")
+            self.assertGreaterEqual(handle["runtime_seconds"], 0)
+            self.assertIn("usage", handle)
+            self.assertIn("failure", handle)
+
+            # Exact ownership token + owner session is required. A neighboring
+            # session cannot interrupt a child it does not own.
+            self.assertFalse(
+                child_runtime_registry.interrupt_exact(
+                    handle["ownership_id"], "other-session", "wrong owner"
+                )
+            )
+            mock_child.interrupt.assert_not_called()
+            self.assertTrue(
+                child_runtime_registry.interrupt_exact(
+                    handle["ownership_id"], "owner-session", "owned stop"
+                )
+            )
+            mock_child.interrupt.assert_called_once_with("owned stop")
+
+            release.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+
+        self.assertEqual(
+            child_runtime_registry.snapshot(owner_session_id="owner-session"), []
+        )
+
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"

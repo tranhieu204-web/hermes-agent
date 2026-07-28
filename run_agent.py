@@ -202,6 +202,7 @@ from agent.tool_result_classification import (
     file_mutation_result_landed,
     tool_result_verified_progress,
 )
+from agent.landed_effect_receipts import validate_landed_file_mutation_result
 from agent.trajectory import (
     convert_scratchpad_to_think,
     save_trajectory as _save_trajectory_to_file,
