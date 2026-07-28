@@ -384,7 +384,7 @@ class _SessionState:
 
 
 class RunawayGuard:
-    """Stateful, deterministic runaway detector across sessions."""
+    """Stateful, deterministic runaway detector across sessions.
 
     Feed it one :class:`SessionObservation` per active session per tick via
     :meth:`observe`; it returns a :class:`Trip` the first time a session

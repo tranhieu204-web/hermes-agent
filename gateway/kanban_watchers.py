@@ -1127,6 +1127,21 @@ class GatewayKanbanWatchersMixin:
                     )
                 disabled_corrupt_boards.pop(slug, None)
             try:
+                # Pre-dispatch branch completion gate: do not start new tasks if >= 3 unmerged branches exist
+                try:
+                    import subprocess
+                    res = subprocess.run(["git", "branch", "--no-merged", "main"], capture_output=True, text=True, timeout=5)
+                    if res.returncode == 0:
+                        unmerged_count = len([line for line in res.stdout.splitlines() if line.strip() and not line.strip().startswith("*")])
+                        if unmerged_count >= 3:
+                            logger.warning(
+                                "kanban dispatcher: %d unmerged branches detected (>= 3); skipping dispatch to enforce task completion discipline",
+                                unmerged_count,
+                            )
+                            return None
+                except Exception as git_exc:
+                    logger.debug("kanban dispatcher: branch completion guard check skipped (%s)", git_exc)
+
                 conn = _kb.connect(board=slug)
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit

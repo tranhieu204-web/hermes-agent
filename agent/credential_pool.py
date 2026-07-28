@@ -471,16 +471,16 @@ def get_pool_strategy(provider: str) -> str:
     """Return the configured selection strategy for a provider."""
     config = _load_config_safe()
     if config is None:
-        return STRATEGY_FILL_FIRST
+        return STRATEGY_ROUND_ROBIN
 
     strategies = config.get("credential_pool_strategies")
     if not isinstance(strategies, dict):
-        return STRATEGY_FILL_FIRST
+        return STRATEGY_ROUND_ROBIN
 
     strategy = str(strategies.get(provider, "") or "").strip().lower()
     if strategy in SUPPORTED_POOL_STRATEGIES:
         return strategy
-    return STRATEGY_FILL_FIRST
+    return STRATEGY_ROUND_ROBIN
 
 
 def credential_pool_matches_provider(

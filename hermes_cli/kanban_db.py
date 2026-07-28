@@ -2195,6 +2195,75 @@ def diagnose_worker_failure(task_id: str, board: Optional[str] = None,
     return None
 
 
+class LaneBelowReserveFloor(RuntimeError):
+    """Raised when a dispatch would target a lane under its reserve floor."""
+
+
+def _load_fleet_config_for_routing() -> dict:
+    """Best-effort load of the live config for routing decisions."""
+    try:
+        import yaml
+        from hermes_cli.paths import get_default_hermes_root
+        cfg_path = get_default_hermes_root() / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        return {}
+
+
+def _lane_reserve_floor(lane: str, config: Optional[dict] = None) -> Optional[float]:
+    """Configured reserve floor for a lane, or None when not resolvable."""
+    try:
+        lanes = ((config or {}).get("fleet_safety") or {}).get("lanes") or {}
+        entry = lanes.get(lane) or {}
+        val = entry.get("reserve_floor_pct")
+        return None if val is None else float(val)
+    except Exception:
+        return None
+
+
+def resolve_dispatch_lane(task, config: Optional[dict] = None) -> tuple:
+    """Decide the lane for a dispatch. Returns ``(model, provider, reason)``."""
+    from gateway.fleet_safety.selector import get_lane_name, select_best_lane
+
+    override_model = getattr(task, "model_override", None)
+    override_provider = getattr(task, "provider_override", None)
+
+    chosen = None
+    try:
+        chosen = select_best_lane(config or {}, is_heavy=True)
+    except Exception:
+        chosen = None
+
+    if override_provider or override_model:
+        lane = get_lane_name(override_provider or override_model or "")
+        if chosen is not None and lane and lane != chosen.lane:
+            head = None
+            try:
+                from gateway.fleet_safety.selector import lane_headroom
+                head = lane_headroom(lane, config)
+            except Exception:
+                pass
+            floor = _lane_reserve_floor(lane, config)
+            if head is not None and floor is not None and head < floor:
+                raise LaneBelowReserveFloor(
+                    f"refusing dispatch to lane {lane!r}: headroom {head:.1f}% "
+                    f"is below its reserve floor {floor:.1f}%"
+                )
+        return (
+            override_model,
+            override_provider,
+            f"explicit override to lane {lane!r} — RECORDED OVERRIDE",
+        )
+
+    if chosen is None:
+        return (None, None, "router unavailable — profile default")
+    return (
+        chosen.model,
+        chosen.provider,
+        f"router selected {chosen.lane!r} ({chosen.reason})",
+    )
+
 
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
