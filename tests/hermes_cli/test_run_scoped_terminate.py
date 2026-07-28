@@ -17,6 +17,7 @@ the storage CAS, and the HTTP surface the operator actually touches.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -177,3 +178,96 @@ def test_reclaim_task_without_expected_run_id_is_unchanged(kanban_home, monkeypa
         assert kb.reclaim_task(conn, t) is True
         assert kb.get_task(conn, t).status == "ready"
         assert kb.get_run(conn, run_id).ended_at is not None
+
+
+def test_successor_is_not_signalled_when_it_takes_over_mid_reclaim(
+    kanban_home, monkeypatch,
+):
+    """Adversarial TOCTOU, contributed by the independent inspection.
+
+    The inspector (kanban ``t_fa1613a0``) showed that binding the CAS was not
+    sufficient: a successor can take the task between the early guard and the
+    destructive primitive, and the numeric PID can by then belong to the
+    successor's worker.  The CAS still refused the state change — but only
+    *after* the signal had been sent, and after the audit record had been
+    filed against the successor's run.
+
+    Their probe asserted the defective behaviour; this asserts the fixed one.
+    """
+    with kb.connect() as conn:
+        host = _host()
+        t = kb.create_task(conn, title="toctou", assignee="a")
+        assert kb.claim_task(conn, t, claimer=f"{host}:old") is not None
+        kb._set_worker_pid(conn, t, 11111)
+        old_run = kb._current_run_id(conn, t)
+        assert old_run is not None
+
+        state: dict[str, int] = {}
+        real_current = kb._current_run_id
+
+        def _advance_then_return_current(c, tid):
+            if not state:
+                now = int(time.time())
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE task_runs SET status='reclaimed', outcome='reclaimed', "
+                        "ended_at=?, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+                        "WHERE id=?",
+                        (now, old_run),
+                    )
+                    conn.execute(
+                        "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                        "claim_expires=NULL, worker_pid=NULL, current_run_id=NULL "
+                        "WHERE id=?",
+                        (t,),
+                    )
+                assert kb.claim_task(conn, t, claimer=f"{host}:successor") is not None
+                # Model PID reuse with no captured identity: the old numeric
+                # PID is now owned by run N+1 and nothing can tell them apart.
+                with kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET worker_pid=?, worker_pid_start=NULL WHERE id=?",
+                        (11111, t),
+                    )
+                    new_run = int(conn.execute(
+                        "SELECT current_run_id FROM tasks WHERE id=?", (t,),
+                    ).fetchone()["current_run_id"])
+                    conn.execute(
+                        "UPDATE task_runs SET worker_pid=?, worker_pid_start=NULL "
+                        "WHERE id=?",
+                        (11111, new_run),
+                    )
+                state["new_run"] = new_run
+            return real_current(c, tid)
+
+        records: list[dict] = []
+        targeted: list[tuple[int, object]] = []
+        def _record_then_advance(task_id, **kw):
+            records.append({"task_id": task_id, **kw})
+            # Fire the barrier HERE: the fix stopped calling ``_current_run_id``
+            # on this path (so the inspector's original hook no longer arms),
+            # and this is now the last call before the signal — i.e. the
+            # tightest window the fix can still be attacked in.
+            _advance_then_return_current(conn, task_id)
+            return "written"
+
+        monkeypatch.setattr(kb, "_record_initiated_termination", _record_then_advance)
+        monkeypatch.setattr(
+            kb, "_terminate_reclaimed_worker",
+            lambda pid, lock, **kw: targeted.append((pid, lock)) or {
+                "host_local": True, "termination_attempted": True, "terminated": True,
+            },
+        )
+
+        assert kb.reclaim_task(conn, t, expected_run_id=old_run) is False
+        new_run = state["new_run"]
+        assert new_run != old_run
+        # No signal may reach the successor's worker...
+        assert targeted == [], f"successor was targeted: {targeted}"
+        # ...and no audit record may be filed against a run we never authorised.
+        assert [r.get("run_id") for r in records] != [new_run]
+        row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id=?", (t,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["current_run_id"] == new_run

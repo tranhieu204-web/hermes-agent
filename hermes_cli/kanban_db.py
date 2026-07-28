@@ -6101,10 +6101,47 @@ def reclaim_task(
         return False
     prev_lock = row["claim_lock"]
     # Dispatcher-initiated: the operator's reclaim owns the semantic cause.
+    # Attribute it to the run this call is authorised for — re-reading the
+    # *current* run here would file the record against a successor run the
+    # operator never selected, corrupting the audit trail.
     _record_initiated_termination(
         task_id, pid=row["worker_pid"],
-        run_id=_current_run_id(conn, task_id), initiator="manual_reclaim",
+        run_id=(
+            current_run_id if expected_run_id is not None
+            else _current_run_id(conn, task_id)
+        ),
+        initiator="manual_reclaim",
     )
+    if expected_run_id is not None:
+        # LAST statement before the destructive primitive, deliberately: every
+        # line between this check and the signal is window. A successor can
+        # take the task after the read at the top of this function, and the
+        # numeric PID we hold may by then belong to *its* worker (PID reuse) —
+        # which identity cannot catch on a row with no captured
+        # ``worker_pid_start``. The CAS below protects DB ownership but runs
+        # *after* the signal, far too late for a process already killed.
+        #
+        # A recorded-then-refused termination is intentional: an attempted
+        # operator action is worth auditing, and a spurious record is a far
+        # cheaper failure than a wrong kill.
+        #
+        # This narrows the window; it cannot close it. The irreducible gap
+        # between this check and the syscall needs an OS-stable handle
+        # (pidfd / job object), the residual adjudicated in review t_a71b7ab8.
+        live = conn.execute(
+            "SELECT claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        live_run_id = (
+            int(live["current_run_id"])
+            if live is not None and live["current_run_id"] is not None
+            else None
+        )
+        if live is None or live_run_id != int(expected_run_id) or (
+            live["claim_lock"] is not prev_lock
+            and live["claim_lock"] != prev_lock
+        ):
+            return False
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
         worker_pid_start=row["worker_pid_start"],
