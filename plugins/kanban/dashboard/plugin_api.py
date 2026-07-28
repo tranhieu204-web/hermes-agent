@@ -1582,8 +1582,23 @@ def terminate_run_endpoint(
                 status_code=409,
                 detail=f"run {run_id} already ended",
             )
-        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        # Bind the operator's authority to the run they actually selected.
+        # ``r`` is a snapshot: the run can end and a successor can claim the
+        # task between the read above and the reclaim below, and a task-scoped
+        # reclaim would then terminate a run the operator never asked about.
+        ok = kanban_db.reclaim_task(
+            conn, r.task_id, reason=payload.reason, expected_run_id=run_id,
+        )
         if not ok:
+            current_run_id = kanban_db._current_run_id(conn, r.task_id)
+            if current_run_id is not None and current_run_id != run_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"cannot terminate run {run_id}: task {r.task_id} has "
+                        f"moved on to run {current_run_id}"
+                    ),
+                )
             raise HTTPException(
                 status_code=409,
                 detail=(
