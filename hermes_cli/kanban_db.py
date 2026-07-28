@@ -11048,6 +11048,17 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
+    # ROUTER AUTHORITY: ask the fleet router for every dispatch and refuse a lane
+    # below its reserve floor even when a plan named it explicitly. Without this
+    # the router was computing the right lane and nothing consumed it.
+    _routed_model, _routed_provider, _route_reason = resolve_dispatch_lane(
+        task, _load_fleet_config_for_routing()
+    )
+    _log.info("kanban dispatch %s: %s", task.id, _route_reason)
+    if _routed_model and not task.model_override:
+        cmd.extend(["-m", _routed_model])
+        if _routed_provider:
+            cmd.extend(["--provider", _routed_provider])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
         # Pin the provider too when the override names one, so the worker
