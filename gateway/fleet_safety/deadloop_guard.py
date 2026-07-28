@@ -38,6 +38,14 @@ from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
 
 from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
 
+from agent.usage_provenance import (
+    UsageAggregate,
+    UsageComponentReceipt,
+    UsageProvenance,
+    aggregate_usage,
+    usage_aggregate_from_mapping,
+)
+
 
 class TripReason(str, enum.Enum):
     """Why a session was flagged or tripped."""
@@ -185,6 +193,41 @@ class SessionObservation:
                     field_name,
                     int(getattr(usage, field_name, 0) or 0),
                 )
+        # Identity is bound by the runtime, not by terminal payloads.
+        object.__setattr__(self, "terminal_session_id", bound_session_id)
+
+    def __post_init__(self) -> None:
+        bound_session_id = str(self.session_id or "").strip()
+        if not bound_session_id:
+            raise ValueError("session observation requires a nonempty session_id")
+        terminal_session_id = str(self.terminal_session_id or "").strip()
+        usage = usage_aggregate_from_mapping(
+            bound_session_id,
+            self.usage,
+            default_component_id="session-observation-usage",
+            fallback_session_id=terminal_session_id or bound_session_id,
+            missing_reason="missing_observation_usage",
+        )
+        if terminal_session_id and terminal_session_id != bound_session_id:
+            usage = aggregate_usage(
+                bound_session_id,
+                (
+                    *usage.components,
+                    UsageComponentReceipt(
+                        component_id="session-observation-terminal-session",
+                        session_id=terminal_session_id,
+                        provenance=UsageProvenance.UNKNOWN,
+                        reason="session_mismatch",
+                    ),
+                ),
+            )
+        object.__setattr__(self, "session_id", bound_session_id)
+        object.__setattr__(
+            self,
+            "token_count_provenance",
+            UsageProvenance.coerce(self.token_count_provenance),
+        )
+        object.__setattr__(self, "usage", usage)
         # Identity is bound by the runtime, not by terminal payloads.
         object.__setattr__(self, "terminal_session_id", bound_session_id)
 

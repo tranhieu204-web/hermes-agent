@@ -1,5 +1,7 @@
 """Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
 
+import pytest
+
 from hermes_cli.fallback_config import resolve_entry_api_key
 
 
@@ -41,33 +43,38 @@ class TestResolveEntryApiKey:
 
 
 class TestGetFallbackChainRanking:
-    def test_disabled_fleet_preserves_configured_chain_without_ranking(self, monkeypatch):
+    @pytest.mark.parametrize("fleet_config", [None, {"enabled": False}])
+    def test_inactive_fleet_preserves_configured_order(
+        self, monkeypatch, fleet_config
+    ):
         from hermes_cli.fallback_config import get_fallback_chain
 
         monkeypatch.setattr(
             "gateway.fleet_safety.selector.rank_fallback_chain",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("disabled Fleet must not invoke the ranker")
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("ordinary fallbacks must not invoke fleet reranking")
             ),
         )
-        configured = [
-            {"provider": "paid-provider", "model": "paid-model"},
-            {"provider": "safe-provider", "model": "safe-model"},
+        cfg = {
+            "fallback_providers": [
+                {"provider": "grok", "model": "grok-4.5"},
+                {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},
+            ]
+        }
+        if fleet_config is not None:
+            cfg["fleet"] = fleet_config
+        chain = get_fallback_chain(cfg)
+        assert [entry["provider"] for entry in chain] == [
+            "grok",
+            "chatgpt_codex",
         ]
-
-        assert get_fallback_chain(
-            {
-                "fleet": {"enabled": False},
-                "fallback_providers": configured,
-            }
-        ) == configured
 
     def test_enabled_fleet_ranker_exception_fails_closed(self, monkeypatch):
         from hermes_cli.fallback_config import get_fallback_chain
 
         monkeypatch.setattr(
             "gateway.fleet_safety.selector.rank_fallback_chain",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 RuntimeError("safety engine unavailable")
             ),
         )
@@ -84,21 +91,30 @@ class TestGetFallbackChainRanking:
     def test_get_fallback_chain_routes_through_rank_fallback_chain(self, monkeypatch):
         from hermes_cli.fallback_config import get_fallback_chain
 
+        def fake_verified(provider, **_kwargs):
+            used_percent = 15.0 if provider == "chatgpt_codex" else 50.0
+            return VerifiedUsage(
+                provider=provider,
+                used_percent=used_percent,
+                source="cache",
+                stale=False,
+                suspect=False,
+            )
+
         monkeypatch.setattr(
-            "gateway.fleet_safety.selector.rank_fallback_chain",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                AssertionError("ordinary fallbacks must not invoke fleet reranking")
-            ),
+            "gateway.fleet_safety.selector.verified_usage_for", fake_verified
         )
-        cfg = {
-            "fleet": {"enabled": True},
-            "fallback_providers": [
-                {"provider": "grok", "model": "grok-4.5"},
-                {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},
-            ]
-        }
-        chain = get_fallback_chain(cfg)
+        chain = get_fallback_chain(
+            {
+                "fleet": {"enabled": True},
+                "fallback_providers": [
+                    {"provider": "grok", "model": "grok-4.5"},
+                    {"provider": "chatgpt_codex", "model": "gpt-5.6-sol"},
+                ],
+            }
+        )
+
         assert [entry["provider"] for entry in chain] == [
-            "grok",
             "chatgpt_codex",
+            "grok",
         ]

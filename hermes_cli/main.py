@@ -442,7 +442,6 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
-from hermes_cli.subcommands.fleet import build_fleet_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -14947,11 +14946,6 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
-    # fleet command — subscription-aware usage-headroom routing
-    # =========================================================================
-    build_fleet_parser(subparsers)
-
-    # =========================================================================
     # secrets command — external secret managers (Bitwarden, 1Password)
     # =========================================================================
     secrets_parser = subparsers.add_parser(
@@ -15143,7 +15137,7 @@ def main():
     build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
-    # fleet command  (parser built in hermes_cli/subcommands/fleet.py)
+    # fleet command (parser built in hermes_cli/subcommands/fleet.py)
     # =========================================================================
     build_fleet_parser(subparsers)
 
