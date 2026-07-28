@@ -2,14 +2,20 @@
 
 import argparse
 import os
-import pty
 import signal
 import subprocess
 import sys
 import textwrap
 from types import ModuleType, SimpleNamespace
 
+if sys.platform != "win32":
+    import pty
+else:
+    pty = None
+
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX gateway tests are not applicable on Windows")
 
 import hermes_cli.gateway as gateway
 

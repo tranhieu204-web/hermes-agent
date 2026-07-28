@@ -27,6 +27,62 @@ from agent.usage_provenance import (
 )
 
 
+class UsageSourceQuality(str, enum.Enum):
+    """Quality indicator for usage counters.
+
+    RESTORED 2026-07-28. This class and :class:`CanonicalUsage` below were
+    dropped by the mass-merge ``af469dfea`` ("reconcile all unmerged feature
+    branches"): two independent features each authored
+    ``agent/progress_telemetry.py``, and the merge took the terminal-event
+    version wholesale while keeping the OTHER feature's caller in
+    ``agent/conversation_loop.py:1180``. The result did not import, so every
+    Hermes conversation died at startup. Verbatim from ``1e40783ba``
+    ("fix(fleet-safety): wire measured usage and event-idempotent guard"),
+    the commit that introduced BOTH halves.
+    """
+
+    MEASURED = "measured"
+    ESTIMATED = "estimated"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CanonicalUsage:
+    """Normalized provider-neutral usage counters."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+    cost: float = 0.0
+    model_requests: int = 0
+    quality: UsageSourceQuality = UsageSourceQuality.UNKNOWN
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+                self.reasoning_tokens,
+                self.cost,
+                self.model_requests,
+            )
+        )
+
+
 class Retryability(str, enum.Enum):
     """Explicit retryability tri-state supplied by the event producer."""
 
@@ -284,8 +340,23 @@ class ProgressTelemetry:
             self.context_id = bound
 
     @_synchronized
-    def reset_for_turn(self) -> None:
+    def reset_for_turn(
+        self, cumulative_usage: "CanonicalUsage | None" = None
+    ) -> None:
+        """Reset per-turn event evidence and snapshot the usage baseline.
+
+        RESTORED 2026-07-28: the ``cumulative_usage`` parameter was lost in the
+        mass-merge ``af469dfea``. ``agent/conversation_loop.py:1180`` calls this
+        WITH a usage snapshot, so the merged no-arg signature raised TypeError
+        immediately after the ImportError above it. Semantics are taken from
+        ``1e40783ba``: fleet-safety telemetry is turn-scoped while provider
+        accounting is session-cumulative, so the caller passes the authoritative
+        session counters before any call in this turn can advance them, and the
+        guard measures this turn as (current - baseline). Defaulted to None so
+        any caller that does not track usage keeps working.
+        """
         self._ensure_mutable()
+        self._usage_baseline = cumulative_usage or CanonicalUsage()
         self._turn_generation += 1
         self.attempt_seq = 0
         self.progress_seq = 0

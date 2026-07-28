@@ -2265,6 +2265,43 @@ def resolve_dispatch_lane(task, config: Optional[dict] = None) -> tuple:
     )
 
 
+DEFAULT_STALL_SECONDS = 900
+
+PROGRESS_PROGRESSING = "PROGRESSING"
+PROGRESS_STALLED = "STALLED"
+PROGRESS_UNOBSERVABLE = "UNOBSERVABLE"
+
+
+def worker_progress_fingerprint(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """Observable evidence of forward motion, or None when unobservable."""
+    try:
+        log_path = worker_logs_dir(board=board) / f"{task_id}.log"
+        st = log_path.stat()
+        return f"{st.st_size}:{int(st.st_mtime)}"
+    except Exception:
+        return None
+
+
+def evaluate_worker_progress(
+    previous_fingerprint: Optional[str],
+    current_fingerprint: Optional[str],
+    last_progress_at: Optional[int],
+    now: int,
+    stall_seconds: int = DEFAULT_STALL_SECONDS,
+) -> tuple:
+    """Classify a running worker. Returns ``(state, stalled_for_seconds)``."""
+    if current_fingerprint is None:
+        return (PROGRESS_UNOBSERVABLE, 0)
+    if previous_fingerprint is None or current_fingerprint != previous_fingerprint:
+        return (PROGRESS_PROGRESSING, 0)
+    if last_progress_at is None:
+        return (PROGRESS_UNOBSERVABLE, 0)
+    stalled_for = max(0, int(now) - int(last_progress_at))
+    if stalled_for >= int(stall_seconds):
+        return (PROGRESS_STALLED, stalled_for)
+    return (PROGRESS_PROGRESSING, stalled_for)
+
+
 def worker_logs_dir(board: Optional[str] = None) -> Path:
     """Return the directory under which per-task worker logs are written.
 
@@ -9231,6 +9268,108 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
                 continue
         break
     return streak
+
+
+def observe_and_enforce_progress(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[int] = None,
+    stall_seconds: Optional[int] = None,
+    board: Optional[str] = None,
+    terminate_fn=None,
+) -> list:
+    """Record observed progress; terminate and requeue workers that have stalled."""
+    now_ts = int(time.time() if now is None else now)
+    window = int(DEFAULT_STALL_SECONDS if stall_seconds is None else stall_seconds)
+    terminate = terminate_fn or _terminate_reclaimed_worker
+    stalled: list = []
+    pending_failures: list = []
+
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+            "FROM tasks WHERE status = 'running' AND worker_pid IS NOT NULL"
+        ).fetchall()
+        host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+        grace = _resolve_crash_grace_seconds()
+        for row in rows:
+            lock = row["claim_lock"] or ""
+            if not lock.startswith(host_prefix):
+                continue
+            started_at = row["started_at"] if "started_at" in row.keys() else None
+            if started_at is not None and now_ts - started_at < grace:
+                continue
+            run_id = row["current_run_id"] if "current_run_id" in row.keys() else None
+            if run_id is None:
+                continue
+            run = conn.execute(
+                "SELECT progress_fingerprint, last_progress_at FROM task_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                continue
+
+            current_fp = worker_progress_fingerprint(row["id"], board=board)
+            state, stalled_for = evaluate_worker_progress(
+                run["progress_fingerprint"], current_fp,
+                run["last_progress_at"], now_ts, window,
+            )
+
+            if state != PROGRESS_STALLED:
+                if current_fp is not None and current_fp != run["progress_fingerprint"]:
+                    conn.execute(
+                        "UPDATE task_runs SET progress_fingerprint = ?, "
+                        "last_progress_at = ? WHERE id = ?",
+                        (current_fp, now_ts, run_id),
+                    )
+                elif run["last_progress_at"] is None and current_fp is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET progress_fingerprint = ?, "
+                        "last_progress_at = ? WHERE id = ?",
+                        (current_fp, now_ts, run_id),
+                    )
+                continue
+
+            pid = row["worker_pid"]
+            if not _pid_alive(pid):
+                continue
+
+            diagnosed = diagnose_worker_failure(row["id"], board=board)
+            error_text = (
+                f"pid {pid} stalled — no observed progress for {stalled_for}s "
+                f"(limit {window}s)"
+            )
+            if diagnosed:
+                error_text = f"{error_text} — {diagnosed}"
+
+            terminate(pid, lock)
+
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status = 'running' AND worker_pid = ?",
+                (row["id"], pid),
+            )
+            if cur.rowcount != 1:
+                continue
+            conn.execute(
+                "UPDATE task_runs SET status = 'stalled', outcome = 'stalled', "
+                "ended_at = ?, error = ? WHERE id = ?",
+                (now_ts, error_text, run_id),
+            )
+            _append_event(conn, row["id"], "stalled",
+                          {"pid": pid, "stalled_for": stalled_for,
+                           "limit": window, "diagnosed_cause": diagnosed})
+            stalled.append((row["id"], pid, stalled_for))
+            pending_failures.append((row["id"], error_text))
+
+    for task_id, error_text in pending_failures:
+        try:
+            _record_task_failure(conn, task_id, error_text, outcome="stalled")
+        except Exception:
+            _log.warning("stall: failed to record failure for %s", task_id, exc_info=True)
+
+    return stalled
 
 
 def detect_crashed_workers(conn: sqlite3.Connection, *,

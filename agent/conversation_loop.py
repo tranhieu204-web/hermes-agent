@@ -1129,6 +1129,41 @@ def _evaluate_outer_iteration_checkpoint(
     )
 
 
+def _configured_no_progress_limit(agent) -> int:
+    """Resolve the shared verified-no-progress stop threshold.
+
+    A per-agent override supports tests and embedded runtimes. Otherwise read the
+    same live config key as the gateway guard. Invalid values preserve the
+    historical default of three distinct no-progress attempts.
+
+    RESTORED 2026-07-28, verbatim from ``2f17f02b8`` ("fix(runtime): finalize
+    bounded extension lifecycle"). The mass-merge ``af469dfea`` dropped this
+    DEFINITION while keeping its caller at ``run_conversation`` below, so every
+    conversation died with NameError. Same failure shape as the CanonicalUsage /
+    reset_for_turn loss in ``agent/progress_telemetry.py``: the merge repeatedly
+    kept new callers and discarded the code they call.
+    """
+    override = getattr(agent, "_fleet_safety_no_progress_samples", None)
+    try:
+        if override is not None and int(override) > 0:
+            return int(override)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        value = (
+            cfg.get("fleet_safety", {})
+            .get("deadloop_guard", {})
+            .get("no_progress_samples", 3)
+        )
+        value = int(value)
+        return value if value > 0 else 3
+    except Exception:
+        return 3
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -2670,11 +2705,13 @@ def run_conversation(
 
                 agent._last_provider_error_code = None
                 agent._turn_received_provider_response = True
-                _record_model_response_usage(
-                    agent,
-                    response,
-                    api_request_id=api_request_id,
-                )
+                if dispatch_usage_identity is not None:
+                    _record_model_response_usage(
+                        agent,
+                        response,
+                        component_id=dispatch_usage_identity[0],
+                        dispatch_event_id=dispatch_usage_identity[1],
+                    )
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
