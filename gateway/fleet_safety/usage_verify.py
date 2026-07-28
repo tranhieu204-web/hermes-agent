@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
+_AUTHORITATIVE_TS_OMITTED = object()
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,14 @@ class VerifiedUsage:
     suspect: bool                      # diverges from authoritative, or unverifiable
     authoritative_percent: Optional[float] = None
     cached_percent: Optional[float] = None
+    authoritative_fetched_at: Optional[float] = None
+    authoritative_age_seconds: Optional[float] = None
     reasons: List[str] = field(default_factory=list)
+
+    @property
+    def fingerprint(self) -> tuple:
+        return (self.provider, self.source, self.used_percent, self.stale,
+                self.suspect, self.authoritative_fetched_at)
 
     @property
     def trustworthy(self) -> bool:
@@ -61,6 +69,7 @@ def verify_usage(
     cached_fetched_at: Optional[float],
     authoritative_percent: Optional[float],
     authoritative_available: bool,
+    authoritative_fetched_at: Any = _AUTHORITATIVE_TS_OMITTED,
     now: float,
     max_age_seconds: float = 900.0,
     divergence_points: float = 15.0,
@@ -80,6 +89,17 @@ def verify_usage(
 
     # Authoritative available → it is the source of truth.
     if authoritative_available and authoritative_percent is not None:
+        if authoritative_fetched_at is _AUTHORITATIVE_TS_OMITTED:
+            auth_ts, auth_age, auth_stale = now, 0.0, False
+        elif authoritative_fetched_at is None:
+            auth_ts, auth_age, auth_stale = None, None, True
+            reasons.append("authoritative usage timestamp missing")
+        else:
+            auth_ts = float(authoritative_fetched_at)
+            auth_age = max(0.0, now - auth_ts)
+            auth_stale = auth_age > max_age_seconds
+            if auth_stale:
+                reasons.append(f"authoritative usage is {auth_age / 60:.0f} min old")
         suspect = False
         if cached_percent is not None:
             gap = abs(cached_percent - authoritative_percent)
@@ -93,10 +113,12 @@ def verify_usage(
             provider=provider,
             used_percent=authoritative_percent,
             source="authoritative",
-            stale=False,               # authoritative is fresh by definition
+            stale=auth_stale,
             suspect=suspect,
             authoritative_percent=authoritative_percent,
             cached_percent=cached_percent,
+            authoritative_fetched_at=auth_ts,
+            authoritative_age_seconds=auth_age,
             reasons=reasons,
         )
 
@@ -262,6 +284,7 @@ def verified_usage_for(
         cached_fetched_at=cached_ts,
         authoritative_percent=auth_percent,
         authoritative_available=available,
+        authoritative_fetched_at=_auth_ts,
         now=now,
         max_age_seconds=max_age_seconds,
         divergence_points=divergence_points,

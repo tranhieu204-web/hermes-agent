@@ -20,6 +20,8 @@ swallowed so a guard bug can never take down the housekeeping loop or a turn.
 from __future__ import annotations
 
 import logging
+import math
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -33,7 +35,7 @@ from gateway.fleet_safety.deadloop_guard import (
     RunawayGuard,
     SessionObservation,
 )
-from gateway.fleet_safety.enforcer import GuardEnforcer, KillActions
+from gateway.fleet_safety.enforcer import EnforcementResult, GuardEnforcer, KillActions
 from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
 from gateway.fleet_safety.wallet_cap import (
     RoutingRequest,
@@ -62,6 +64,7 @@ logger = logging.getLogger(__name__)
 # ``fleet_safety.deadloop_guard.assumed_context_tokens``.
 DEFAULT_ASSUMED_CONTEXT_TOKENS = 160_000
 _EXTENSION_REGISTRIES: dict[str, ExtensionRegistry] = {}
+_DESKTOP_LOOP_LOCK = threading.Lock()
 
 
 def _extension_state_path(config: dict) -> str:
@@ -154,33 +157,24 @@ def deny_active_extensions(
     return denied
 
 
-def _collect_observations(
-    runner: Any, now: float, assumed_context_tokens: int
-) -> Tuple[List[SessionObservation], Dict[str, Tuple[str, Any, Optional[int]]]]:
-    """Sample every running agent into observations keyed by the agent's
-    session_id. Returns (observations, {session_id: (session_key, agent)})."""
-    observations: List[SessionObservation] = []
-    mapping: Dict[str, Tuple[str, Any, Optional[int]]] = {}
-
-    running = getattr(runner, "_running_agents", {}) or {}
-    started_ts = getattr(runner, "_running_agents_ts", {}) or {}
-    # The pending sentinel marks a session whose agent object doesn't exist yet.
+def _observation_for_agent(
+    session_id: str,
+    agent: Any,
+    *,
+    started_at: float,
+    assumed_context_tokens: int,
+) -> SessionObservation:
+    """Project one live agent through the common gateway/desktop schema."""
     try:
-        from gateway.run import _AGENT_PENDING_SENTINEL
-    except Exception:
-        _AGENT_PENDING_SENTINEL = object()
-
-    for session_key, agent in list(running.items()):
-        if agent is _AGENT_PENDING_SENTINEL or agent is None:
-            continue
-        if bool(getattr(agent, "_hermes_guard_interrupt_pending", False)):
-            continue
-        try:
-            summary = agent.get_activity_summary() or {}
-        except Exception:
-            summary = {}
-        session_id = str(getattr(agent, "session_id", None) or session_key).strip()
-        started_at = float(started_ts.get(session_key, now) or now)
+        summary = agent.get_activity_summary() or {}
+    except Exception as exc:
+        logger.warning(
+            "dead-loop guard: activity snapshot failed for %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        summary = {}
+    try:
         api_calls = int(summary.get("api_call_count", 0) or 0)
         attempt_seq = summary.get("attempt_seq")
         failure_seq = summary.get("failure_seq")
@@ -216,8 +210,7 @@ def _collect_observations(
         # dead loop and falsely reset the stall detector.
         state_hash = f"progress:{progress_seq}"
 
-        observations.append(
-            SessionObservation(
+        return SessionObservation(
                 session_id=session_id,
                 started_at=started_at,
                 api_call_count=api_calls,
@@ -256,6 +249,46 @@ def _collect_observations(
                 model=str(getattr(agent, "model", "") or ""),
                 effort=_agent_effort(agent),
             )
+    except Exception:
+        logger.warning(
+            "dead-loop guard: observation projection failed for %s",
+            session_id,
+            exc_info=True,
+        )
+        return SessionObservation(session_id=session_id, started_at=started_at)
+
+
+def _collect_observations(
+    runner: Any, now: float, assumed_context_tokens: int
+) -> Tuple[List[SessionObservation], Dict[str, Tuple[str, Any, Optional[int]]]]:
+    """Sample every running gateway agent through the common projection."""
+    observations: List[SessionObservation] = []
+    mapping: Dict[str, Tuple[str, Any, Optional[int]]] = {}
+
+    running = getattr(runner, "_running_agents", {}) or {}
+    started_ts = getattr(runner, "_running_agents_ts", {}) or {}
+    try:
+        from gateway.run import _AGENT_PENDING_SENTINEL
+    except Exception:
+        _AGENT_PENDING_SENTINEL = object()
+
+    for session_key, agent in list(running.items()):
+        if agent is _AGENT_PENDING_SENTINEL or agent is None:
+            continue
+        if bool(getattr(agent, "_hermes_guard_interrupt_pending", False)):
+            continue
+        session_id = str(getattr(agent, "session_id", None) or session_key).strip()
+        try:
+            started_at = float(started_ts.get(session_key, now) or now)
+        except (TypeError, ValueError, OverflowError):
+            started_at = now
+        observations.append(
+            _observation_for_agent(
+                session_id,
+                agent,
+                started_at=started_at,
+                assumed_context_tokens=assumed_context_tokens,
+            )
         )
         generation = getattr(agent, "_hermes_run_generation", None)
         mapping[session_id] = (
@@ -264,6 +297,66 @@ def _collect_observations(
             int(generation) if generation is not None else None,
         )
 
+    return observations, mapping
+
+
+def _collect_desktop_observations(
+    server_module: Any,
+    now: float,
+    assumed_context_tokens: int,
+) -> Tuple[List[SessionObservation], Dict[str, Tuple[Any, Any, str]]]:
+    """Snapshot live desktop turns without reading telemetry under a session lock."""
+    with server_module._sessions_lock:
+        candidates = list((getattr(server_module, "_sessions", {}) or {}).items())
+
+    first_seen = getattr(server_module, "_desktop_guard_first_seen", None)
+    if not isinstance(first_seen, dict):
+        first_seen = {}
+        setattr(server_module, "_desktop_guard_first_seen", first_seen)
+
+    observations: List[SessionObservation] = []
+    mapping: Dict[str, Tuple[Any, Any, str]] = {}
+    live_keys: set[tuple[str, str]] = set()
+    for raw_sid, session in candidates:
+        if not isinstance(session, dict):
+            continue
+        lock = session.get("history_lock")
+        if lock is None:
+            continue
+        with lock:
+            running = session.get("running") is True
+            agent = session.get("agent")
+            turn = session.get("inflight_turn")
+            if not running or agent is None or not isinstance(turn, dict):
+                continue
+            token = str(turn.get("guard_turn_token") or "").strip()
+            if not token or turn.get("streaming") is False or turn.get("status") == "error":
+                continue
+            started_raw = turn.get("started_at")
+        sid = str(raw_sid or getattr(agent, "session_id", "") or "").strip()
+        if not sid:
+            continue
+        key = (sid, token)
+        live_keys.add(key)
+        try:
+            started_at = float(started_raw)
+            if not math.isfinite(started_at) or started_at <= 0:
+                raise ValueError("invalid turn start")
+        except (TypeError, ValueError, OverflowError):
+            started_at = float(first_seen.setdefault(key, now))
+        observations.append(
+            _observation_for_agent(
+                sid,
+                agent,
+                started_at=started_at,
+                assumed_context_tokens=assumed_context_tokens,
+            )
+        )
+        mapping[sid] = (session, agent, token)
+
+    for key in tuple(first_seen):
+        if key not in live_keys:
+            first_seen.pop(key, None)
     return observations, mapping
 
 
@@ -390,6 +483,147 @@ class _LiveKillActions(KillActions):
             return bool(fut.result(timeout=20))
         except Exception:
             return False
+
+
+class _DesktopKillActions(KillActions):
+    """Token-fenced cooperative interruption for desktop/TUI turns."""
+
+    def __init__(self, server: Any, mapping: Dict[str, Tuple[Any, Any, str]]):
+        self.server, self.mapping = server, mapping
+        self._notification_target = next(iter(mapping), None)
+
+    def interrupt(self, session_id: str, reason: str) -> bool:
+        target = self.mapping.get(session_id)
+        if target is None:
+            return False
+        session, agent, token = target
+        with self.server._sessions_lock:
+            if self.server._sessions.get(session_id) is not session:
+                return False
+            with session["history_lock"]:
+                turn = session.get("inflight_turn")
+                if not isinstance(turn, dict) or turn.get("guard_turn_token") != token or turn.get("guard_interrupt_state") is not None:
+                    return False
+                turn["guard_interrupt_state"] = "claimed"
+                session["_guard_interrupt_barrier"] = token
+                session["_turn_cancel_requested"] = True
+        try:
+            supervisor = session.get("compute_host_supervisor")
+            if supervisor is not None and hasattr(supervisor, "interrupt"):
+                supervisor.interrupt(reason)
+            else:
+                agent.interrupt(reason)
+        except Exception:
+            logger.warning("desktop guard interrupt failed for %s", session_id, exc_info=True)
+            with session["history_lock"]:
+                if session.get("_guard_interrupt_barrier") == token:
+                    session.pop("_guard_interrupt_barrier", None)
+            return False
+        drain_queued = False
+        with session["history_lock"]:
+            turn = session.get("inflight_turn")
+            if isinstance(turn, dict) and turn.get("guard_turn_token") == token:
+                turn["guard_interrupt_state"] = "requested"
+            else:
+                try:
+                    agent.clear_interrupt()
+                except Exception:
+                    logger.warning("desktop guard interrupt reset failed for %s", session_id, exc_info=True)
+                if session.get("_guard_interrupt_barrier") == token:
+                    session.pop("_guard_interrupt_barrier", None)
+                drain_queued = bool(session.get("queued_prompt"))
+        if drain_queued:
+            try:
+                self.server._drain_queued_prompt(None, session_id, session)
+            except Exception:
+                logger.warning("desktop guard queued-turn drain failed for %s", session_id, exc_info=True)
+        return True
+
+    def release_lease(self, session_id: str) -> bool:
+        return False
+
+    def notify(self, report: str) -> bool:
+        logger.warning("FLEET-SAFETY NOTICE\n%s", report)
+        sid = self._notification_target
+        if not sid:
+            return False
+        try:
+            self.server._emit("notification.show", sid, {"message": report, "level": "warning"})
+            return True
+        except Exception:
+            logger.warning("desktop guard notification failed for %s", sid, exc_info=True)
+            return False
+
+
+def run_desktop_guard_tick(server_module: Any = None, now: Optional[float] = None) -> List[EnforcementResult]:
+    if server_module is None:
+        from tui_gateway import server as server_module
+    now = time.time() if now is None else now
+    cfg = _load_fleet_safety_config()
+    guard_cfg = cfg.get("deadloop_guard") or {}
+    thresholds = GuardThresholds.from_config(guard_cfg)
+    if not thresholds.enabled:
+        return []
+    try:
+        assumed = int(guard_cfg.get("assumed_context_tokens", DEFAULT_ASSUMED_CONTEXT_TOKENS))
+        if assumed <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        assumed = DEFAULT_ASSUMED_CONTEXT_TOKENS
+    guard = getattr(server_module, "_desktop_deadloop_guard", None)
+    if not isinstance(guard, RunawayGuard) or guard.thresholds != thresholds:
+        guard = RunawayGuard(thresholds)
+        server_module._desktop_deadloop_guard = guard
+    observations, mapping = _collect_desktop_observations(server_module, now, assumed)
+    tokens = getattr(server_module, "_desktop_guard_tokens", {})
+    server_module._desktop_guard_tokens = tokens
+    live = set(mapping)
+    results: List[EnforcementResult] = []
+    for obs in observations:
+        token = mapping[obs.session_id][2]
+        if tokens.get(obs.session_id) not in (None, token):
+            guard.forget(obs.session_id)
+        tokens[obs.session_id] = token
+        try:
+            trip = guard.observe(obs, now)
+            if trip is not None:
+                results.append(GuardEnforcer(_DesktopKillActions(server_module, {obs.session_id: mapping[obs.session_id]})).enforce(trip))
+        except Exception:
+            logger.warning("desktop dead-loop guard tick failed for %s", obs.session_id, exc_info=True)
+    for sid in tuple(tokens):
+        if sid not in live:
+            tokens.pop(sid, None)
+            guard.forget(sid)
+    return results
+
+
+def start_desktop_guard_loop(server_module: Any = None, *, stop_event: Optional[threading.Event] = None, interval_seconds: float = 60.0) -> Tuple[threading.Thread, threading.Event]:
+    if server_module is None:
+        from tui_gateway import server as server_module
+    try:
+        interval = float(interval_seconds)
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
+        interval = 60.0
+    event = stop_event or threading.Event()
+    with _DESKTOP_LOOP_LOCK:
+        existing = getattr(server_module, "_desktop_guard_thread", None)
+        if isinstance(existing, threading.Thread) and existing.is_alive():
+            return existing, getattr(server_module, "_desktop_guard_stop_event", event)
+        def _loop() -> None:
+            while not event.is_set():
+                try:
+                    run_desktop_guard_tick(server_module)
+                except Exception:
+                    logger.warning("desktop dead-loop guard loop tick failed", exc_info=True)
+                if event.wait(interval):
+                    break
+        thread = threading.Thread(target=_loop, name="hermes-desktop-deadloop-guard", daemon=True)
+        server_module._desktop_guard_stop_event = event
+        server_module._desktop_guard_thread = thread
+        thread.start()
+        return thread, event
 
 
 def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -> None:
