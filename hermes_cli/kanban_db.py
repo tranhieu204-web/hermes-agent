@@ -6031,6 +6031,7 @@ def reclaim_task(
     *,
     reason: Optional[str] = None,
     signal_fn=None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Operator-driven reclaim: release the claim and reset to ``ready``.
 
@@ -6040,11 +6041,20 @@ def reclaim_task(
     when an operator wants to abort a running worker without waiting
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
+    ``expected_run_id`` scopes the operator's authority to one specific run.
+    A run-scoped caller (``POST /runs/{run_id}/terminate``) decides to act on
+    the run it *observed*, but that run can end and a successor can claim the
+    task before this function reads the row — so without the guard the request
+    lands on a run the operator never asked about. Callers that legitimately
+    mean "whatever is running now" (task-level reclaim, CLI, reassign) pass
+    nothing and keep task-level scope.
+
     Returns True if a reclaim happened, False if the task isn't in a
-    reclaimable state (not running, or doesn't exist).
+    reclaimable state (not running, doesn't exist, or — when
+    ``expected_run_id`` is given — is no longer on that run).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid, worker_pid_start "
+        "SELECT status, claim_lock, worker_pid, worker_pid_start, current_run_id "
         "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
@@ -6052,6 +6062,15 @@ def reclaim_task(
         return False
     if row["status"] != "running" and row["claim_lock"] is None:
         # Nothing to reclaim — already ready / blocked / done.
+        return False
+    current_run_id = (
+        int(row["current_run_id"]) if row["current_run_id"] is not None else None
+    )
+    if expected_run_id is not None and current_run_id != int(expected_run_id):
+        # The requested run is no longer the one holding this task. Refuse
+        # BEFORE terminating anything: signalling first and discovering the
+        # mismatch afterwards is precisely the wrong-run kill this guard
+        # exists to prevent.
         return False
     prev_lock = row["claim_lock"]
     # Dispatcher-initiated: the operator's reclaim owns the semantic cause.
@@ -6080,8 +6099,10 @@ def reclaim_task(
             "worker_launch_id = NULL, worker_pid_start = NULL, "
             "observer_pid = NULL, observer_pid_start = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            "AND claim_lock IS ?"
+            + ("" if expected_run_id is None else " AND current_run_id = ?"),
+            (task_id, prev_lock) if expected_run_id is None
+            else (task_id, prev_lock, int(expected_run_id)),
         )
         if cur.rowcount != 1:
             return False
