@@ -11222,11 +11222,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 return format_status_text()
 
-            # /stop must hard-kill the session when an agent is running.
-            # A soft interrupt (agent.interrupt()) doesn't help when the agent
-            # is truly hung — the executor thread is blocked and never checks
-            # _interrupt_requested.  Force-clean _running_agents so the session
-            # is unlocked and subsequent messages are processed normally.
+            # /stop must interrupt the current generation and release the
+            # gateway session guard so subsequent messages can proceed. Persist
+            # any active extension denial before generation invalidation; this
+            # makes exact STOP and /stop restart-safe without claiming that the
+            # provider process has already terminated.
             if _cmd_def_inner and _cmd_def_inner.name == "stop":
                 from gateway.fleet_safety.integration import deny_active_extensions
 
@@ -11241,7 +11241,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     interrupt_reason=_INTERRUPT_REASON_STOP,
                     invalidation_reason="stop_command",
                 )
-                logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
+                logger.info(
+                    "STOP for session %s — interruption requested, run generation invalidated, gateway session guard released",
+                    _quick_key,
+                )
                 return EphemeralReply(t("gateway.stop.stopped"))
 
             # /reset and /new must bypass the running-agent guard so they

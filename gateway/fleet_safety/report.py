@@ -10,14 +10,9 @@ from agent.usage_provenance import UsageAggregate, UsageProvenance
 from gateway.fleet_safety.deadloop_guard import GuardEvaluationResult, Trip
 
 
-def _humanize_tokens(n: int) -> str:
-    if n >= 1_000_000_000:
-        return f"{n / 1_000_000_000:.1f}B"
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(int(n))
+def _reason_value(trip: Any) -> str:
+    reason = getattr(trip, "trip_reason", None) or getattr(trip, "reason", None)
+    return str(getattr(reason, "value", reason) or "runaway")
 
 
 @dataclass(frozen=True)

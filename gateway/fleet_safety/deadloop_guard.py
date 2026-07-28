@@ -1,27 +1,14 @@
-"""Runaway-loop detector for active agent sessions.
+"""Runaway-loop detector for active agent sessions — provider-neutral & progress-aware.
 
 The detector watches a stream of per-session :class:`SessionObservation`
-samples (one per housekeeping tick) and trips on any of four independent
-runaway signals — the four failure modes of the 2026-07-25 incident:
+samples (one per housekeeping tick) and evaluates runaway signals:
 
-  (a) **Rate.** Model-call count *or* estimated token spend over a threshold in
-      a rolling window (default: >100 calls or >4,000,000 tokens per 15 min on
-      one session). The incident's token rate (~5.5M tokens / 15 min) trips
-      this; a healthy interactive session does not.
-  (b) **Repeated non-retryable error.** The same non-retryable (4xx) status
-      code observed on ``>=K`` consecutive samples (default 3). A 4xx does not
-      get better on retry — hammering it is pure waste.
-  (c) **Wall-clock.** One continuous turn running longer than a hard cap
-      (default 60 min). The incident ran ~13 h.
-  (d) **No-forward-progress.** A huge context (>150k tokens) re-sent across
-      ``>=M`` consecutive samples (default 3) with an unchanged state hash —
-      i.e. the loop keeps paying for a giant context but produces no new tool
-      results / state change.
+  (a) Rate / Runtime / Call thresholds: Emit CONTINUATION_NOTICE and continue execution by default.
+  (b) Repeated non-recoverable error streak (K consecutive failures): Hard stop.
+  (c) Verified No-Progress streak (M consecutive verified no-progress attempts): Hard stop.
 
-Determinism: :meth:`RunawayGuard.observe` takes ``now`` explicitly and holds
-all mutable state on the guard instance. Given the same sequence of
-``(observation, now)`` pairs it always trips at the same point on the same
-reason, in the fixed priority order below. It never reads the clock itself.
+Only verified no-progress or repeated non-recoverable failures hard stop work.
+Threshold crossings emit a continuation notice and continue by default.
 """
 
 from __future__ import annotations
@@ -49,9 +36,11 @@ from agent.usage_provenance import (
 )
 from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
 
+from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
+
 
 class TripReason(str, enum.Enum):
-    """Why a session was flagged as a runaway. Ordered by evaluation priority."""
+    """Why a session was flagged or tripped."""
 
     WALL_CLOCK = "wall_clock_runtime_exceeded"
     TOKEN_RATE = "token_spend_rate_exceeded"
@@ -71,29 +60,19 @@ class GuardOutcome(str, enum.Enum):
 
 @dataclass(frozen=True)
 class GuardThresholds:
-    """Trip thresholds. All windows/caps are in seconds; spend in tokens.
-
-    Defaults are chosen so the 2026-07-25 incident trips well before a full
-    wallet drain, while a normal long interactive/agentic session does not.
-    """
+    """Trip thresholds. All windows/caps are in seconds; spend in tokens."""
 
     window_seconds: float = 900.0            # rolling window for rate checks (15 min)
-    max_calls_per_window: int = 100          # (a) call-rate ceiling in window
-    max_tokens_per_window: int = 4_000_000   # (a) token-rate ceiling in window
-    max_runtime_seconds: float = 3600.0      # (c) continuous wall-clock cap (60 min)
-    repeated_error_limit: int = 3            # (b) same 4xx on N consecutive samples
-    huge_context_tokens: int = 150_000       # (d) "huge" context threshold
-    no_progress_samples: int = 3             # (d) consecutive stalled samples to trip
+    max_calls_per_window: int = 100          # call-rate ceiling in window
+    max_tokens_per_window: int = 4_000_000   # token-rate ceiling in window
+    max_runtime_seconds: float = 3600.0      # continuous wall-clock cap (60 min)
+    repeated_error_limit: int = 3            # same 4xx / non-retryable failure streak
+    huge_context_tokens: int = 150_000       # "huge" context threshold
+    no_progress_samples: int = 3             # consecutive verified no-progress attempts
     enabled: bool = True
 
     @classmethod
     def from_config(cls, cfg: Optional[dict]) -> "GuardThresholds":
-        """Build from a ``fleet_safety.deadloop_guard`` config dict.
-
-        Unknown keys are ignored; missing keys fall back to the class default.
-        Values are coerced defensively so a malformed user config can never
-        crash the housekeeping tick — a bad value falls back to the default.
-        """
         cfg = cfg or {}
 
         def _positive_num(key: str, default, cast):
@@ -120,14 +99,7 @@ class GuardThresholds:
 
 @dataclass(frozen=True)
 class SessionObservation:
-    """One sampled snapshot of an active session.
-
-    Cumulative counters (``api_call_count``, ``tokens_used``) are lifetime
-    totals for the session; the guard differences them across the rolling
-    window to get a rate. ``state_hash`` is any value that changes when the
-    session makes forward progress (new tool result / new activity); the guard
-    only cares whether it changed, not what it is.
-    """
+    """One sampled snapshot of an active session."""
 
     session_id: str
     started_at: float                       # epoch seconds the turn began
@@ -369,7 +341,7 @@ class _SessionState:
 
 
 class RunawayGuard:
-    """Stateful, deterministic runaway detector across many sessions.
+    """Stateful, deterministic runaway detector across sessions."""
 
     Feed it one :class:`SessionObservation` per active session per tick via
     :meth:`observe`; it returns a :class:`Trip` the first time a session
@@ -467,9 +439,21 @@ class RunawayGuard:
                 st.samples.clear()
         st.samples.append((now, int(obs.api_call_count), int(obs.tokens_used)))
         cutoff = now - self.thresholds.window_seconds
-        # Keep one sample just before the cutoff so the window delta spans the
-        # full window rather than only the samples strictly inside it.
-        while len(st.samples) > 1 and st.samples[1][0] < cutoff:
+
+        if not st.samples:
+            if obs.started_at >= cutoff:
+                st.samples.append((min(now, obs.started_at), 0, 0))
+            st.samples.append((now, calls, tokens))
+            return
+
+        last = st.samples[-1]
+        if now < last[0] or calls < last[1] or tokens < last[2]:
+            st.samples.clear()
+            st.samples.append((now, calls, tokens))
+            return
+
+        st.samples.append((now, calls, tokens))
+        while len(st.samples) > 1 and st.samples[1][0] <= cutoff:
             st.samples.popleft()
 
     def _update_error_streak(self, st: _SessionState, obs: SessionObservation) -> None:
@@ -514,12 +498,19 @@ class RunawayGuard:
             # making calls that don't hit the same wall.
             st.last_error_code = None
             st.repeated_error_count = 0
+            st.last_error_code = None
             return
-        if code == st.last_error_code:
-            st.repeated_error_count += 1
-        else:
-            st.last_error_code = code
-            st.repeated_error_count = 1
+        if st.last_failure_seq == failure_seq:
+            return
+
+        st.last_failure_seq = failure_seq
+        if not obs.is_non_retryable_failure:
+            st.repeated_error_count = 0
+            st.last_error_code = None
+            return
+
+        st.repeated_error_count = max(0, int(obs.failure_streak))
+        st.last_error_code = obs.error_code
 
     def _update_progress(self, st: _SessionState, obs: SessionObservation) -> None:
         if obs.no_progress_streak is not None:
@@ -536,11 +527,14 @@ class RunawayGuard:
             st.stalled_samples += 1
         else:
             st.stalled_samples = 0
+            return
+        if st.last_attempt_seq == attempt_seq:
+            return
 
-    # -- decision --------------------------------------------------------
+        st.last_attempt_seq = attempt_seq
+        st.stalled_samples = max(0, int(obs.no_progress_streak))
 
     def _window_deltas(self, st: _SessionState) -> tuple:
-        """(calls, tokens) accumulated across the retained window."""
         if len(st.samples) < 2:
             if not st.samples:
                 return 0, 0

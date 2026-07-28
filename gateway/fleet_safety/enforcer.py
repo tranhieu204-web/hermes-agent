@@ -18,22 +18,20 @@ unit-testable with a fake ``KillActions``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol
+from typing import List, Protocol
 
 from gateway.fleet_safety.deadloop_guard import GuardOutcome, Trip
 from gateway.fleet_safety.report import format_continuation_report, format_kill_report
 
 
 class KillActions(Protocol):
-    """The three effects the enforcer needs. The live wiring adapts the real
-    gateway registries to this; tests pass a fake."""
-
     def interrupt(self, session_id: str, reason: str) -> bool:
         """Request a stop and return True only after execution drained."""
         ...
 
+    # Retained for adapter compatibility only. GuardEnforcer deliberately never
+    # calls this: the gateway's generation-owned finally path releases leases.
     def release_lease(self, session_id: str) -> bool:
-        """Release the session's turn lease. Return True if one was held."""
         ...
 
     def notify(self, text: str) -> bool:
@@ -83,6 +81,24 @@ class GuardEnforcer:
 
         stop_reason = f"fleet-safety stop: {trip.reason.value} — {trip.detail}"
 
+        if not is_hard_stop or outcome == GuardOutcome.CONTINUATION_NOTICE:
+            report = format_continuation_report(trip)
+            result = EnforcementResult(
+                session_id=session_id,
+                reason=reason_str,
+                report=report,
+            )
+            try:
+                result.notified = bool(self._actions.notify(report))
+            except Exception as exc:
+                result.errors.append(f"notify failed: {exc}")
+            return result
+
+        result = EnforcementResult(session_id=session_id, reason=reason_str)
+        request_reason = (
+            f"fleet-safety stop request: {reason_str} — "
+            f"{str(getattr(trip, 'detail', '') or '')}"
+        )
         try:
             result.stop_requested = bool(
                 self._actions.interrupt(trip.session_id, stop_reason)
@@ -107,7 +123,14 @@ class GuardEnforcer:
         # not fully land is exactly what an operator most needs to hear about.
         try:
             result.notified = bool(self._actions.notify(result.report))
-        except Exception as e:
-            result.errors.append(f"notify failed: {e}")
-
+        except Exception as exc:
+            result.errors.append(f"notify failed: {exc}")
         return result
+
+
+__all__ = [
+    "EnforcementResult",
+    "GuardEnforcer",
+    "KillActions",
+    "is_stop_command",
+]

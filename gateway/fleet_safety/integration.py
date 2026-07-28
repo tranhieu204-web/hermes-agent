@@ -8,7 +8,7 @@ Two entry points:
 
 - :func:`run_guard_tick` — called once per housekeeping tick. Samples every
   running agent, feeds the persistent :class:`RunawayGuard`, and on a trip
-  hard-stops that session (interrupt + lease release) and reports it.
+  evaluates continuation notice or hard-stops that session (interrupt + lease release).
 - :func:`verified_usage_for` / :func:`decide_routing` — the wallet-cap seam a
   router calls before sending heavy work to a provider. Reconciles the cached
   usage figure against the authoritative provider source, then decides.
@@ -23,6 +23,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +35,7 @@ from gateway.fleet_safety.deadloop_guard import (
     GuardThresholds,
     RunawayGuard,
     SessionObservation,
+    GuardOutcome,
 )
 from gateway.fleet_safety.enforcer import EnforcementResult, GuardEnforcer, KillActions
 from gateway.fleet_safety.extension_lifecycle import ExtensionRegistry
@@ -42,6 +44,7 @@ from gateway.fleet_safety.wallet_cap import (
     WalletCap,
     WalletCapConfig,
     WalletDecision,
+    WalletAction,
 )
 from gateway.fleet_safety.usage_verify import (
     VerifiedUsage,
@@ -57,11 +60,6 @@ from gateway.fleet_safety.selector import (
 
 logger = logging.getLogger(__name__)
 
-# Default estimate for the context size (tokens) of a single model call when
-# the live runtime doesn't expose a real token count. The 2026-07-25 incident
-# re-sent ~160k tokens per call; using that as the per-call estimate makes the
-# token-rate detector meaningful from call-count data alone. Configurable via
-# ``fleet_safety.deadloop_guard.assumed_context_tokens``.
 DEFAULT_ASSUMED_CONTEXT_TOKENS = 160_000
 _EXTENSION_REGISTRIES: dict[str, ExtensionRegistry] = {}
 _DESKTOP_LOOP_LOCK = threading.Lock()
@@ -479,7 +477,7 @@ class _LiveKillActions(KillActions):
         fut = safe_schedule_threadsafe(
             _send_origin(), loop,
             logger=logger,
-            log_message="dead-loop guard alert scheduling error",
+            log_message="fleet-safety guard alert scheduling error",
         )
         if fut is None:
             return False
@@ -631,9 +629,12 @@ def start_desktop_guard_loop(server_module: Any = None, *, stop_event: Optional[
 
 
 def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -> None:
-    """Sample running agents, evaluate the guard, and kill+report any trips.
+    """Sample active agents and enforce checkpoint or safety-stop decisions.
 
-    Safe to call from the housekeeping thread every tick. Never raises.
+    Safe to call from the housekeeping thread every tick. Never raises. A
+    tripped session remains latched until it disappears from the live registry,
+    preventing repeated interrupt/notification effects while gateway unwind is
+    still in progress.
     """
     if now is None:
         now = time.time()
@@ -658,8 +659,6 @@ def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -
 
         observations, mapping = _collect_observations(runner, now, assumed)
 
-        # Prune sessions the guard is tracking that are no longer running, so a
-        # finished session's latched state is released and its id can be reused.
         live_ids = {o.session_id for o in observations}
         for sid in guard.active_session_ids():
             if sid not in live_ids:
@@ -672,8 +671,8 @@ def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -
         enforcer = GuardEnforcer(actions)
 
         for obs in observations:
-            trip = guard.observe(obs, now)
-            if trip is None:
+            eval_res = guard.observe(obs, now)
+            if eval_res is None:
                 continue
             result = enforcer.enforce(trip)
             if trip.extension_event_id and result.notified:
@@ -689,12 +688,7 @@ def run_guard_tick(runner: Any, loop: Any = None, now: Optional[float] = None) -
             if trip.outcome is GuardOutcome.VERIFIED_HARD_STOP:
                 guard.forget(trip.session_id)
     except Exception as e:  # pragma: no cover - defensive top-level guard
-        logger.debug("dead-loop guard tick error: %s", e)
-
-
-# --------------------------------------------------------------------------
-# Wallet-cap / usage-verification seam
-# --------------------------------------------------------------------------
+        logger.debug("fleet-safety guard tick error: %s", e)
 
 
 def select_best_lane_for(
@@ -722,13 +716,6 @@ def decide_routing(
     is_heavy: bool = False,
     now: Optional[float] = None,
 ) -> WalletDecision:
-    """Wallet-cap decision for routing heavy work to ``provider``.
-
-    Reads config (``fleet_safety.wallet_cap``), verifies usage against the
-    authoritative source, and returns an ALLOW / DOWNGRADE_EFFORT /
-    FALLBACK_PROVIDER decision. The router applies it; this never mutates any
-    wallet or places any call.
-    """
     cfg = _load_fleet_safety_config()
     wallet_cfg = WalletCapConfig.from_config(cfg.get("wallet_cap") or {})
     verify_cfg = cfg.get("usage_verify") or {}

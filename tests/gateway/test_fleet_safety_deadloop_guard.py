@@ -18,7 +18,9 @@ from gateway.fleet_safety.deadloop_guard import (
 
 
 def _obs(session_id="s1", *, started_at=0.0, calls=0, tokens=0, context=0,
-         state="x", error=None, provider="grok", model="grok-4.5", effort="max"):
+         state="x", error=None, attempt_seq=0, no_progress_streak=0,
+         failure_seq=0, failure_streak=0, is_non_retryable_failure=False,
+         provider="grok", model="grok-4.5", effort="max"):
     return SessionObservation(
         session_id=session_id,
         started_at=started_at,
@@ -27,6 +29,11 @@ def _obs(session_id="s1", *, started_at=0.0, calls=0, tokens=0, context=0,
         context_tokens=context,
         state_hash=state,
         error_code=error,
+        attempt_seq=attempt_seq,
+        no_progress_streak=no_progress_streak,
+        failure_seq=failure_seq,
+        failure_streak=failure_streak,
+        is_non_retryable_failure=is_non_retryable_failure,
         provider=provider,
         model=model,
         effort=effort,
@@ -36,7 +43,7 @@ def _obs(session_id="s1", *, started_at=0.0, calls=0, tokens=0, context=0,
 # -- (a) token-rate -----------------------------------------------------------
 
 
-def test_token_rate_trips_within_window():
+def test_token_rate_emits_continuation_within_window():
     th = GuardThresholds(window_seconds=900, max_tokens_per_window=4_000_000,
                          max_calls_per_window=10_000, max_runtime_seconds=1e9)
     g = RunawayGuard(th)
@@ -91,7 +98,7 @@ def test_counter_reset_starts_a_new_rate_epoch():
 # -- (a) call-rate ------------------------------------------------------------
 
 
-def test_call_rate_trips():
+def test_call_rate_emits_continuation():
     th = GuardThresholds(window_seconds=900, max_calls_per_window=100,
                          max_tokens_per_window=10**15, max_runtime_seconds=1e9)
     g = RunawayGuard(th)
@@ -109,9 +116,18 @@ def test_repeated_non_retryable_error_trips_on_kth():
     th = GuardThresholds(repeated_error_limit=3, max_runtime_seconds=1e9,
                          max_tokens_per_window=10**15, max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    assert g.observe(_obs(error=400), now=0.0) is None   # count 1
-    assert g.observe(_obs(error=400), now=1.0) is None   # count 2
-    trip = g.observe(_obs(error=400), now=2.0)           # count 3 → trip
+    assert g.observe(_obs(
+        error=400, failure_seq=1, failure_streak=1,
+        is_non_retryable_failure=True,
+    ), now=0.0) is None
+    assert g.observe(_obs(
+        error=400, failure_seq=2, failure_streak=2,
+        is_non_retryable_failure=True,
+    ), now=1.0) is None
+    trip = g.observe(_obs(
+        error=400, failure_seq=3, failure_streak=3,
+        is_non_retryable_failure=True,
+    ), now=2.0)
     assert trip is not None
     assert trip.reason is TripReason.REPEATED_ERROR
     assert trip.outcome is GuardOutcome.VERIFIED_HARD_STOP
@@ -123,27 +139,51 @@ def test_error_streak_resets_on_clean_sample():
     th = GuardThresholds(repeated_error_limit=3, max_runtime_seconds=1e9,
                          max_tokens_per_window=10**15, max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    g.observe(_obs(error=400), now=0.0)
-    g.observe(_obs(error=400), now=1.0)
-    g.observe(_obs(error=None), now=2.0)   # clean sample breaks the streak
-    assert g.observe(_obs(error=400), now=3.0) is None  # back to count 1
-    assert g.observe(_obs(error=400), now=4.0) is None  # count 2
+    g.observe(_obs(
+        error=400, failure_seq=1, failure_streak=1,
+        is_non_retryable_failure=True,
+    ), now=0.0)
+    g.observe(_obs(
+        error=400, failure_seq=2, failure_streak=2,
+        is_non_retryable_failure=True,
+    ), now=1.0)
+    g.observe(_obs(error=None, failure_seq=3), now=2.0)
+    assert g.observe(_obs(
+        error=400, failure_seq=4, failure_streak=1,
+        is_non_retryable_failure=True,
+    ), now=3.0) is None
+    assert g.observe(_obs(
+        error=400, failure_seq=5, failure_streak=2,
+        is_non_retryable_failure=True,
+    ), now=4.0) is None
 
 
 def test_error_streak_resets_on_different_code():
     th = GuardThresholds(repeated_error_limit=3, max_runtime_seconds=1e9,
                          max_tokens_per_window=10**15, max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    g.observe(_obs(error=400), now=0.0)
-    g.observe(_obs(error=400), now=1.0)
-    assert g.observe(_obs(error=429), now=2.0) is None   # different → count 1
-    assert g.observe(_obs(error=429), now=3.0) is None   # count 2
+    g.observe(_obs(
+        error=400, failure_seq=1, failure_streak=1,
+        is_non_retryable_failure=True,
+    ), now=0.0)
+    g.observe(_obs(
+        error=400, failure_seq=2, failure_streak=2,
+        is_non_retryable_failure=True,
+    ), now=1.0)
+    assert g.observe(_obs(
+        error=429, failure_seq=3, failure_streak=1,
+        is_non_retryable_failure=False,
+    ), now=2.0) is None
+    assert g.observe(_obs(
+        error=429, failure_seq=4, failure_streak=2,
+        is_non_retryable_failure=False,
+    ), now=3.0) is None
 
 
 # -- (c) wall-clock -----------------------------------------------------------
 
 
-def test_wall_clock_trips_past_cap():
+def test_wall_clock_emits_continuation_past_cap():
     th = GuardThresholds(max_runtime_seconds=3600, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
@@ -159,42 +199,49 @@ def test_wall_clock_trips_past_cap():
 # -- (d) huge context, no forward progress -----------------------------------
 
 
-def test_no_progress_trips_when_context_huge_and_state_frozen():
+def test_producer_confirmed_no_progress_trips_on_new_attempts():
     th = GuardThresholds(huge_context_tokens=150_000, no_progress_samples=3,
                          max_runtime_seconds=1e9, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    # Same state_hash + huge context, calls climbing but nothing new happening.
-    assert g.observe(_obs(context=160_000, state="frozen", calls=1), now=0.0) is None
-    assert g.observe(_obs(context=160_000, state="frozen", calls=2), now=60.0) is None
-    assert g.observe(_obs(context=160_000, state="frozen", calls=3), now=120.0) is None
-    trip = g.observe(_obs(context=160_000, state="frozen", calls=4), now=180.0)
+    assert g.observe(_obs(
+        context=160_000, attempt_seq=1, no_progress_streak=1,
+    ), now=0.0) is None
+    assert g.observe(_obs(
+        context=160_000, attempt_seq=2, no_progress_streak=2,
+    ), now=60.0) is None
+    trip = g.observe(_obs(
+        context=160_000, attempt_seq=3, no_progress_streak=3,
+    ), now=120.0)
     assert trip is not None
     assert trip.reason is TripReason.NO_PROGRESS
     assert trip.outcome is GuardOutcome.VERIFIED_HARD_STOP
     assert trip.is_hard_stop is True
 
 
-def test_no_progress_resets_when_state_changes():
+def test_no_progress_resets_when_producer_streak_resets():
     th = GuardThresholds(huge_context_tokens=150_000, no_progress_samples=3,
                          max_runtime_seconds=1e9, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    g.observe(_obs(context=160_000, state="a"), now=0.0)
-    g.observe(_obs(context=160_000, state="a"), now=1.0)
-    g.observe(_obs(context=160_000, state="b"), now=2.0)  # progress → reset
-    g.observe(_obs(context=160_000, state="b"), now=3.0)
-    assert g.observe(_obs(context=160_000, state="b"), now=4.0) is None
+    g.observe(_obs(attempt_seq=1, no_progress_streak=1), now=0.0)
+    g.observe(_obs(attempt_seq=2, no_progress_streak=2), now=1.0)
+    g.observe(_obs(attempt_seq=3, no_progress_streak=0), now=2.0)
+    g.observe(_obs(attempt_seq=4, no_progress_streak=1), now=3.0)
+    assert g.observe(_obs(attempt_seq=5, no_progress_streak=2), now=4.0) is None
 
 
-def test_no_progress_ignored_when_context_small():
+def test_unchanged_state_hash_never_manufactures_no_progress():
     th = GuardThresholds(huge_context_tokens=150_000, no_progress_samples=2,
                          max_runtime_seconds=1e9, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
     for i in range(5):
-        # small context, frozen state → not a runaway
-        assert g.observe(_obs(context=1000, state="frozen"), now=float(i)) is None
+        assert g.observe(_obs(
+            context=200_000,
+            state="frozen",
+            calls=i + 1,
+        ), now=float(i)) is None
 
 
 def test_producer_no_progress_streak_is_poll_idempotent_and_hard_stops_at_limit():
@@ -240,12 +287,13 @@ def test_continuation_notice_deduplicates_for_same_threshold_episode():
     th = GuardThresholds(max_runtime_seconds=100, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    assert g.observe(_obs(started_at=0.0), now=200.0).reason is TripReason.WALL_CLOCK
-    # already tripped → silent on subsequent observations
+    first = g.observe(_obs(started_at=0.0), now=200.0)
+    assert first.reason is TripReason.WALL_CLOCK
+    assert first.is_hard_stop is False
     assert g.observe(_obs(started_at=0.0), now=260.0) is None
 
 
-def test_wall_clock_takes_priority_over_rate():
+def test_wall_clock_notice_takes_priority_over_rate():
     th = GuardThresholds(max_runtime_seconds=100, window_seconds=900,
                          max_tokens_per_window=1, max_calls_per_window=1)
     g = RunawayGuard(th)
@@ -253,6 +301,7 @@ def test_wall_clock_takes_priority_over_rate():
     # both wall-clock and rate are exceeded; wall-clock wins by priority
     trip = g.observe(_obs(started_at=0.0, tokens=10**9, calls=10**6), now=200.0)
     assert trip.reason is TripReason.WALL_CLOCK
+    assert trip.is_hard_stop is False
 
 
 def test_disabled_guard_never_trips():
@@ -267,20 +316,21 @@ def test_independent_sessions_tracked_separately():
     g = RunawayGuard(th)
     assert g.observe(_obs("a", started_at=0.0), now=50.0) is None
     assert g.observe(_obs("b", started_at=0.0), now=50.0) is None
-    assert g.observe(_obs("a", started_at=0.0), now=200.0).session_id == "a"
-    # b is independent and still under its cap
+    notice = g.observe(_obs("a", started_at=0.0), now=200.0)
+    assert notice.session_id == "a"
+    assert notice.is_hard_stop is False
     assert g.observe(_obs("b", started_at=0.0), now=90.0) is None
 
 
-def test_forget_releases_latched_state():
+def test_forget_releases_notice_latched_state():
     th = GuardThresholds(max_runtime_seconds=100, max_tokens_per_window=10**15,
                          max_calls_per_window=10**9)
     g = RunawayGuard(th)
-    g.observe(_obs("a", started_at=0.0), now=200.0)  # trips + latches
+    g.observe(_obs("a", started_at=0.0), now=200.0)
     assert "a" in g.active_session_ids()
     g.forget("a")
     assert "a" not in g.active_session_ids()
-    # a fresh session under the same id starts clean and can trip again
+    # A fresh session under the same id starts clean and can notify again.
     g.observe(_obs("a", started_at=1000.0), now=1000.0)
     assert g.observe(_obs("a", started_at=1000.0), now=1200.0).reason is TripReason.WALL_CLOCK
 
