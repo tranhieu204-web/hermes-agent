@@ -2891,6 +2891,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
     worker_pid          INTEGER,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
+    -- Progress contract (S1: liveness is not progress). A live PID, a fresh
+    -- heartbeat and an accepted TCP stream can ALL be true while the obligation
+    -- is unchanged — a worker sat at ~0 CPU for 45 min on 2026-07-26 and the
+    -- dispatcher counted it healthy the whole time. These two columns record
+    -- OBSERVED forward motion, deliberately not a self-authored "I'm fine".
+    progress_fingerprint TEXT,
+    last_progress_at    INTEGER,
     started_at          INTEGER NOT NULL,
     ended_at            INTEGER,
     outcome             TEXT,
@@ -4010,6 +4017,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    run_cols = {r[1] for r in conn.execute("PRAGMA table_info(task_runs)")}
+    if run_cols and "progress_fingerprint" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "progress_fingerprint", "progress_fingerprint TEXT"
+        )
+    if run_cols and "last_progress_at" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "last_progress_at", "last_progress_at INTEGER"
         )
 
     if "importance" not in cols:
