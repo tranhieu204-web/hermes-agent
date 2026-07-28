@@ -83,14 +83,13 @@ class TestGetFallbackChainRanking:
 
     def test_get_fallback_chain_routes_through_rank_fallback_chain(self, monkeypatch):
         from hermes_cli.fallback_config import get_fallback_chain
-        from gateway.fleet_safety.usage_verify import VerifiedUsage
 
-        def fake_verified(provider, **kwargs):
-            if provider == "chatgpt_codex":
-                return VerifiedUsage(provider=provider, used_percent=15.0, source="cache", stale=False, suspect=False)
-            return VerifiedUsage(provider=provider, used_percent=50.0, source="cache", stale=False, suspect=False)
-
-        monkeypatch.setattr("gateway.fleet_safety.selector.verified_usage_for", fake_verified)
+        monkeypatch.setattr(
+            "gateway.fleet_safety.selector.rank_fallback_chain",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("ordinary fallbacks must not invoke fleet reranking")
+            ),
+        )
         cfg = {
             "fleet": {"enabled": True},
             "fallback_providers": [
@@ -99,6 +98,7 @@ class TestGetFallbackChainRanking:
             ]
         }
         chain = get_fallback_chain(cfg)
-        assert len(chain) >= 2
-        # codex has higher headroom (~85%) than grok (~50%) so rank_fallback_chain orders codex first
-        assert chain[0]["provider"] == "chatgpt_codex"
+        assert [entry["provider"] for entry in chain] == [
+            "grok",
+            "chatgpt_codex",
+        ]

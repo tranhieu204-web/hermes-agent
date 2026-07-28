@@ -96,6 +96,10 @@ def _load_fleet_safety_config() -> dict:
     return _load_full_config().get("fleet_safety") or {}
 
 
+def _load_fleet_safety_config() -> dict:
+    return _load_full_config().get("fleet_safety") or {}
+
+
 # --------------------------------------------------------------------------
 # Detector / kill wiring
 # --------------------------------------------------------------------------
