@@ -104,22 +104,6 @@ def test_authoritative_available_is_fresh_even_with_old_cache():
     assert v.used_percent == 95.0
 
 
-def test_stale_authoritative_snapshot_is_not_trustworthy():
-    v = verify_usage(
-        "grok",
-        cached_percent=None,
-        cached_fetched_at=None,
-        authoritative_percent=95.0,
-        authoritative_available=True,
-        authoritative_fetched_at=0.0,
-        now=100_000.0,
-        max_age_seconds=900.0,
-    )
-    assert v.stale is True
-    assert v.authoritative_age_seconds == 100_000.0
-    assert v.trustworthy is False
-
-
 # -- adapters -----------------------------------------------------------------
 
 

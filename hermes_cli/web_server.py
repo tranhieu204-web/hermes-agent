@@ -207,8 +207,6 @@ async def _lifespan(app: "FastAPI"):
     # dashboard` is unaffected — it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    guard_stop: "threading.Event | None" = None
-    guard_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
@@ -218,10 +216,6 @@ async def _lifespan(app: "FastAPI"):
             name="desktop-cron-ticker",
         )
         cron_thread.start()
-        from gateway.fleet_safety.integration import start_desktop_guard_loop
-        from tui_gateway import server as tui_server
-
-        guard_thread, guard_stop = start_desktop_guard_loop(tui_server)
 
     # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
@@ -243,10 +237,6 @@ async def _lifespan(app: "FastAPI"):
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
-        if guard_stop is not None:
-            guard_stop.set()
-        if guard_thread is not None:
-            guard_thread.join(timeout=2.0)
 
 
 def _get_event_state(app: "FastAPI"):

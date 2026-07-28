@@ -981,7 +981,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def _build_api_kwargs_unchecked(agent, api_messages: list) -> dict:
+def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
@@ -1240,41 +1240,6 @@ def _build_api_kwargs_unchecked(agent, api_messages: list) -> dict:
         provider_name=agent.provider,
     )
 
-
-
-def build_api_kwargs(agent, api_messages: list) -> dict:
-    """Wallet-preflight the exact route before constructing provider kwargs."""
-    from gateway.fleet_safety.wallet_runtime import CallOrigin, WalletCallDescriptor, WalletCapBlocked, wallet_preflight
-
-    raw_origin = getattr(agent, "_wallet_call_origin", None)
-    try:
-        origin = CallOrigin(raw_origin)
-    except (TypeError, ValueError):
-        origin = CallOrigin.AUTOMATIC_BACKGROUND if str(getattr(agent, "platform", "")).lower() == "cron" else CallOrigin.OPERATOR_EXPLICIT
-    reasoning = getattr(agent, "reasoning_config", None)
-    effort = str(reasoning.get("effort", "medium")) if isinstance(reasoning, dict) else "medium"
-    plan = wallet_preflight(WalletCallDescriptor(
-        provider=str(getattr(agent, "provider", "") or ""),
-        model=str(getattr(agent, "model", "") or ""),
-        effort=effort,
-        is_heavy=bool(getattr(agent, "_wallet_is_heavy", False)),
-        origin=origin,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        fallback_entries=tuple(getattr(agent, "fallback_chain", None) or ()),
-    ))
-    if plan.provider != str(getattr(agent, "provider", "") or "") or plan.model != str(getattr(agent, "model", "") or ""):
-        raise WalletCapBlocked("wallet plan selected a fallback before route activation")
-    kwargs = _build_api_kwargs_unchecked(agent, api_messages)
-    if plan.reasoning_override:
-        effort_override = plan.reasoning_override.get("effort")
-        if "reasoning_effort" in kwargs:
-            kwargs["reasoning_effort"] = effort_override
-        extra = kwargs.get("extra_body")
-        if isinstance(extra, dict) and isinstance(extra.get("reasoning"), dict):
-            kwargs["extra_body"] = dict(extra)
-            kwargs["extra_body"]["reasoning"] = dict(extra["reasoning"])
-            kwargs["extra_body"]["reasoning"]["effort"] = effort_override
-    return kwargs
 
 
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
