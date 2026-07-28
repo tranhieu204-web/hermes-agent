@@ -697,7 +697,7 @@ class FleetQualificationDoctor:
         )
         if error:
             return None, (), error
-        return version, qualified_models, None
+        return version, (model_id,), None
 
     def _external_executable(self, profile: LaneProfile) -> str | None:
         executable = self.which(profile.executable or "")

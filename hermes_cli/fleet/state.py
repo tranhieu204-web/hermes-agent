@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .policy import evaluate_lane, select_lane
+from .parent_models import is_sonnet_model
 from .types import (
     AdapterKind,
     CapacityRead,
