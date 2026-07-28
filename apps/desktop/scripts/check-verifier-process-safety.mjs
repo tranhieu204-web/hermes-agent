@@ -1110,7 +1110,11 @@ function shellCommandClauses(command) {
       if (character === quote) {
         quote = null
       } else if (character === '\\' && quote !== "'") {
-        escaped = true
+        if ([quote, '\\'].includes(command[index + 1])) {
+          escaped = true
+        } else {
+          token += character
+        }
       } else {
         token += character
       }
@@ -1120,7 +1124,11 @@ function shellCommandClauses(command) {
     if (character === "'" || character === '"' || character === '`') {
       quote = character
     } else if (character === '\\') {
-      escaped = true
+      if (/\s|[;'"`|&\\]/.test(command[index + 1] ?? '')) {
+        escaped = true
+      } else {
+        token += character
+      }
     } else if (/\s/.test(character)) {
       finishToken()
       if (character === '\n' || character === '\r') {
@@ -1545,7 +1553,13 @@ function resolveRepositoryDelegations(repoRoot, repositoryFiles) {
           const implicitScript = ['start', 'stop', 'restart', 'test'].includes(words[0])
             ? words[0]
             : null
-          const targetScript = runIndex === -1 ? implicitScript : words[runIndex + 1]
+          const directManagerScript = runIndex === -1 && ['pnpm', 'yarn'].includes(name) &&
+            words[0] && !/^(?:add|audit|ci|exec|install|publish|remove|update|why)$/i.test(words[0])
+            ? words[0]
+            : null
+          const targetScript = runIndex === -1
+            ? implicitScript ?? directManagerScript
+            : words[runIndex + 1]
           if (runIndex !== -1 && !targetScript) {
             violations.push(delegationViolation(
               record.path,
@@ -1623,7 +1637,15 @@ function workflowRunCommand(stepSource) {
       return match[1].replace(/^(['"])([\s\S]*)\1$/, '$2')
     }
 
-    const nested = lines.slice(index + 1).filter(line => line.raw.trim())
+    const nested = []
+    for (const line of lines.slice(index + 1)) {
+      if (line.raw.trim() && line.indent <= lines[index].indent) {
+        break
+      }
+      if (line.raw.trim()) {
+        nested.push(line)
+      }
+    }
     if (!nested.length) {
       return ''
     }
@@ -1700,11 +1722,14 @@ function isCandidateControlledWorkflowCommand(command) {
   if (!command.trim()) {
     return true
   }
+  if (isInertOutputCommand(command.trim())) {
+    return false
+  }
 
-  return /(?:^|[;&|\r\n]\s*)(?:sudo\s+)?(?:npm|npx|pnpm|yarn)(?:\.cmd|\.exe)?\b/i.test(command) ||
-    /(?:^|[;&|\r\n]\s*)(?:node|tsx)(?:\.exe)?\b/i.test(command) ||
-    /(?:^|[;&|\r\n]\s*)(?:python3?|bash|sh|pwsh|powershell)(?:\.exe)?\s+(?:\.\.?[\\/]|[^\s;|&]+[\\/])/i.test(command) ||
-    /(?:^|[;&|\r\n]\s*)(?:pip3?|uv|poetry)(?:\.exe)?\s+(?:install|sync|run)\b/i.test(command) ||
+  return /\b(?:npm|npx|pnpm|yarn)(?:\.cmd|\.exe)?\b/i.test(command) ||
+    /\b(?:node|tsx)(?:\.exe)?\b/i.test(command) ||
+    /\b(?:python3?|bash|sh|pwsh|powershell)(?:\.exe)?\s+(?:-(?:c|command)\b|\.\.?[\\/]|[^\s;|&]+[\\/])/i.test(command) ||
+    /\b(?:pip3?|uv|poetry)(?:\.exe)?\s+(?:install|sync|run)\b/i.test(command) ||
     /(?:^|[;&|\r\n]\s*)\.\.?[\\/][^\s;|&]+/i.test(command)
 }
 
@@ -1721,6 +1746,7 @@ function workflowPreflightViolations(source, relativePath) {
   const violations = []
   for (const job of parsed.jobs) {
     const jobLevelUses = /^\s*uses\s*:\s*(.*?)\s*$/m.exec(job.source)?.[1]
+      ?.replace(/^(['"])([\s\S]*)\1$/, '$2')
     if (jobLevelUses?.startsWith('./')) {
       violations.push({
         file: relativePath,
