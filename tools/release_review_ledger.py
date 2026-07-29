@@ -347,9 +347,25 @@ class ReleaseReviewLedger:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = self._require_receipt(conn, receipt_id)
-                if row[1] in {"completed", "failed", "unknown", "timebox_expired"}:
+                # A timeout is terminal.  Preserve its first explicit completion
+                # receipt, but never let a late worker result overwrite it.
+                if row[1] == "timebox_expired":
+                    if _normalized(status) != "timebox_expired":
+                        return False
+                    updated = conn.execute(
+                        "UPDATE release_review_receipts SET terminal_json=?, updated_at=? "
+                        "WHERE receipt_id=? AND state='timebox_expired' AND terminal_json='{}'",
+                        (json.dumps(terminal, sort_keys=True), time.time(), receipt_id),
+                    )
+                    return updated.rowcount == 1
+                if row[1] in {"completed", "failed", "unknown"}:
                     return False
-                state = "completed" if status == "completed" else "failed" if status in {"error", "failed", "stalled"} else "unknown"
+                state = (
+                    "completed" if status == "completed"
+                    else "failed" if status in {"error", "failed", "stalled"}
+                    else "timebox_expired" if _normalized(status) == "timebox_expired"
+                    else "unknown"
+                )
                 conn.execute(
                     "UPDATE release_review_receipts SET state=?, terminal_json=?, updated_at=? WHERE receipt_id=?",
                     (state, json.dumps(terminal, sort_keys=True), time.time(), receipt_id),
@@ -357,6 +373,13 @@ class ReleaseReviewLedger:
                 return True
         finally:
             conn.close()
+
+    def finalize_direct_receipt(self, receipt_id: str, return_code: int, evidence: Mapping[str, Any]) -> bool:
+        return self.finalize_async_receipt(
+            receipt_id,
+            "completed" if return_code == 0 else "failed",
+            {"return_code": return_code, **dict(evidence)},
+        )
 
     def incremental_scope(self, receipt_id: str) -> Dict[str, list[str]]:
         conn = self._connect()
@@ -384,12 +407,12 @@ class ReleaseReviewLedger:
         finally:
             conn.close()
 
-    def expire_receipt_if_due(self, receipt_id: str, now: Optional[float] = None) -> bool:
+    def deadline_watch_state(self, receipt_id: str, now: Optional[float] = None) -> str:
         """Transition one due receipt, without coupling its timeout to other rows.
 
-        ``True`` also means the receipt was already terminally expired.  A
-        watchdog that wakes after an external sweep must still signal its own
-        reviewer; otherwise simultaneous expiry can leave one child running.
+        Returns ``pending``, ``expired``, or ``terminal``.  A watchdog stops
+        permanently for a normal terminal result, and signals expiry exactly
+        once for its own receipt.
         """
         now = time.time() if now is None else now
         conn = self._connect()
@@ -398,17 +421,22 @@ class ReleaseReviewLedger:
                 conn.execute("BEGIN IMMEDIATE")
                 row = self._require_receipt(conn, receipt_id)
                 state, deadline_at = row[1], row[2]
+                if state in {"completed", "failed", "unknown", "launch_failed", "launch_rejected"}:
+                    return "terminal"
                 if deadline_at > now:
-                    return False
+                    return "pending"
                 if state in {"admitted", "preflight_ready", "launching", "running"}:
                     conn.execute(
                         "UPDATE release_review_receipts SET state='timebox_expired', updated_at=? WHERE receipt_id=?",
                         (now, receipt_id),
                     )
-                    return True
-                return state == "timebox_expired"
+                    return "expired"
+                return "expired" if state == "timebox_expired" else "terminal"
         finally:
             conn.close()
+
+    def expire_receipt_if_due(self, receipt_id: str, now: Optional[float] = None) -> bool:
+        return self.deadline_watch_state(receipt_id, now) == "expired"
 
     def supervise_deadline(self, receipt_id: str, on_timeout) -> None:
         """Schedule one daemon timeout callback for a running review receipt."""
@@ -425,9 +453,10 @@ class ReleaseReviewLedger:
 
         def _timeout():
             try:
-                if self.expire_receipt_if_due(receipt_id) and callable(on_timeout):
+                state = self.deadline_watch_state(receipt_id)
+                if state == "expired" and callable(on_timeout):
                     on_timeout()
-                else:
+                elif state == "pending":
                     retry = threading.Timer(0.01, _timeout)
                     retry.daemon = True
                     retry.start()

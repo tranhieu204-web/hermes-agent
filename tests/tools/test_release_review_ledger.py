@@ -1,6 +1,7 @@
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -173,6 +174,35 @@ def test_direct_launcher_enforces_timebox_on_its_own_process(tmp_path):
         assert conn.execute("SELECT state FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)).fetchone()[0] == "timebox_expired"
 
 
+def test_direct_shell_normal_exit_records_terminal_evidence_before_deadline(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+
+    class Process:
+        pid = 78
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("completed reviewer must not be terminated")
+
+    result = launch_shell_review(
+        ledger, **_request(deadline_seconds=1), preflight=_preflight(), command=["reviewer"],
+        popen=lambda *_args, **_kwargs: Process(),
+    )
+    deadline = time.monotonic() + 1
+    terminal = None
+    while terminal is None and time.monotonic() < deadline:
+        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+            terminal = conn.execute("SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)).fetchone()
+        if terminal[0] != "completed":
+            terminal = None
+            time.sleep(0.01)
+    assert terminal[0] == "completed"
+    assert "return_code" in terminal[1]
+    assert ledger.deadline_watch_state(result["receipt_id"]) == "terminal"
+
+
 def test_simultaneous_timeboxes_terminate_each_reviewers_own_process(tmp_path):
     ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
 
@@ -262,6 +292,57 @@ def test_async_launcher_uses_the_real_async_delegation_rail(tmp_path, monkeypatc
         assert state == "completed"
         assert "delegation_id" in terminal
     finally:
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ad._reset_for_tests()
+
+
+def test_async_timeout_records_terminal_outcome_when_interrupt_is_noop(tmp_path, monkeypatch):
+    """A non-cooperative thread cannot revive a receipt after its timebox."""
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ad._reset_for_tests()
+    gate = threading.Event()
+    try:
+        ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+        result = launch_async_review(
+            ledger,
+            **_request(),
+            preflight=_preflight(),
+            dispatch=ad.dispatch_async_delegation,
+            dispatch_kwargs={
+                "goal": "read-only review",
+                "context": "frozen candidate",
+                "toolsets": None,
+                "role": "reviewer",
+                "model": "m",
+                "session_key": "test",
+                "runner": lambda: (gate.wait(2), {"status": "completed", "summary": "late"})[1],
+                "interrupt_fn": lambda: None,
+                "max_async_children": 1,
+            },
+        )
+        assert result["status"] == "launched"
+        assert ad.force_timeout_review_receipt(result["receipt_id"]) == 1
+        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+            state, terminal = conn.execute(
+                "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?",
+                (result["receipt_id"],),
+            ).fetchone()
+        assert state == "timebox_expired"
+        assert "timebox_expired" in terminal
+        gate.set()
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+            assert conn.execute(
+                "SELECT state FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)
+            ).fetchone()[0] == "timebox_expired"
+    finally:
+        gate.set()
         deadline = time.monotonic() + 2
         while ad.active_count() and time.monotonic() < deadline:
             time.sleep(0.01)
