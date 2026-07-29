@@ -21,9 +21,19 @@ def _admit_capture_claim(ledger: ReleaseReviewLedger, receipt_id: Optional[str],
 
 def launch_shell_review(
     ledger: ReleaseReviewLedger, *, command: Sequence[str], receipt_id: Optional[str] = None,
-    popen: Callable[..., Any] = subprocess.Popen, **request: Any,
+    popen: Callable[..., Any] = subprocess.Popen, restart_recovery_mode: Optional[str] = None,
+    **request: Any,
 ) -> Dict[str, Any]:
-    """Claim before starting a direct reviewer; commands never use ``shell=True``."""
+    """Claim before starting a direct reviewer; commands never use ``shell=True``.
+
+    Direct Popen ownership is intentionally confined to this process.  A caller
+    must acknowledge that it does not require durable restart recovery.
+    """
+    if restart_recovery_mode != "current_process_only":
+        return {
+            "status": "rejected",
+            "error": "direct-shell reviews require restart_recovery_mode='current_process_only'; durable restart recovery is unsupported",
+        }
     receipt = _admit_capture_claim(ledger, receipt_id, **request)
     if receipt["status"] != "admitted" or receipt["claim"]["status"] != "claimed":
         return receipt
@@ -37,15 +47,43 @@ def launch_shell_review(
         raise
     try:
         ledger.attach_processes(receipt["receipt_id"], int(process.pid), int(process.pid), f"pid:{int(process.pid)}:single-process")
+    except RuntimeError:
+        if ledger.receipt_state(receipt["receipt_id"]) != "timebox_expired":
+            if process.poll() is None:
+                process.terminate()
+            ledger.mark_launch_failed(receipt["receipt_id"])
+            raise
+        # The only process touched here is the object just returned by this
+        # launch.  If an external timeout won before attachment, preserve that
+        # terminal outcome and never turn it into a misleading launch error.
+        evidence = {
+            "reason": "receipt expired before direct attachment",
+            "process_handle": f"pid:{int(process.pid)}:single-process",
+            "termination": "requested" if process.poll() is None else "already_exited",
+        }
+        ledger.finalize_async_receipt(receipt["receipt_id"], "timebox_expired", evidence)
+        if process.poll() is None:
+            try:
+                process.terminate()
+            except Exception as exc:  # evidence is already durable; do not lose it
+                evidence["termination_error"] = f"{type(exc).__name__}: {exc}"
+        return {**receipt, "status": "timebox_expired", "root_pid": int(process.pid), "leaf_pid": int(process.pid)}
     except Exception:
         if process.poll() is None:
             process.terminate()
-        try:
-            ledger.mark_launch_failed(receipt["receipt_id"])
-        except RuntimeError:
-            pass  # expiry is already the durable terminal state
+        ledger.mark_launch_failed(receipt["receipt_id"])
         raise
-    ledger.supervise_deadline(receipt["receipt_id"], lambda: process.terminate() if process.poll() is None else None)
+
+    def _timeout_direct_process():
+        # Write the durable timeout receipt before signalling the owned process.
+        ledger.finalize_async_receipt(
+            receipt["receipt_id"], "timebox_expired",
+            {"reason": "direct review deadline", "process_handle": f"pid:{int(process.pid)}:single-process"},
+        )
+        if process.poll() is None:
+            process.terminate()
+
+    ledger.supervise_deadline(receipt["receipt_id"], _timeout_direct_process)
     def _watch_exit():
         code = process.poll()
         if code is None:

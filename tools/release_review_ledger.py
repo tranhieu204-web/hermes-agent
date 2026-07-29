@@ -124,7 +124,9 @@ class ReleaseReviewLedger:
 
     @staticmethod
     def _expire_if_due(conn: sqlite3.Connection, receipt_id: str, state: str, deadline_at: float, now: float) -> str:
-        if state in {"admitted", "preflight_ready", "launching", "running"} and deadline_at <= now:
+        # The review timebox begins only after a process/delegation is attached.
+        # Admission and spawn work cannot consume it or race an attachment.
+        if state == "running" and deadline_at <= now:
             conn.execute(
                 "UPDATE release_review_receipts SET state='timebox_expired', updated_at=? WHERE receipt_id=?",
                 (now, receipt_id),
@@ -260,6 +262,14 @@ class ReleaseReviewLedger:
         finally:
             conn.close()
 
+    def receipt_state(self, receipt_id: str) -> str:
+        """Read the durable state for a narrow launcher recovery branch."""
+        conn = self._connect()
+        try:
+            return self._require_receipt(conn, receipt_id)[1]
+        finally:
+            conn.close()
+
     def attach_processes(self, receipt_id: str, root_pid: int, leaf_pid: Optional[int], launch_handle: str) -> None:
         if not isinstance(root_pid, int) or root_pid <= 0 or (leaf_pid is not None and (not isinstance(leaf_pid, int) or leaf_pid <= 0)):
             raise ValueError("process identifiers must be positive integers")
@@ -270,12 +280,16 @@ class ReleaseReviewLedger:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = self._require_receipt(conn, receipt_id)
-                state = self._expire_if_due(conn, receipt_id, row[1], row[2], time.time())
+                now = time.time()
+                state = self._expire_if_due(conn, receipt_id, row[1], row[2], now)
                 if state != "launching":
                     raise RuntimeError(f"receipt {receipt_id} cannot attach processes from state {row[1]}")
+                deadline_seconds = conn.execute(
+                    "SELECT deadline_seconds FROM release_review_receipts WHERE receipt_id=?", (receipt_id,)
+                ).fetchone()[0]
                 conn.execute(
-                    "UPDATE release_review_receipts SET root_pid=?, leaf_pid=?, launch_handle=?, state='running', updated_at=? WHERE receipt_id=? AND state='launching'",
-                    (root_pid, leaf_pid, _normalized(launch_handle), time.time(), receipt_id),
+                    "UPDATE release_review_receipts SET root_pid=?, leaf_pid=?, launch_handle=?, state='running', deadline_at=?, updated_at=? WHERE receipt_id=? AND state='launching'",
+                    (root_pid, leaf_pid, _normalized(launch_handle), now + float(deadline_seconds), now, receipt_id),
                 )
         finally:
             conn.close()
@@ -400,7 +414,7 @@ class ReleaseReviewLedger:
             with conn:
                 result = conn.execute(
                     "UPDATE release_review_receipts SET state='timebox_expired', updated_at=? "
-                    "WHERE state IN ('admitted','preflight_ready','launching','running') AND deadline_at<=?",
+                    "WHERE state='running' AND deadline_at<=?",
                     (now, now),
                 )
                 return result.rowcount
@@ -423,15 +437,17 @@ class ReleaseReviewLedger:
                 state, deadline_at = row[1], row[2]
                 if state in {"completed", "failed", "unknown", "launch_failed", "launch_rejected"}:
                     return "terminal"
+                if state == "timebox_expired":
+                    return "expired"
+                if state != "running":
+                    return "pending"
                 if deadline_at > now:
                     return "pending"
-                if state in {"admitted", "preflight_ready", "launching", "running"}:
-                    conn.execute(
-                        "UPDATE release_review_receipts SET state='timebox_expired', updated_at=? WHERE receipt_id=?",
-                        (now, receipt_id),
-                    )
-                    return "expired"
-                return "expired" if state == "timebox_expired" else "terminal"
+                conn.execute(
+                    "UPDATE release_review_receipts SET state='timebox_expired', updated_at=? WHERE receipt_id=?",
+                    (now, receipt_id),
+                )
+                return "expired"
         finally:
             conn.close()
 
