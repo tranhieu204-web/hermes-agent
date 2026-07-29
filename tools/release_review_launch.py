@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from tools.release_review_ledger import ReleaseReviewLedger
@@ -45,6 +46,17 @@ def launch_shell_review(
             pass  # expiry is already the durable terminal state
         raise
     ledger.supervise_deadline(receipt["receipt_id"], lambda: process.terminate() if process.poll() is None else None)
+    def _watch_exit():
+        code = process.poll()
+        if code is None:
+            retry = threading.Timer(0.01, _watch_exit)
+            retry.daemon = True
+            retry.start()
+            return
+        ledger.finalize_direct_receipt(receipt["receipt_id"], int(code), {"process_handle": f"pid:{int(process.pid)}"})
+    watcher = threading.Timer(0.01, _watch_exit)
+    watcher.daemon = True
+    watcher.start()
     return {**receipt, "status": "launched", "root_pid": int(process.pid), "leaf_pid": int(process.pid)}
 
 
@@ -90,7 +102,7 @@ def launch_async_review(
     # Async dispatcher exposes the supplied interrupt function in its record;
     # a deadline only signals that dedicated review, never unrelated work.
     def _interrupt():
-        from tools.async_delegation import interrupt_review_receipt
-        interrupt_review_receipt(receipt["receipt_id"], "release review deadline")
+        from tools.async_delegation import force_timeout_review_receipt
+        force_timeout_review_receipt(receipt["receipt_id"], "release review deadline")
     ledger.supervise_deadline(receipt["receipt_id"], _interrupt)
     return {**receipt, "status": "launched", "dispatch": result, "root_pid": os.getpid(), "leaf_pid": None}
