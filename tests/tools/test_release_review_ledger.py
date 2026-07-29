@@ -94,12 +94,12 @@ def test_claim_is_atomic_and_second_claim_cannot_launch(tmp_path):
         assert conn.execute("SELECT root_pid, leaf_pid, state FROM release_review_receipts").fetchone() == (101, 102, "running")
 
 
-def test_claim_after_expiry_rejects_launch(tmp_path):
+def test_claim_does_not_consume_review_timebox_before_attachment(tmp_path):
     ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
     receipt = ledger.admit(**_request())
     ledger.capture_preflight(receipt["receipt_id"], _preflight())
-    ledger.expire_due(now=time.time() + 61)
-    assert ledger.claim_launch(receipt["receipt_id"])["state"] == "timebox_expired"
+    assert ledger.expire_due(now=time.time() + 61) == 0
+    assert ledger.claim_launch(receipt["receipt_id"])["state"] == "launching"
 
 
 def test_unknown_receipt_cannot_be_updated(tmp_path):
@@ -136,8 +136,8 @@ def test_direct_shell_launch_reuses_receipt_without_second_process(tmp_path):
         return Process()
 
     args = {**_request(), "preflight": _preflight(), "command": ["reviewer", "--read-only"]}
-    first = launch_shell_review(ledger, popen=popen, **args)
-    second = launch_shell_review(ledger, popen=popen, **args)
+    first = launch_shell_review(ledger, popen=popen, restart_recovery_mode="current_process_only", **args)
+    second = launch_shell_review(ledger, popen=popen, restart_recovery_mode="current_process_only", **args)
     assert first["status"] == "launched"
     assert first["root_pid"] == 42
     assert second["status"] == "existing"
@@ -145,7 +145,75 @@ def test_direct_shell_launch_reuses_receipt_without_second_process(tmp_path):
     assert calls[0][1]["shell"] is False
 
 
-def test_direct_launcher_enforces_timebox_on_its_own_process(tmp_path):
+def test_direct_shell_requires_explicit_non_durable_restart_mode(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    called = False
+
+    def popen(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    for mode in (None, "durable"):
+        result = launch_shell_review(
+            ledger, **_request(), preflight=_preflight(), command=["reviewer"],
+            popen=popen, restart_recovery_mode=mode,
+        )
+        assert result["status"] == "rejected"
+        assert "durable restart recovery is unsupported" in result["error"]
+    assert called is False
+
+
+def test_direct_attachment_restarts_deadline_from_successful_attach(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    receipt = ledger.admit(**_request(deadline_seconds=60))
+    ledger.capture_preflight(receipt["receipt_id"], _preflight())
+    ledger.claim_launch(receipt["receipt_id"])
+    ledger.attach_processes(receipt["receipt_id"], 91, 91, "pid:91:single-process")
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        deadline_at, updated_at, deadline_seconds, state = conn.execute(
+            "SELECT deadline_at, updated_at, deadline_seconds, state FROM release_review_receipts WHERE receipt_id=?",
+            (receipt["receipt_id"],),
+        ).fetchone()
+    assert state == "running"
+    assert deadline_at == pytest.approx(updated_at + deadline_seconds, abs=0.01)
+
+
+def test_direct_expiry_between_spawn_and_attach_is_terminal_not_an_error(tmp_path):
+    class ExpiringLedger(ReleaseReviewLedger):
+        def attach_processes(self, receipt_id, root_pid, leaf_pid, launch_handle):
+            with sqlite3.connect(self.path) as conn:
+                conn.execute(
+                    "UPDATE release_review_receipts SET state='timebox_expired' WHERE receipt_id=?", (receipt_id,)
+                )
+            return super().attach_processes(receipt_id, root_pid, leaf_pid, launch_handle)
+
+    class Process:
+        pid = 92
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    ledger = ExpiringLedger(tmp_path / "reviews.db")
+    process = Process()
+    result = launch_shell_review(
+        ledger, **_request(), preflight=_preflight(), command=["reviewer"],
+        popen=lambda *_args, **_kwargs: process, restart_recovery_mode="current_process_only",
+    )
+    assert result["status"] == "timebox_expired"
+    assert process.terminated is True
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        state, terminal = conn.execute(
+            "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)
+        ).fetchone()
+    assert state == "timebox_expired"
+    assert "receipt expired before direct attachment" in terminal
+
+
+def test_direct_launcher_records_timebox_before_terminating_its_own_process(tmp_path, monkeypatch):
     ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
 
     class Process:
@@ -159,19 +227,25 @@ def test_direct_launcher_enforces_timebox_on_its_own_process(tmp_path):
             self.terminated = True
 
     process = Process()
+    callbacks = []
+    monkeypatch.setattr(ledger, "supervise_deadline", lambda _receipt_id, callback: callbacks.append(callback))
     result = launch_shell_review(
         ledger,
-        **_request(deadline_seconds=0.02),
+        **_request(deadline_seconds=60),
         preflight=_preflight(),
         command=["reviewer"],
         popen=lambda *_args, **_kwargs: process,
+        restart_recovery_mode="current_process_only",
     )
-    deadline = time.monotonic() + 1
-    while not process.terminated and time.monotonic() < deadline:
-        time.sleep(0.01)
+    assert ledger.deadline_watch_state(result["receipt_id"], now=time.time() + 61) == "expired"
+    callbacks[0]()
     assert process.terminated is True
     with sqlite3.connect(tmp_path / "reviews.db") as conn:
-        assert conn.execute("SELECT state FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)).fetchone()[0] == "timebox_expired"
+        state, terminal = conn.execute(
+            "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)
+        ).fetchone()
+    assert state == "timebox_expired"
+    assert "direct review deadline" in terminal
 
 
 def test_direct_shell_normal_exit_records_terminal_evidence_before_deadline(tmp_path):
@@ -188,7 +262,7 @@ def test_direct_shell_normal_exit_records_terminal_evidence_before_deadline(tmp_
 
     result = launch_shell_review(
         ledger, **_request(deadline_seconds=1), preflight=_preflight(), command=["reviewer"],
-        popen=lambda *_args, **_kwargs: Process(),
+        popen=lambda *_args, **_kwargs: Process(), restart_recovery_mode="current_process_only",
     )
     deadline = time.monotonic() + 1
     terminal = None
@@ -226,6 +300,7 @@ def test_simultaneous_timeboxes_terminate_each_reviewers_own_process(tmp_path):
             preflight=_preflight(),
             command=["reviewer"],
             popen=lambda *_args, **_kwargs: next(processes),
+            restart_recovery_mode="current_process_only",
         )
     deadline = time.monotonic() + 1
     while not (first.terminated and second.terminated) and time.monotonic() < deadline:
