@@ -34,10 +34,123 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _plan_dispatcher_review_routes,
     _review_batch_conflict,
     _task_display_identity,
     _inherit_parent_base_url,
 )
+from tools.release_review_ledger import ReleaseReviewLedger
+
+
+def _route_credentials(provider, model):
+    return {
+        "model": model,
+        "provider": provider,
+        "base_url": None,
+        "api_key": None,
+        "api_mode": None,
+        "request_overrides": None,
+        "max_output_tokens": None,
+        "command": None,
+        "args": [],
+    }
+
+
+class TestDispatcherOwnedReviewRouting(unittest.TestCase):
+    def test_five_configured_review_routes_are_selected_once_each(self):
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": f"Review candidate abcdef1 with lens {index}", "review_lens": f"lens-{index}"}
+            for index in range(5)
+        ]
+        cfg = {
+            "review_lanes": [
+                {"id": f"route-{index}", "provider": f"provider-{index}", "model": f"model-{index}"}
+                for index in range(5)
+            ]
+        }
+
+        with patch("tools.delegate_tool._resolve_delegation_credentials") as resolve:
+            resolve.side_effect = lambda lane_cfg, _parent: _route_credentials(
+                lane_cfg["provider"], lane_cfg["model"],
+            )
+            routes, evidence = _plan_dispatcher_review_routes(
+                tasks, cfg, parent, _route_credentials("default", "default-model"),
+            )
+
+        self.assertEqual([route["model"] for route in routes], [f"model-{index}" for index in range(5)])
+        self.assertEqual([item["lane"] for item in evidence], [f"route-{index}" for index in range(5)])
+        self.assertTrue(all(item["mode"] == "distinct_configured_route" for item in evidence))
+        self.assertTrue(all(item["availability"] == "callable_configured" for item in evidence))
+
+    def test_unavailable_routes_are_recorded_without_secret_fields(self):
+        parent = _make_mock_parent()
+        tasks = [{"goal": "Security review abcdef1", "review_lens": "security"}]
+        cfg = {"review_lanes": [
+            {"id": "disabled", "provider": "one", "model": "one", "enabled": False},
+            {"id": "secret", "provider": "two", "model": "two", "api_key": "never"},
+            {"id": "missing", "provider": "three", "model": "three"},
+        ]}
+        with patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=ValueError("missing")):
+            routes, evidence = _plan_dispatcher_review_routes(
+                tasks, cfg, parent, _route_credentials("default", "default-model"),
+            )
+
+        self.assertEqual(routes[0]["model"], "default-model")
+        self.assertEqual(
+            [(item["lane"], item["reason"]) for item in evidence if "reason" in item],
+            [("disabled", "disabled"), ("secret", "invalid_selector"), ("missing", "credential_unavailable")],
+        )
+        self.assertNotIn("api_key", json.dumps(evidence))
+
+    def test_same_model_distinct_lenses_are_labeled_not_cross_model(self):
+        first = _task_display_identity(
+            {"role": "auditor", "review_lens": "spec", "routing_mode": "degraded_same_model"},
+            effective_model="gpt-5.6-sol", default_role="leaf",
+        )
+        second = _task_display_identity(
+            {"role": "auditor", "review_lens": "security", "routing_mode": "degraded_same_model"},
+            effective_model="gpt-5.6-sol", default_role="leaf",
+        )
+        self.assertNotEqual(first["label"], second["label"])
+        self.assertIn("not cross-model", first["label"])
+        self.assertIn("not cross-model", second["label"])
+
+    def test_config_aliases_resolving_to_one_backing_lane_degrade(self):
+        parent = _make_mock_parent()
+        tasks = [
+            {"goal": "Review abcdef1", "review_lens": "spec"},
+            {"goal": "Review abcdef1", "review_lens": "security"},
+        ]
+        cfg = {"review_lanes": [
+            {"id": "GPT 5.6 Sol", "provider": "openai", "model": "GPT-5.6 Sol"},
+            {"id": "gpt-5.6-sol-alias", "provider": "OPENAI", "model": "gpt_5.6-sol"},
+        ]}
+        with patch("tools.delegate_tool._resolve_delegation_credentials") as resolve:
+            resolve.side_effect = lambda lane_cfg, _parent: {
+                **_route_credentials(lane_cfg["provider"], lane_cfg["model"]),
+                "base_url": "https://api.example.test/v1/",
+                "api_key": "same-private-account",
+            }
+            _routes, evidence = _plan_dispatcher_review_routes(
+                tasks, cfg, parent, _route_credentials("default", "default-model"),
+            )
+        self.assertEqual(evidence[0]["effective_route_identity"], evidence[1]["effective_route_identity"])
+        self.assertEqual(evidence[1]["mode"], "degraded_same_model")
+        self.assertNotIn("same-private-account", json.dumps(evidence))
+
+    def test_model_gate_rejects_degraded_or_duplicate_effective_routes(self):
+        degraded = ReleaseReviewLedger.assess_independent_review_gate(
+            [{"routing_mode": "DEGRADED_SAME_MODEL", "effective_route_identity": "route-a"}], 1,
+        )
+        duplicate = ReleaseReviewLedger.assess_independent_review_gate(
+            [
+                {"routing_mode": "distinct_configured_route", "effective_route_identity": "route-a"},
+                {"routing_mode": "distinct_configured_route", "effective_route_identity": "route-a"},
+            ], 2,
+        )
+        self.assertEqual(degraded["reason"], "DEGRADED_SAME_MODEL")
+        self.assertEqual(duplicate["reason"], "insufficient_distinct_effective_routes")
 
 
 def _make_mock_parent(depth=0):
@@ -92,6 +205,21 @@ class TestDelegateRequirements(unittest.TestCase):
 
 
 class TestReviewBatchAdmission(unittest.TestCase):
+    def test_material_identity_fails_closed_before_generic_child_or_batch_dispatch(self):
+        """The public delegate ingress cannot forge the private material adapter."""
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._run_single_child") as run_child:
+            result = json.loads(delegate_task(
+                tasks=[{
+                    "goal": "Review the release candidate",
+                    "candidate_hash": "a" * 64,
+                    "review_lens": "security",
+                }],
+                parent_agent=parent,
+            ))
+        self.assertIn("receipt-bound material-review adapter", result["error"])
+        run_child.assert_not_called()
+
     def test_worker_display_identity_leads_with_model_and_role(self):
         identity = _task_display_identity(
             {"role": "leaf", "review_lens": "security"},
@@ -109,6 +237,19 @@ class TestReviewBatchAdmission(unittest.TestCase):
             model="gpt-5.6-sol", context=None,
         )
         self.assertIn("Duplicate review admission rejected", conflict)
+
+    def test_same_effective_route_alias_cannot_duplicate_a_lens(self):
+        conflict = _review_batch_conflict(
+            [
+                {"goal": "Review abcdef1", "review_lens": "security"},
+                {"goal": "Review abcdef1", "review_lens": "security"},
+            ],
+            model=None,
+            context=None,
+            models=["GPT-5.6 Sol", "gpt_5.6-sol"],
+            effective_route_identities=["resolved-route-a", "resolved-route-a"],
+        )
+        self.assertIn("effective_route=resolved-route-a", conflict)
 
     def test_same_model_distinct_spec_and_security_lenses_are_allowed(self):
         conflict = _review_batch_conflict(

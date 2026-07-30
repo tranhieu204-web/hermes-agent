@@ -133,7 +133,12 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             review_receipt_id TEXT NOT NULL DEFAULT '',
             review_ledger_path TEXT NOT NULL DEFAULT '',
             event_stream_id TEXT NOT NULL DEFAULT '',
-            event_sequence INTEGER NOT NULL DEFAULT 0
+            event_sequence INTEGER NOT NULL DEFAULT 0,
+            submission_state TEXT NOT NULL DEFAULT 'submit_pending',
+            submission_fence INTEGER NOT NULL DEFAULT 0,
+            candidate_hash TEXT NOT NULL DEFAULT '',
+            effective_execution_identity TEXT NOT NULL DEFAULT '',
+            recovery_attempt_id TEXT NOT NULL DEFAULT ''
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -152,9 +157,26 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         ("review_ledger_path", "TEXT NOT NULL DEFAULT ''"),
         ("event_stream_id", "TEXT NOT NULL DEFAULT ''"),
         ("event_sequence", "INTEGER NOT NULL DEFAULT 0"),
+        ("submission_state", "TEXT NOT NULL DEFAULT 'submit_pending'"),
+        ("submission_fence", "INTEGER NOT NULL DEFAULT 0"),
+        ("candidate_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("effective_execution_identity", "TEXT NOT NULL DEFAULT ''"),
+        ("recovery_attempt_id", "TEXT NOT NULL DEFAULT ''"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS async_delegations_material_identity_immutable
+        BEFORE UPDATE OF candidate_hash, effective_execution_identity, recovery_attempt_id, submission_fence
+        ON async_delegations
+        WHEN OLD.review_receipt_id <> '' AND (
+            NEW.candidate_hash <> OLD.candidate_hash
+            OR NEW.effective_execution_identity <> OLD.effective_execution_identity
+            OR NEW.recovery_attempt_id <> OLD.recovery_attempt_id
+            OR NEW.submission_fence <> OLD.submission_fence
+        )
+        BEGIN SELECT RAISE(ABORT, 'material outbox identity is immutable'); END"""
+    )
 
 
 @contextmanager
@@ -247,14 +269,15 @@ def _persist_dispatch(
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
                owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path,
-               event_stream_id, event_sequence)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               event_stream_id, event_sequence, submission_state, submission_fence, candidate_hash, effective_execution_identity, recovery_attempt_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?, 'submit_pending', ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              state, record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
              record.get("origin_session_id", ""), record.get("review_receipt_id", ""), record.get("review_ledger_path", ""),
-             record.get("event_stream_id", ""), record.get("event_sequence", 0)),
+             record.get("event_stream_id", ""), record.get("event_sequence", 0), int(record.get("review_fence_token", 0) or 0),
+             record.get("candidate_hash", ""), record.get("effective_execution_identity", ""), record.get("recovery_attempt_id", "")),
         )
     _prune_durable_records()
     return True
@@ -264,10 +287,114 @@ def _activate_durable_dispatch(delegation_id: str) -> bool:
     """Make a pre-submission lease runnable without creating a second record."""
     with _DB_LOCK, _transaction() as conn:
         updated = conn.execute(
-            "UPDATE async_delegations SET state='running', updated_at=? WHERE delegation_id=? AND state='dispatching'",
+            "UPDATE async_delegations SET state='running', submission_state='submitted', updated_at=? WHERE delegation_id=? AND state='dispatching' AND submission_state='submit_pending'",
             (time.time(), delegation_id),
         )
         return updated.rowcount == 1
+
+
+def _claim_executor_submission(delegation_id: str) -> bool:
+    """Claim a durable outbox item exactly once immediately before submit.
+
+    A retried caller sees the existing delegation identity but cannot submit a
+    second worker.  If the process dies after this claim, the existing
+    abandoned-owner recovery classifies the durable row as unknown rather than
+    guessing that execution happened.
+    """
+    with _DB_LOCK, _transaction() as conn:
+        updated = conn.execute(
+            "UPDATE async_delegations SET submission_state='executor_claimed', updated_at=? "
+            "WHERE delegation_id=? AND state='running' AND submission_state='submitted'",
+            (time.time(), delegation_id),
+        )
+        return updated.rowcount == 1
+
+
+def _mark_submission_unknown(delegation_id: str, reason: str) -> None:
+    """Keep an ambiguous executor submission durable for recovery evidence."""
+    with _DB_LOCK, _transaction() as conn:
+        binding = conn.execute(
+            "SELECT review_ledger_path, recovery_attempt_id, submission_fence FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE async_delegations SET state='unknown', submission_state='submission_unknown', "
+            "result_json=?, completed_at=?, updated_at=? WHERE delegation_id=?",
+            (json.dumps({"status": "unknown", "error": reason}), time.time(), time.time(), delegation_id),
+        )
+    if binding and binding[1]:
+        try:
+            from tools.release_review_ledger import ReleaseReviewLedger
+            canonical_path = (get_hermes_home() / "release-review-ledger.db").resolve()
+            stored_path = Path(binding[0]).resolve() if binding[0] else canonical_path
+            if stored_path != canonical_path:
+                raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
+            ReleaseReviewLedger(canonical_path).transition_recovery_attempt(
+                binding[1], fence_token=int(binding[2]), state="INTERRUPTED", outcome="submit_unknown",
+            )
+        except Exception:
+            logger.exception("Could not interrupt recovery attempt for unknown submit %s", delegation_id)
+
+
+def _claim_durable_terminal(delegation_id: str, fence_token: int) -> bool:
+    """Claim exactly one current-fence terminal publisher across processes."""
+    with _DB_LOCK, _transaction() as conn:
+        updated = conn.execute(
+            "UPDATE async_delegations SET state='finalizing', updated_at=? "
+            "WHERE delegation_id=? AND state='running' AND submission_fence=?",
+            (time.time(), delegation_id, int(fence_token)),
+        )
+        return updated.rowcount == 1
+
+
+def cancel_async_delegation(delegation_id: str, *, fence_token: int, reason: str = "cancelled") -> bool:
+    """CAS-cancel one current async lease without permitting a late result.
+
+    This is intentionally narrow: callers need the durable fence returned by
+    admission, so a stale coordinator cannot cancel a successor generation.
+    The worker may still unwind, but its later terminal publish is rejected by
+    ``_claim_durable_terminal``.
+    """
+    with _DB_LOCK, _transaction() as conn:
+        binding = conn.execute(
+            "SELECT review_receipt_id, review_ledger_path, recovery_attempt_id FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        updated = conn.execute(
+            "UPDATE async_delegations SET state='cancelled', submission_state='cancelled', "
+            "result_json=?, completed_at=?, updated_at=? "
+            "WHERE delegation_id=? AND state IN ('dispatching','running') AND submission_fence=?",
+            (json.dumps({"status": "cancelled", "reason": reason}), time.time(), time.time(),
+             delegation_id, int(fence_token)),
+        )
+        if updated.rowcount != 1:
+            return False
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            record["status"] = "cancelled"
+            callback = record.get("interrupt_fn")
+        else:
+            callback = None
+    if callable(callback):
+        callback()
+    if binding and binding[0]:
+        try:
+            from tools.release_review_ledger import ReleaseReviewLedger
+            canonical_path = (get_hermes_home() / "release-review-ledger.db").resolve()
+            stored_path = Path(binding[1]).resolve() if binding[1] else canonical_path
+            if stored_path != canonical_path:
+                raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
+            ReleaseReviewLedger(canonical_path).finalize_async_receipt(
+                binding[0], "cancelled", {"delegation_id": delegation_id, "reason": reason, "fence_token": fence_token},
+            )
+            if binding[2]:
+                ReleaseReviewLedger(canonical_path).transition_recovery_attempt(
+                    binding[2], fence_token=fence_token, state="CANCELLED", outcome=reason,
+                )
+        except Exception:
+            logger.exception("Could not terminalize cancelled release review receipt %s", binding[0])
+    return True
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
@@ -314,18 +441,27 @@ def _prune_durable_records() -> None:
             )
 
 
-def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> bool:
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
-        conn.execute(
+        review_receipt_id = event.get("review_receipt_id") or ""
+        if review_receipt_id:
+            predicate = "delegation_id=? AND state='finalizing' AND submission_fence=?"
+            predicate_args = (event["delegation_id"], int(event.get("review_fence_token", 0) or 0))
+        else:
+            predicate = "delegation_id=?"
+            predicate_args = (event["delegation_id"],)
+        updated = conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending',
                event_stream_id=?, event_sequence=?
-               WHERE delegation_id=?""",
+               WHERE """ + predicate,
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event.get("event_stream_id", ""),
-             event.get("event_sequence", 0), event["delegation_id"]),
+             event.get("event_sequence", 0), *predicate_args),
         )
+    if updated.rowcount != 1:
+        return False
     receipt_id = event.get("review_receipt_id") or ""
     if receipt_id:
         try:
@@ -334,11 +470,20 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
             stored_path = event.get("review_ledger_path") or str(canonical_path)
             if Path(stored_path).resolve() != canonical_path:
                 raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
-            ReleaseReviewLedger(canonical_path).finalize_async_receipt(receipt_id, event.get("status", "unknown"), {
+            ledger = ReleaseReviewLedger(canonical_path)
+            ledger.finalize_async_receipt(receipt_id, event.get("status", "unknown"), {
                 "delegation_id": event["delegation_id"], "result": result,
             })
+            recovery_attempt_id = event.get("recovery_attempt_id") or ""
+            if recovery_attempt_id:
+                outcome = "COMMITTED" if event.get("status") == "completed" else "FAILED"
+                ledger.transition_recovery_attempt(
+                    recovery_attempt_id, fence_token=int(event.get("review_fence_token", 0) or 0),
+                    state=outcome, outcome=str(event.get("status", "unknown")),
+                )
         except Exception:
             logger.exception("Could not finalize release review receipt %s", receipt_id)
+    return True
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
@@ -363,13 +508,13 @@ def recover_abandoned_delegations() -> int:
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path,
-                      event_stream_id, event_sequence
+                      event_stream_id, event_sequence, recovery_attempt_id, submission_fence
                FROM async_delegations WHERE state IN ('dispatching','running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
              pid, started, task_json, origin_session_id, review_receipt_id, review_ledger_path,
-             event_stream_id, event_sequence) = row
+             event_stream_id, event_sequence, recovery_attempt_id, submission_fence) = row
             live = False
             if pid and started is not None:
                 live = _pid_exists(int(pid)) and get_process_start_time(int(pid)) == int(started)
@@ -388,6 +533,8 @@ def recover_abandoned_delegations() -> int:
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
                 "review_receipt_id": review_receipt_id or "",
                 "review_ledger_path": review_ledger_path or "",
+                "recovery_attempt_id": recovery_attempt_id or "",
+                "review_fence_token": int(submission_fence or 0),
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -407,18 +554,24 @@ def recover_abandoned_delegations() -> int:
                  event["event_stream_id"], event["event_sequence"], delegation_id),
             )
             if review_receipt_id:
-                review_terminalizations.append((review_receipt_id, review_ledger_path, event, result))
+                review_terminalizations.append((review_receipt_id, review_ledger_path, event, result, recovery_attempt_id, submission_fence))
             recovered += 1
-    for receipt_id, ledger_path, event, result in review_terminalizations:
+    for receipt_id, ledger_path, event, result, recovery_attempt_id, submission_fence in review_terminalizations:
         try:
             from tools.release_review_ledger import ReleaseReviewLedger
             canonical_path = (get_hermes_home() / "release-review-ledger.db").resolve()
             stored_path = Path(ledger_path).resolve() if ledger_path else canonical_path
             if stored_path != canonical_path:
                 raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
-            ReleaseReviewLedger(canonical_path).finalize_async_receipt(receipt_id, "unknown", {
+            ledger = ReleaseReviewLedger(canonical_path)
+            ledger.finalize_async_receipt(receipt_id, "unknown", {
                 "delegation_id": event["delegation_id"], "result": result,
             })
+            if recovery_attempt_id:
+                ledger.transition_recovery_attempt(
+                    recovery_attempt_id, fence_token=int(submission_fence or 0),
+                    state="INTERRUPTED", outcome="owner_died",
+                )
         except Exception:
             logger.exception("Could not terminalize abandoned release review receipt %s", receipt_id)
     return recovered
@@ -691,6 +844,10 @@ def dispatch_async_delegation(
     review_receipt_id: str = "",
     review_ledger_path: str = "",
     delegation_id: str = "",
+    review_fence_token: int = 0,
+    candidate_hash: str = "",
+    effective_execution_identity: str = "",
+    recovery_attempt_id: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -759,6 +916,10 @@ def dispatch_async_delegation(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "event_sequence": 0,
+        "review_fence_token": review_fence_token,
+        "candidate_hash": candidate_hash,
+        "effective_execution_identity": effective_execution_identity,
+        "recovery_attempt_id": recovery_attempt_id,
     }
     record["event_stream_id"] = _async_event_stream_id(record)
     # Capacity check and record insert under ONE lock hold — checking
@@ -794,6 +955,27 @@ def dispatch_async_delegation(
             "status": "rejected",
             "error": f"Async delegation capacity reached ({max_async_children} running across Hermes processes).",
         }
+    # A recovery attempt is accepted only after its receipt-bound delegation is
+    # durably present in state.db.  The durable row is the recovery authority
+    # for a crashed owner; transitioning sooner would strand a retry fence with
+    # no outbox record to reconcile.
+    if ledger is not None and recovery_attempt_id:
+        try:
+            ledger.transition_recovery_attempt(
+                recovery_attempt_id,
+                fence_token=int(review_fence_token),
+                state="ACCEPTED",
+                outcome="receipt-bound material review accepted",
+            )
+        except Exception as exc:
+            with _records_lock:
+                _records.pop(delegation_id, None)
+            _delete_durable_delegation(delegation_id)
+            try:
+                ledger.mark_launch_failed(review_receipt_id, "recovery_transition_failed")
+            except RuntimeError:
+                pass
+            return {"status": "rejected", "error": f"material recovery admission failed: {exc}"}
     try:
         if ledger is not None:
             ledger.activate_async_dispatch(review_receipt_id, delegation_id, __import__("os").getpid())
@@ -802,7 +984,11 @@ def dispatch_async_delegation(
     except Exception as exc:
         with _records_lock:
             _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        # Preserve the durable row as an unknown submission rather than
+        # deleting recovery authority between activation failure and a caller's
+        # error handler.  This also moves ACCEPTED/RUNNING attempts to the
+        # fenced INTERRUPTED terminal state.
+        _mark_submission_unknown(delegation_id, f"activation failed: {type(exc).__name__}")
         if ledger is not None:
             try:
                 ledger.mark_launch_failed(review_receipt_id, "launch_rejected")
@@ -833,13 +1019,25 @@ def dispatch_async_delegation(
             _finalize(delegation_id, result, status)
 
     try:
+        if not _claim_executor_submission(delegation_id):
+            raise RuntimeError("durable submission outbox was already claimed or is not runnable")
+        # Submission was atomically claimed.  This is the first point at which
+        # a material retry is executing; before it a failed preflight/capacity
+        # check leaves the attempt PREPARED and does not consume the retry.
+        if ledger is not None and recovery_attempt_id:
+            ledger.transition_recovery_attempt(
+                recovery_attempt_id,
+                fence_token=int(review_fence_token),
+                state="RUNNING",
+                outcome="executor submission claimed after durable outbox binding",
+            )
         # Propagate the dispatching profile so the detached child resolves
         # get_hermes_home() under the right profile.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        _mark_submission_unknown(delegation_id, f"executor submission failed: {type(exc).__name__}")
         if ledger is not None:
             try:
                 ledger.mark_launch_failed(review_receipt_id)
@@ -871,6 +1069,13 @@ def _begin_finalization(
     delegation_id: str,
 ) -> Optional[tuple[Dict[str, Any], Optional[Callable[[], None]]]]:
     """Atomically claim terminal delivery while keeping the record active."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") != "running":
+            return
+        fence_token = int(record.get("review_fence_token", 0) or 0)
+    if not _claim_durable_terminal(delegation_id, fence_token):
+        return
     with _records_lock:
         record = _records.get(delegation_id)
         if record is None or record.get("status") != "running":
@@ -929,6 +1134,8 @@ def _push_completion_event(
         "parent_session_id": record.get("parent_session_id"),
         "review_receipt_id": record.get("review_receipt_id", ""),
         "review_ledger_path": record.get("review_ledger_path", ""),
+        "review_fence_token": int(record.get("review_fence_token", 0) or 0),
+        "recovery_attempt_id": record.get("recovery_attempt_id", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -946,7 +1153,9 @@ def _push_completion_event(
         "exit_reason": result.get("exit_reason"),
     }
     evt.update(_next_completion_event_identity(record))
-    _persist_completion(evt, result)
+    if not _persist_completion(evt, result):
+        logger.info("Async delegation %s terminal result lost the current fence", record.get("delegation_id"))
+        return
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover

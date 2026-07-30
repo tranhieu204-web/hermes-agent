@@ -58,3 +58,232 @@ scheduled tasks, or shared branches.
 - No direct-shell production integration without a designated caller.
 - No provider capacity policy, secrets, live health response reuse, service
   mutation, or stale process/PID recovery.
+
+## Proposed decision: evidence-carrying retry ownership and Deep Mode
+
+This user-requested proposal is `post-release` Accelerator work. It is recorded
+before implementation and is awaiting the requested Hermes and Claude Code
+consultations; their availability, conditions, and reconciliation will be
+appended to this decision before the implementation is frozen.
+
+| Field | Record |
+| --- | --- |
+| Scope | Classify failed build/review/CI/operational attempts; assign distinct retry owners; preserve a redacted cached evidence packet; and escalate to bounded Deep Mode investigation/reconciliation. |
+| Rationale | Later attempts should verify and extend prior evidence, not rediscover the same failure. Deep investigation should add genuinely independent lenses without duplicate same-model work. |
+| Owner | Hermes dispatches and reconciles Deep Mode when callable; one designated builder mutates the isolated candidate; Codex records receipts and presents status. |
+| Safety boundary | No same effective provider/endpoint/account/model is assigned the identical task concurrently. Parallel Deep lanes use distinct lenses and effective route identities. One writer applies a reconciliation verdict. No live/runtime/release mutation is included. |
+| Acceptance | Each retry stores/receives the prior packet hash; unchanged attempts cannot consume extra budget; alias routes collapse; a contamination exception is evidence-bound; and every Deep verdict records inputs, disagreements, owner, remedy, and verification command. |
+| Timing | Post-release implementation; it cannot alter the current frozen release candidate. |
+
+### Shared recovery packet
+
+Each failure creates a redacted immutable packet keyed by candidate, normalized
+scope, environment, and failure fingerprint. It contains receipt IDs/hashes,
+the exact command, failure set, relevant tool/environment versions, prior
+findings, attempted diff/remedy, and test references. A later owner receives
+this packet and validates it before working. A new from-zero investigation is
+allowed only after a recorded packet-integrity failure, candidate mismatch, or
+failure-fingerprint mismatch. Raw credentials, authenticated responses, and
+model reasoning are excluded.
+
+### STANDARD mode
+
+`STANDARD 1/3` assigns one strong qualified owner to investigate and try the
+smallest remedy. `STANDARD 2/3` assigns a different effective lane, carries
+the first packet forward, validates and extends its evidence, and avoids
+unchanged reruns. `STANDARD 3/3` assigns a third effective lane and continues
+from both packets. If distinct callable lanes are unavailable, the receipt
+records `DEGRADED_ROUTE_CAPACITY`; labels or aliases never count as distinct.
+Only one standard owner writes at a time.
+
+### DEEP mode
+
+Deep Mode begins only after all three standard attempts fail with a remaining
+material fingerprint. `DEEP MODE 1/3` runs 2–3 distinct-lens lanes; `2/3` runs
+3–4; `3/3` uses every available qualified lane within configured concurrency
+and usage budgets. Those lanes perform blind hypothesis checks using the same
+packet, rather than copying a proposed fix. Hermes reconciles structured
+findings and disagreement into one verdict. A single designated writer then
+applies any selected bounded fix and records its acceptance test. Insufficient
+lane capacity is recorded accurately, never manufactured as a quorum.
+
+### Runtime seams for implementation
+
+- `tools/async_delegation.py` retains runtime lease ownership and stale-owner
+  recovery.
+- `ReleaseReviewLedger.record_alert` stores the durable failure fingerprint;
+  `admit_validation`/`finalize_validation` provide exact successful evidence
+  reuse; and `record_decision` stores retry/deep-reconciliation ownership.
+- The review receipt remains the immutable no-reroll boundary. A changed
+  candidate, environment, scope, or evidence fingerprint creates a successor
+  packet linked to its predecessor; unchanged evidence is reused or rejected.
+
+### Consultation reconciliation and mandatory implementation conditions
+
+Governance was revalidated before this reconciliation (73,111 bytes,
+SHA-256 `629f23ff6a629f602a3ffc035eb8d33c7364a797e73d5b684214c7758e8eb3f5`).
+Hermes was **UNAVAILABLE**: its one-shot returned the prior HTTP 400
+extra-usage/provider-overage error before a technical verdict. Claude Code was
+**NO_VERDICT/UNAVAILABLE**: its tool-disabled one-shot exited successfully but
+returned no APPROVE, CONDITIONAL, HOLD, or protocol analysis. Neither outcome
+is approval and this consultation fingerprint must not be retried unchanged.
+
+The following coordinator-audit conditions are adopted for the next safe,
+isolated Accelerator slice:
+
+1. An attempt identity is `candidate_hash + environment_fingerprint +
+   normalized_scope_hash + failure_fingerprint + mode + ordinal/generation`.
+   The ledger grants one writer lease with a monotonic fence; a successor starts
+   only after the predecessor is terminal/interrupted, and late prior-generation
+   writes are rejected.
+2. Handoff packets are immutable and versioned. They retain predecessor
+   packet/receipt hashes; all identity components; exact reproducer and failed
+   set; relevant versions; attempted remedy/diff hash; verified facts with
+   evidence references; unresolved questions; quarantined evidence and reason;
+   and redaction attestation. They exclude secrets, authenticated responses,
+   raw reasoning, live PIDs, and capacity claims as reusable facts.
+3. Later STANDARD owners verify packet integrity and reproduce the current
+   fingerprint before adopting its conclusions. From-zero work requires a
+   recorded mismatch, tamper, or contamination reason; quarantined evidence is
+   preserved rather than deleted.
+4. Blind Deep lanes receive common verified facts but not prior remedy
+   hypotheses until reconciliation. Each declares a distinct lens/coverage
+   target; canonical effective route identity **and** lens are admission keys.
+5. Actual Deep fan-out is the minimum of requested range, distinct qualified
+   routes/lenses, configured concurrency, and token/time budget. Insufficient
+   capacity records `DEGRADED_ROUTE_CAPACITY`; a criticality policy decides
+   proceed versus HOLD, and a diminishing-return cutoff ends lanes that add no
+   new evidence.
+6. Duplicate suppression rejects concurrent **and sequential** same
+   candidate/environment/failure/normalized-task/lens/effective-route work
+   unless evidence generation changed. Distinct labels do not excuse materially
+   overlapping hypothesis/locus coverage.
+7. Hermes, when callable, produces a reconciliation decision receipt only; it
+   does not mutate. If unavailable, the coordinator reconciles transparently.
+   One fenced writer applies the selected bounded remedy and records rejected
+   alternatives and disagreements.
+8. Crash/cancel recovery terminalizes orphaned leases as interrupted/unknown,
+   freezes the packet, rejects late writes, and requires exact packet hash plus
+   a fresh fence to resume. PIDs/start times are liveness evidence only.
+9. Progress requires a failed-set reduction, acceptance change, changed
+   fingerprint, new reproduced root-cause evidence, or verified intentional
+   artifact change. After `DEEP MODE 3/3` failure the workflow stops and
+   reports; it also stops on external wait, unapproved scope expansion, packet
+   mismatch, or unsafe evidence.
+10. Immutable release receipts remain retained. Cached summaries are concise,
+    structured, hash-bound, and point to on-demand raw logs. TTL applies only
+    to environment/capacity/liveness; telemetry tracks active time/tokens,
+    external wait, cache-hit tokens avoided, duplicate calls, time-to-new-
+    evidence, and finding yield per lane.
+
+### Required acceptance proof
+
+Focused tests must cover: three serial distinct-route STANDARD handoffs without
+overlap; alias collapse; cross-process lease races; stale-generation late-result
+rejection; crash/cancel resume; packet tamper/quarantine; candidate/environment/
+failure invalidation; sequential duplicate rejection; blind-hypothesis
+isolation; Deep min/max and unavailable capacity; degraded same-model N-gate
+rejection; false-PROGRESS rejection for unchanged evidence; and the mandatory
+`DEEP MODE 3/3` terminal stop. A benchmark must compare cold restart with packet
+reuse and demonstrate lower median active time/tokens with equal-or-better
+reproduced-finding and false-pass rates.
+
+### Deterministic state-transition clarifications
+
+The original failure is baseline evidence and consumes no retry slot. The only
+executable standard sequence is `STANDARD 1/3 → 2/3 → 3/3`; failure of the
+third standard attempt transitions once to `DEEP MODE 1/3`. Deep transitions
+only `1/3 → 2/3 → 3/3`, and failure of Deep 3 emits terminal
+`STOP_AND_REPORT`; no fresh automatic cycle is legal. A deduplicated launch
+does not consume retry or usage budget. An executed retry that repeats the
+failure is still counted at its ordinal but is marked `DEAD_LOOP` with prior
+and current evidence hashes.
+
+Each transition is atomic and records mode, ordinal/generation, predecessor,
+logical owner, effective route identity, reason, packet hash, fence token,
+start/end time, and terminal outcome. Before allocating a worker or budget, a
+successor verifies the packet's hash, redaction/schema version, candidate,
+scope, environment/runner, evidence, and failure fingerprint. Any mismatch,
+stale edit, changed command or route, expiry, tamper, or redaction violation
+creates a linked successor receipt with an invalidation reason; it never
+silently starts clean. Only passed exact validation can be reused.
+
+The inherited packet is rendered as a point-in-time snapshot, so the new owner
+must re-verify its source facts when they may be stale. A restart between
+packet persistence and successor launch resumes from that packet or
+terminalizes unknown ownership; it never invents a completed handoff.
+
+### Superseding consultation evidence: bounded first-party CLI routes
+
+The prior unavailable/no-verdict consultation outcomes remain historical. A
+changed invocation fingerprint fixed the communication path without changing
+Hermes configuration or runtime: Hermes is explicitly consulted through
+`--ignore-rules --provider openai-codex --model gpt-5.6-sol --oneshot`, while
+Claude Code is invoked in safe, tool-disabled, no-session-persistence plan
+mode. Both wrappers fail closed on exit-zero/no-verdict. The repo-owned
+equivalent is `scripts/fleet_consult_cli.ps1`; it is a bounded consultation
+contract, not a provider or credential configuration mechanism.
+
+Both lanes returned **CONDITIONAL** verdicts under this route. The mandatory
+conditions above therefore include: PREPARED→DISPATCHED→ACCEPTED→RUNNING→
+RESULT_COMMITTED execution states; attempt consumption only after accepted
+execution proof; CAS epoch/fenced coordinator, mutation, and terminal leases;
+authoritative expiry; independently fresh reproduction; quarantined cancelled
+results; atomic mutation journal/rollback; capacity holds and reserved recovery
+capacity; blind findings committed before hypothesis reveal; exclusive terminal
+states; route identity version/tool-config granularity; concrete TTL/hash
+invalidation; per-attempt/lane/phase/global budgets with
+`BUDGET_EXCEEDED→STOP_AND_REPORT`; and a cheap inherited-fix check before full
+final regression. Reconciliation records contrary findings, rejected
+alternatives, and immutable rationale. The benchmark compares continuation with
+cold restart for token/time and defect-escape/fix-correctness.
+
+### Implemented retry execution boundary
+
+The isolated candidate now implements this protocol on the receipt-bound async
+review rail: Standard attempts are serial and require the prior failed packet
+plus a distinct effective route; Deep capacity is admitted before launch with
+route/lens, concurrency, and token-budget evidence; material reviews cannot
+fall back to generic batch dispatch; and candidate, effective route, recovery
+attempt, and fence are persisted with the submission outbox.  Cancellation,
+worker completion, submit-unknown, and abandoned-owner recovery terminalize
+only the current fence.  After every admitted Deep 3 lane fails, the ledger
+records `STOP_AND_REPORT` and rejects an automatic new cycle.  This remains
+post-release candidate work only until its own acceptance and release gates
+complete.
+
+### Baseline exclusions bound to Sakaan fork `556f5a56`
+
+The broader `tests/tools/test_delegate.py` suite has three inherited failures,
+reproduced unchanged on exact `sakaan/main=556f5a5649bcb67535b9b8a7a382d5c6f49e97fe`
+with `uv run pytest` targeting each test: missing
+`tools.child_runtime_registry` import, batch child-cost rollup, and single-child
+cost rollup. Their failing paths are the registry import and parent telemetry
+assertions; none reference async outbox identity, `recovery_attempt_id`,
+material launch adapters, or the new SQLite trigger. They are retained as
+baseline exclusions, never reclassified as passing evidence for this candidate.
+
+### Material-review admission decision — current Accelerator candidate
+
+**Scope:** candidate-bound material review ingress, retry ownership, and
+independence gates. **Rationale:** the public generic delegation API does not
+have the receipt, recovery packet, fenced attempt, or preflight identity needed
+to prove safe material review admission. **Owner:** the durable dispatcher and
+ledger; exactly one fenced writer applies a resulting remedy. **Safety and
+quality boundary:** a material request bearing `candidate_hash` or
+`review_lens` fails closed before generic child or batch construction. It can
+run only through the private receipt-bound adapter; ordinary delegation remains
+unchanged. **Acceptance:** the adapter persists a single outbox row before
+acceptance, claims executor submission before `RUNNING`, retains an unknown
+outbox on activation/submission failure, and requires distinct normalized
+review lenses plus distinct canonical effective routes at an N-review gate.
+This is post-release Accelerator work, not a current-release mutation.
+
+An unaccepted launch remains `PREPARED` and does not spend an ordinal or budget.
+After durable persistence it becomes `ACCEPTED`; only an atomic executor claim
+moves it to `RUNNING`. Any failure after that point preserves enough durable
+state to terminalize the current fence as `INTERRUPTED`, so a process crash
+cannot strand a retry lease. Regression coverage includes generic-ingress
+rejection, unaccepted reuse, activation failure with retained unknown outbox,
+two-connection identity mutation rejection, stale-fence completion, and
+duplicate/alias/lens rejection.

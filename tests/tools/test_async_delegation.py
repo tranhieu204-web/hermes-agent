@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -360,7 +361,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
-def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
+def test_submit_failure_preserves_durable_unknown_submission_record(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     class _BrokenExecutor:
@@ -375,7 +376,66 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
 
     assert result["status"] == "rejected"
     with ad._DB_LOCK, ad._connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
+        state, submission = conn.execute(
+            "SELECT state, submission_state FROM async_delegations"
+        ).fetchone()
+    assert (state, submission) == ("unknown", "submission_unknown")
+
+
+def test_durable_submission_outbox_allows_one_executor_claim(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg-outbox", "goal": "review", "context": None,
+        "toolsets": None, "role": "reviewer", "model": "m", "session_key": "owner",
+        "dispatched_at": time.time(), "event_sequence": 0,
+    }
+    assert ad._persist_dispatch(record, max_async_children=1)
+    assert ad._activate_durable_dispatch("deleg-outbox")
+    assert ad._claim_executor_submission("deleg-outbox") is True
+    assert ad._claim_executor_submission("deleg-outbox") is False
+
+
+def test_material_outbox_identity_is_immutable_after_persistence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg-material", "goal": "review", "context": None, "toolsets": None,
+        "role": "reviewer", "model": "m", "session_key": "owner", "dispatched_at": time.time(),
+        "review_receipt_id": "receipt-1", "candidate_hash": "a" * 64,
+        "effective_execution_identity": "route-a", "recovery_attempt_id": "retry-1", "review_fence_token": 9,
+    }
+    assert ad._persist_dispatch(record, max_async_children=1)
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute("UPDATE async_delegations SET candidate_hash=? WHERE delegation_id=?", ("b" * 64, "deleg-material"))
+
+
+def test_material_identity_trigger_rejects_two_connection_race(tmp_path, monkeypatch):
+    """A committed material row rejects interleaved cross-connection writes."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg-race", "goal": "review", "context": None, "toolsets": None,
+        "role": "reviewer", "model": "m", "session_key": "owner", "dispatched_at": time.time(),
+        "review_receipt_id": "receipt-race", "candidate_hash": "a" * 64,
+        "effective_execution_identity": "route-a", "recovery_attempt_id": "retry-race", "review_fence_token": 11,
+    }
+    assert ad._persist_dispatch(record, max_async_children=1)
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def mutate(value):
+        conn = sqlite3.connect(tmp_path / "state.db", timeout=2)
+        try:
+            barrier.wait(timeout=2)
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                conn.execute("UPDATE async_delegations SET candidate_hash=? WHERE delegation_id='deleg-race'", (value,))
+            outcomes.append("rejected")
+        finally:
+            conn.close()
+
+    one = threading.Thread(target=mutate, args=("b" * 64,))
+    two = threading.Thread(target=mutate, args=("c" * 64,))
+    one.start(); two.start(); one.join(timeout=3); two.join(timeout=3)
+    assert outcomes == ["rejected", "rejected"]
 
 
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
@@ -1130,4 +1190,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.release_review_ledger import ReleaseReviewLedger
-from tools.release_review_launch import launch_async_review, launch_shell_review
+from tools.release_review_ledger import ReleaseReviewLedger, canonical_effective_route_identity
+from tools.release_review_launch import launch_async_review, launch_material_async_review, launch_shell_review
 
 
 def _preflight():
@@ -38,6 +38,30 @@ def _request(**overrides):
     return request
 
 
+def _recovery_packet(**overrides):
+    packet = {
+        "schema_version": 1, "candidate_hash": "a" * 64, "environment_fingerprint": "env-a",
+        "normalized_scope": "release tests", "failure_fingerprint": "failed:test_one",
+        "normalized_task": "reproduce test one", "failed_set": ["test_one"],
+        "reproducer": ["pytest", "test_one"], "versions": {"python": "3.12"},
+        "attempted_remedy_hash": "none", "verified_facts": ["reproduced"],
+        "unresolved_questions": ["why"], "quarantined": [], "redaction_attestation": True,
+    }
+    packet.update(overrides)
+    return packet
+
+
+def _admit_recovery(ledger, packet_hash, **overrides):
+    args = {
+        "packet_hash": packet_hash, "candidate_hash": "a" * 64, "environment_fingerprint": "env-a",
+        "normalized_scope": "release tests", "failure_fingerprint": "failed:test_one",
+        "normalized_task": "reproduce test one", "mode": "STANDARD", "ordinal": 1,
+        "owner": "codex", "effective_route_identity": "route-a", "lens": "runtime",
+    }
+    args.update(overrides)
+    return ledger.admit_recovery_attempt(**args)
+
+
 def test_same_review_returns_existing_receipt(tmp_path):
     ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
     first = ledger.admit(**_request(scope=" runtime   and tests "))
@@ -45,6 +69,323 @@ def test_same_review_returns_existing_receipt(tmp_path):
     assert first["status"] == "admitted"
     assert second["status"] == "existing"
     assert second["receipt_id"] == first["receipt_id"]
+
+
+def test_recovery_attempt_requires_packet_then_fences_terminal_handoff(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    first = _admit_recovery(ledger, packet["packet_hash"])
+    duplicate = _admit_recovery(ledger, packet["packet_hash"])
+    assert first["status"] == "admitted"
+    assert duplicate["status"] == "existing"
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="FAILED", outcome="unchanged")
+    second = _admit_recovery(
+        ledger, packet["packet_hash"], ordinal=2, owner="claude", effective_route_identity="route-b",
+        lens="contract", predecessor_attempt_id=first["attempt_id"],
+    )
+    assert second["status"] == "admitted"
+    with pytest.raises(RuntimeError, match="state or fence"):
+        ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"] + 1, state="COMMITTED")
+
+
+def test_recovery_protocol_requires_serial_standard_then_deep(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    first = _admit_recovery(ledger, packet["packet_hash"])
+    with pytest.raises(RuntimeError, match="immediately prior failed"):
+        _admit_recovery(ledger, packet["packet_hash"], ordinal=2, owner="claude", effective_route_identity="route-b", lens="contract")
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(first["attempt_id"], fence_token=first["fence_token"], state="FAILED")
+    second = _admit_recovery(
+        ledger, packet["packet_hash"], ordinal=2, owner="claude", effective_route_identity="route-b",
+        lens="contract", predecessor_attempt_id=first["attempt_id"],
+    )
+    for attempt in (second,):
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="RUNNING")
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="FAILED")
+    third = _admit_recovery(
+        ledger, packet["packet_hash"], ordinal=3, owner="grok", effective_route_identity="route-c",
+        lens="security", predecessor_attempt_id=second["attempt_id"],
+    )
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="FAILED")
+    deep = _admit_recovery(
+        ledger, packet["packet_hash"], mode="DEEP", ordinal=1, owner="hermes", effective_route_identity="route-d",
+        lens="reconciliation",
+    )
+    assert deep["status"] == "admitted"
+    parallel_deep = _admit_recovery(
+        ledger, packet["packet_hash"], mode="DEEP", ordinal=1, owner="claude", effective_route_identity="route-e",
+        lens="dependency",
+    )
+    assert parallel_deep["status"] == "admitted"
+    with pytest.raises(ValueError, match="invalid"):
+        _admit_recovery(ledger, packet["packet_hash"], mode="DEEP", ordinal=4, owner="codex", effective_route_identity="route-f", lens="runtime")
+
+
+def test_deep_capacity_is_bounded_and_never_fabricates_quorum(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    base = {
+        "candidate_hash": "a" * 64, "environment_fingerprint": "env-a",
+        "failure_fingerprint": "failed:test_one", "configured_concurrency": 4,
+    }
+    lanes = [
+        {"lane": "codex", "effective_route_identity": "route-a", "lens": "runtime", "available": True, "token_cost": 1},
+        {"lane": "alias", "effective_route_identity": "route-a", "lens": "runtime", "available": True, "token_cost": 1},
+        {"lane": "claude", "effective_route_identity": "route-b", "lens": "security", "available": False, "token_cost": 1},
+    ]
+    degraded = ledger.admit_deep_capacity(**base, ordinal=1, lanes=lanes, token_budget=3)
+    assert degraded["status"] == "DEGRADED_ROUTE_CAPACITY"
+    assert [lane["lane"] for lane in degraded["selected"]] == ["codex"]
+    admitted = ledger.admit_deep_capacity(
+        **base, ordinal=1, token_budget=3,
+        lanes=lanes + [{"lane": "grok", "effective_route_identity": "route-c", "lens": "dependency", "available": True, "token_cost": 1}],
+    )
+    assert admitted["status"] == "ADMITTED"
+    deep_three = ledger.admit_deep_capacity(
+        **base, ordinal=3, token_budget=2,
+        lanes=[
+            {"lane": "a", "effective_route_identity": "route-a", "lens": "runtime", "available": True, "token_cost": 1},
+            {"lane": "b", "effective_route_identity": "route-b", "lens": "security", "available": True, "token_cost": 1},
+            {"lane": "c", "effective_route_identity": "route-c", "lens": "dependency", "available": True, "token_cost": 1},
+        ],
+    )
+    assert deep_three["status"] == "DEGRADED_ROUTE_CAPACITY"
+
+
+def test_deep_three_terminal_stop_prevents_an_automatic_new_cycle(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    first = _admit_recovery(ledger, packet["packet_hash"])
+    for ordinal, prior, owner, route, lens in (
+        (1, first, "codex", "route-a", "runtime"),
+    ):
+        ledger.transition_recovery_attempt(prior["attempt_id"], fence_token=prior["fence_token"], state="ACCEPTED")
+        ledger.transition_recovery_attempt(prior["attempt_id"], fence_token=prior["fence_token"], state="RUNNING")
+        ledger.transition_recovery_attempt(prior["attempt_id"], fence_token=prior["fence_token"], state="FAILED")
+    second = _admit_recovery(ledger, packet["packet_hash"], ordinal=2, owner="claude", effective_route_identity="route-b", lens="contract", predecessor_attempt_id=first["attempt_id"])
+    ledger.transition_recovery_attempt(second["attempt_id"], fence_token=second["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(second["attempt_id"], fence_token=second["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(second["attempt_id"], fence_token=second["fence_token"], state="FAILED")
+    third = _admit_recovery(ledger, packet["packet_hash"], ordinal=3, owner="grok", effective_route_identity="route-c", lens="security", predecessor_attempt_id=second["attempt_id"])
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(third["attempt_id"], fence_token=third["fence_token"], state="FAILED")
+    deep_one = _admit_recovery(ledger, packet["packet_hash"], mode="DEEP", ordinal=1, owner="codex", effective_route_identity="route-d", lens="runtime")
+    for attempt in (deep_one,):
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="RUNNING")
+        ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="FAILED")
+    deep_two = _admit_recovery(ledger, packet["packet_hash"], mode="DEEP", ordinal=2, owner="claude", effective_route_identity="route-e", lens="contract", predecessor_attempt_id=deep_one["attempt_id"])
+    ledger.transition_recovery_attempt(deep_two["attempt_id"], fence_token=deep_two["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(deep_two["attempt_id"], fence_token=deep_two["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(deep_two["attempt_id"], fence_token=deep_two["fence_token"], state="FAILED")
+    deep_three = _admit_recovery(ledger, packet["packet_hash"], mode="DEEP", ordinal=3, owner="grok", effective_route_identity="route-f", lens="security", predecessor_attempt_id=deep_two["attempt_id"])
+    ledger.transition_recovery_attempt(deep_three["attempt_id"], fence_token=deep_three["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(deep_three["attempt_id"], fence_token=deep_three["fence_token"], state="RUNNING")
+    ledger.transition_recovery_attempt(deep_three["attempt_id"], fence_token=deep_three["fence_token"], state="FAILED")
+    stopped = ledger.stop_and_report_after_deep_three(
+        candidate_hash="a" * 64, environment_fingerprint="env-a", normalized_scope="release tests",
+        failure_fingerprint="failed:test_one", normalized_task="reproduce test one", generation=0, reason="exhausted",
+    )
+    assert stopped["status"] == "STOP_AND_REPORT"
+    with pytest.raises(RuntimeError, match="STOP_AND_REPORT"):
+        _admit_recovery(ledger, packet["packet_hash"], generation=0, owner="other", effective_route_identity="route-z", lens="other")
+
+
+def test_recovery_packet_mismatch_and_sensitive_fields_fail_closed(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    with pytest.raises(ValueError, match="forbidden"):
+        ledger.record_recovery_packet(_recovery_packet(api_key="secret"))
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    with pytest.raises(RuntimeError, match="does not match"):
+        _admit_recovery(ledger, packet["packet_hash"], environment_fingerprint="env-b")
+    with pytest.raises(ValueError, match="forbidden"):
+        ledger.record_recovery_packet(_recovery_packet(verified_facts=[{"nested": {"api-key": "secret"}}]))
+
+
+def test_material_review_requires_current_fence_and_rejects_generic_batch(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        packet = ledger.record_recovery_packet(_recovery_packet())
+        attempt = _admit_recovery(ledger, packet["packet_hash"])
+        request = _request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight())
+        blocked = launch_material_async_review(
+            ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            dispatch_kwargs={"goals": ["same review"]}, **request,
+        )
+        assert blocked["status"] == "rejected"
+        result = launch_material_async_review(
+            ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            dispatch_kwargs={
+                "goal": "read-only material review", "context": "candidate", "toolsets": None,
+                "role": "reviewer", "model": "m", "session_key": "test",
+                "runner": lambda: {"status": "completed", "summary": "done"},
+                "interrupt_fn": lambda: None, "max_async_children": 1,
+            },
+            **request,
+        )
+        assert result["status"] == "launched"
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            candidate, fence = conn.execute(
+                "SELECT candidate_hash, submission_fence FROM async_delegations WHERE delegation_id=?",
+                (result["dispatch"]["delegation_id"],),
+            ).fetchone()
+        assert candidate == "a" * 64
+        assert fence == attempt["fence_token"]
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+            assert conn.execute(
+                "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+            ).fetchone()[0] == "COMMITTED"
+    finally:
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ad._reset_for_tests()
+
+
+def test_generic_async_launcher_rejects_a_material_recovery_attempt(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    result = launch_async_review(
+        ledger, **_request(preflight=_preflight()), dispatch=lambda **_kwargs: {"status": "dispatched"},
+        dispatch_kwargs={"goal": "review", "interrupt_fn": lambda: None, "recovery_attempt_id": "retry-1"},
+    )
+    assert result["status"] == "rejected"
+    assert "material adapter" in result["error"]
+
+
+def test_unaccepted_material_launch_keeps_retry_prepared(tmp_path, monkeypatch):
+    """A pre-submission rejection closes its receipt but spends no retry."""
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    result = launch_material_async_review(
+        ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        dispatch_kwargs={"goal": "review", "context": "candidate", "toolsets": None, "role": "reviewer", "model": "m", "session_key": "test"},
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    assert result["status"] == "rejected"
+    with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+        ).fetchone()[0] == "PREPARED"
+
+
+def test_activation_failure_preserves_outbox_and_interrupts_material_retry(tmp_path, monkeypatch):
+    """No crash gap may delete the only durable recovery owner."""
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    monkeypatch.setattr(ad, "_activate_durable_dispatch", lambda _delegation_id: False)
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        packet = ledger.record_recovery_packet(_recovery_packet())
+        attempt = _admit_recovery(ledger, packet["packet_hash"])
+        result = launch_material_async_review(
+            ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            dispatch_kwargs={
+                "goal": "review", "context": "candidate", "toolsets": None, "role": "reviewer", "model": "m", "session_key": "test",
+                "runner": lambda: {"status": "completed"}, "interrupt_fn": lambda: None, "max_async_children": 1,
+            },
+            **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+        )
+        assert result["status"] == "rejected"
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            assert conn.execute("SELECT state FROM async_delegations").fetchone()[0] == "unknown"
+        with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+            assert conn.execute(
+                "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+            ).fetchone()[0] == "INTERRUPTED"
+    finally:
+        ad._reset_for_tests()
+
+
+def test_material_review_cancel_is_fenced_and_rejects_late_result(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    gate = threading.Event()
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        packet = ledger.record_recovery_packet(_recovery_packet())
+        attempt = _admit_recovery(ledger, packet["packet_hash"])
+        result = launch_material_async_review(
+            ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+            dispatch_kwargs={
+                "goal": "review", "context": "candidate", "toolsets": None, "role": "reviewer",
+                "model": "m", "session_key": "test",
+                "runner": lambda: (gate.wait(2), {"status": "completed", "summary": "late"})[1],
+                "interrupt_fn": lambda: None, "max_async_children": 1,
+            },
+        )
+        delegation_id = result["dispatch"]["delegation_id"]
+        assert not ad.cancel_async_delegation(delegation_id, fence_token=attempt["fence_token"] + 1)
+        assert ad.cancel_async_delegation(delegation_id, fence_token=attempt["fence_token"])
+        gate.set()
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            assert conn.execute("SELECT state FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()[0] == "cancelled"
+        assert ledger.receipt_state(result["receipt_id"]) == "cancelled"
+    finally:
+        gate.set()
+        ad._reset_for_tests()
+
+
+def test_material_review_owner_death_interrupts_only_current_attempt(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    gate = threading.Event()
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        packet = ledger.record_recovery_packet(_recovery_packet())
+        attempt = _admit_recovery(ledger, packet["packet_hash"])
+        result = launch_material_async_review(
+            ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+            dispatch_kwargs={
+                "goal": "review", "context": "candidate", "toolsets": None, "role": "reviewer",
+                "model": "m", "session_key": "test",
+                "runner": lambda: (gate.wait(2), {"status": "completed"})[1],
+                "interrupt_fn": lambda: None, "max_async_children": 1,
+            },
+        )
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            conn.execute("UPDATE async_delegations SET owner_pid=0 WHERE delegation_id=?", (result["dispatch"]["delegation_id"],))
+        assert ad.recover_abandoned_delegations() == 1
+        with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+            assert conn.execute(
+                "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+            ).fetchone()[0] == "INTERRUPTED"
+    finally:
+        gate.set()
+        ad._reset_for_tests()
 
 
 def test_variant_output_or_deadline_is_conflict_not_silent_reuse(tmp_path):
@@ -74,6 +415,21 @@ def test_changed_environment_or_evidence_creates_a_fresh_review_identity(tmp_pat
     assert changed_environment["status"] == "admitted"
     assert changed_evidence["status"] == "admitted"
     assert len({first["receipt_id"], changed_environment["receipt_id"], changed_evidence["receipt_id"]}) == 3
+
+
+def test_effective_route_identity_collapses_endpoint_account_model_aliases(tmp_path):
+    first_route = canonical_effective_route_identity(
+        provider="OpenAI", base_url="https://API.example.test/v1/", account_secret="private", model="GPT-5.6 Sol",
+    )
+    alias_route = canonical_effective_route_identity(
+        provider="openai", base_url="https://api.example.test/v1", account_secret="private", model="gpt_5.6-sol",
+    )
+    assert first_route == alias_route
+    assert "private" not in first_route
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    first = ledger.admit(**_request(lane="lane-one", effective_route_identity=first_route))
+    alias = ledger.admit(**_request(lane="lane-two", effective_route_identity=alias_route))
+    assert first["status"] == alias["status"] == "admitted"
 
 
 def test_conflicting_requested_id_is_rejected(tmp_path):
@@ -401,6 +757,34 @@ def test_async_launch_uses_one_receipt_and_preserves_rejected_state(tmp_path, mo
     assert second["status"] == "existing"
     assert second["state"] == "launch_rejected"
     assert len(calls) == 0
+
+
+def test_async_fallback_gets_a_new_route_bound_admission_after_rejection(tmp_path, monkeypatch):
+    """A fallback may not reuse or overwrite the primary lane's receipt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ledger = ReleaseReviewLedger(tmp_path / "hermes-home" / "release-review-ledger.db")
+    calls = []
+
+    def dispatch(**kwargs):
+        calls.append(kwargs)
+        return {"status": "rejected", "error": "provider unavailable"}
+
+    base = {
+        **_request(lane="primary", model="model-primary", effective_route_identity="route-primary"),
+        "preflight": _preflight(), "dispatch": dispatch,
+        "dispatch_kwargs": {"goal": "review", "interrupt_fn": lambda: None},
+    }
+    first = launch_async_review(ledger, **base)
+    repeated = launch_async_review(ledger, **base)
+    fallback = launch_async_review(
+        ledger,
+        **{**base, "lane": "fallback", "model": "model-fallback", "effective_route_identity": "route-fallback"},
+    )
+    assert first["status"] == "rejected"
+    assert repeated["status"] == "existing"
+    assert fallback["status"] == "rejected"
+    assert fallback["receipt_id"] != first["receipt_id"]
+    assert len(calls) == 2
 
 
 def test_async_launcher_uses_the_real_async_delegation_rail(tmp_path, monkeypatch):

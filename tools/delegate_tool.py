@@ -2503,10 +2503,16 @@ def _recover_tasks_from_json_string(
 
 
 _REVIEW_CANDIDATE_RE = re.compile(r"\b[0-9a-f]{7,64}\b", re.IGNORECASE)
+_TASK_ROUTE_FORBIDDEN_FIELDS = frozenset({
+    "api_key", "api_mode", "base_url", "command", "model", "provider",
+    "request_overrides", "acp_command", "acp_args",
+})
 
 
 def _review_batch_conflict(
     task_list: List[Dict[str, Any]], *, model: Optional[str], context: Optional[str],
+    models: Optional[List[Optional[str]]] = None,
+    effective_route_identities: Optional[List[Optional[str]]] = None,
 ) -> Optional[str]:
     """Reject overlapping same-model review work before child construction.
 
@@ -2543,16 +2549,129 @@ def _review_batch_conflict(
             lens = "tests"
         else:
             lens = "general"
-        key = (candidate, str(model or "inherited-model").strip().lower(), lens)
+        task_model = models[index] if models and index < len(models) else model
+        effective_route = (
+            effective_route_identities[index]
+            if effective_route_identities and index < len(effective_route_identities)
+            else None
+        )
+        route_key = str(effective_route or task_model or "inherited-model").strip().lower()
+        key = (candidate, route_key, lens)
         previous = seen.get(key)
         if previous is not None:
             return (
                 "Duplicate review admission rejected before dispatch: tasks "
-                f"{previous} and {index} share candidate={candidate}, model={key[1]}, lens={lens}. "
+                f"{previous} and {index} share candidate={candidate}, effective_route={key[1]}, lens={lens}. "
                 "Use one task, or assign explicit distinct review_lens values for materially different checks."
             )
         seen[key] = index
     return None
+
+
+def _is_material_review_task(task: Dict[str, Any]) -> bool:
+    return bool(str(task.get("candidate_hash", "")).strip()) or bool(str(task.get("review_lens", "")).strip())
+
+
+def _review_route_identity(credentials: Dict[str, Any], parent_agent) -> tuple[str, str, str]:
+    """Resolve the backing lane identity after credentials are selected.
+
+    The result deliberately ignores a configured lane label.  Two aliases that
+    land on the same provider endpoint/account/model are one reviewer for an
+    independence gate, even if their config names differ.
+    """
+    from tools.release_review_ledger import canonical_effective_route_identity
+
+    provider = str(credentials.get("provider") or getattr(parent_agent, "provider", "inherited")).strip().lower()
+    model = str(credentials.get("model") or getattr(parent_agent, "model", "inherited-model")).strip().lower()
+    effective = canonical_effective_route_identity(
+        provider=provider or "inherited",
+        base_url=credentials.get("base_url") or getattr(parent_agent, "base_url", None),
+        account_secret=credentials.get("api_key") or getattr(parent_agent, "api_key", None),
+        model=model or "inherited-model",
+    )
+    return provider or "inherited", model or "inherited-model", effective
+
+
+def _plan_dispatcher_review_routes(
+    task_list: List[Dict[str, Any]], cfg: Dict[str, Any], parent_agent, default_credentials: Dict[str, Any],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Select configured review lanes without ever accepting route secrets from tasks.
+
+    ``delegation.review_lanes`` is dispatcher configuration only. A task may
+    describe a lens but cannot nominate a provider, endpoint, or credential.
+    Credential resolution is the existing runtime-provider path, so every
+    rejected lane has a durable non-secret reason and no child is constructed
+    with a partial route.
+    """
+    routes = [dict(default_credentials) for _ in task_list]
+    evidence: List[Dict[str, Any]] = []
+    review_indices = [i for i, task in enumerate(task_list) if _is_material_review_task(task)]
+    if not review_indices:
+        return routes, evidence
+
+    configured = cfg.get("review_lanes")
+    if configured is None:
+        configured = []
+    if not isinstance(configured, list):
+        raise ValueError("delegation.review_lanes must be a list of dispatcher-owned route objects")
+
+    available: List[tuple[str, Dict[str, Any], str]] = []
+    for lane_index, lane in enumerate(configured):
+        lane_id = f"lane-{lane_index + 1}"
+        if not isinstance(lane, dict):
+            evidence.append({"lane": lane_id, "availability": "unavailable", "reason": "invalid_config"})
+            continue
+        lane_id = str(lane.get("id") or lane_id).strip()[:64] or lane_id
+        if lane.get("enabled", True) is False:
+            evidence.append({"lane": lane_id, "availability": "unavailable", "reason": "disabled"})
+            continue
+        # Only non-secret selectors are allowed here. api_key/base_url/command
+        # stay in runtime provider configuration and never enter task payloads.
+        provider = str(lane.get("provider") or "").strip()
+        model = str(lane.get("model") or "").strip()
+        if not provider or not model or any(key in lane for key in ("api_key", "base_url", "command", "args")):
+            evidence.append({"lane": lane_id, "availability": "unavailable", "reason": "invalid_selector"})
+            continue
+        lane_cfg = dict(cfg)
+        lane_cfg.update({"provider": provider, "model": model, "base_url": "", "api_key": ""})
+        try:
+            credentials = _resolve_delegation_credentials(lane_cfg, parent_agent)
+        except ValueError:
+            evidence.append({"lane": lane_id, "availability": "unavailable", "reason": "credential_unavailable"})
+            continue
+        _provider, _model, effective_identity = _review_route_identity(credentials, parent_agent)
+        available.append((lane_id, credentials, effective_identity))
+
+    if not available:
+        _provider, _model, effective_identity = _review_route_identity(default_credentials, parent_agent)
+        available = [("inherited", dict(default_credentials), effective_identity)]
+
+    used_effective_routes: set[str] = set()
+    for task_index in review_indices:
+        selected = next(
+            ((lane_id, credentials, effective_identity) for lane_id, credentials, effective_identity in available
+             if effective_identity not in used_effective_routes),
+            None,
+        )
+        if selected is None:
+            selected = available[task_index % len(available)]
+            mode = "degraded_same_model"
+        else:
+            mode = "distinct_configured_route" if selected[0] != "inherited" else "degraded_no_alternative"
+        lane_id, credentials, effective_identity = selected
+        routes[task_index] = dict(credentials)
+        used_effective_routes.add(effective_identity)
+        provider, model, _ = _review_route_identity(credentials, parent_agent)
+        evidence.append({
+            "task_index": task_index,
+            "lane": lane_id,
+            "provider": provider,
+            "model": model,
+            "effective_route_identity": effective_identity,
+            "availability": "callable_configured" if lane_id != "inherited" else "inherited_only",
+            "mode": mode,
+        })
+    return routes, evidence
 
 
 def _task_display_identity(task: Dict[str, Any], *, effective_model: Optional[str], default_role: str) -> Dict[str, str]:
@@ -2568,6 +2687,8 @@ def _task_display_identity(task: Dict[str, Any], *, effective_model: Optional[st
     label = f"{model} · {role}"
     if lens:
         label += f" · {lens} review"
+    if task.get("routing_mode") == "degraded_same_model":
+        label += " · same-model lens (not cross-model)"
     return {"model": model, "role": role, "review_lens": lens, "label": label}
 
 
@@ -2688,6 +2809,15 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
+    # This public generic ingress has no receipt, fenced recovery attempt, or
+    # preflight identity.  Material reviews therefore fail closed here instead
+    # of ever reaching ordinary child or batch construction.
+    if any(_is_material_review_task(task) for task in task_list if isinstance(task, dict)):
+        return tool_error(
+            "Material review requests require the receipt-bound material-review adapter; "
+            "generic delegate_task child/batch dispatch is not permitted."
+        )
+
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
@@ -2696,8 +2826,28 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        forbidden_route_fields = sorted(set(task).intersection(_TASK_ROUTE_FORBIDDEN_FIELDS))
+        if forbidden_route_fields:
+            return tool_error(
+                f"Task {i} cannot select a provider, model, endpoint, transport, or credential: "
+                f"{', '.join(forbidden_route_fields)}. Routing is dispatcher-owned."
+            )
 
-    review_conflict = _review_batch_conflict(task_list, model=creds.get("model"), context=context)
+    try:
+        task_routes, routing_evidence = _plan_dispatcher_review_routes(
+            task_list, cfg, parent_agent, creds,
+        )
+    except ValueError as exc:
+        return tool_error(str(exc))
+    route_models = [route.get("model") or getattr(parent_agent, "model", None) for route in task_routes]
+    effective_route_identities = [
+        next((item.get("effective_route_identity") for item in routing_evidence if item.get("task_index") == index), None)
+        for index in range(len(task_list))
+    ]
+    review_conflict = _review_batch_conflict(
+        task_list, model=creds.get("model"), context=context, models=route_models,
+        effective_route_identities=effective_route_identities,
+    )
     if review_conflict:
         return tool_error(review_conflict)
 
@@ -2719,18 +2869,26 @@ def delegate_task(
         wrap_progress_callback,
     )
 
-    _effective_display_model = creds.get("model") or getattr(parent_agent, "model", None)
     _worker_identities = [
         _task_display_identity(
-            task, effective_model=_effective_display_model, default_role=top_role,
+            {
+                **task,
+                "routing_mode": next(
+                    (item.get("mode") for item in routing_evidence if item.get("task_index") == index),
+                    None,
+                ),
+            },
+            effective_model=task_routes[index].get("model") or getattr(parent_agent, "model", None),
+            default_role=top_role,
         )
-        for task in task_list
+        for index, task in enumerate(task_list)
     ]
     _display_tasks = [
         {
             **task,
             "display_label": _worker_identities[index]["label"],
             "effective_model": _worker_identities[index]["model"],
+            "routing": next((item for item in routing_evidence if item.get("task_index") == index), None),
         }
         for index, task in enumerate(task_list)
     ]
@@ -2774,28 +2932,32 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            route = task_routes[i]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 # Subagents inherit parent toolsets or caller-supplied narrowing
                 toolsets=t.get("enabled_toolsets") or t.get("toolsets") or enabled_toolsets,
-                model=creds["model"],
+                model=route["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=route["provider"],
+                override_base_url=route["base_url"],
+                override_api_key=route["api_key"],
+                override_api_mode=route["api_mode"],
+                override_request_overrides=route.get("request_overrides"),
+                override_max_tokens=route.get("max_output_tokens"),
+                override_acp_command=route.get("command"),
+                override_acp_args=route.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            child._delegate_routing = next(
+                (item for item in routing_evidence if item.get("task_index") == i), None,
+            )
             # Tee the child's progress events into its live transcript log.
             # wrap_progress_callback preserves the inner callback contract
             # (including the _flush attribute) and never lets writer failures
@@ -3869,6 +4031,7 @@ DELEGATE_TASK_SCHEMA = {
                         },
                     },
                     "required": ["goal"],
+                    "additionalProperties": False,
                 },
                 # No maxItems — the runtime limit is configurable via
                 # delegation.max_concurrent_children (default 3) and

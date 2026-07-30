@@ -103,7 +103,7 @@ def launch_shell_review(
     return {**receipt, "status": "launched", "root_pid": int(process.pid), "leaf_pid": int(process.pid)}
 
 
-def launch_async_review(
+def _launch_async_review(
     ledger: ReleaseReviewLedger, *, dispatch: Callable[..., Dict[str, Any]],
     dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
 ) -> Dict[str, Any]:
@@ -127,12 +127,19 @@ def launch_async_review(
         dispatch_input["delegation_id"] = delegation_id
         dispatch_input["review_receipt_id"] = receipt["receipt_id"]
         dispatch_input["review_ledger_path"] = str(ledger.path)
+        dispatch_input["candidate_hash"] = request["candidate_hash"]
+        dispatch_input["effective_execution_identity"] = request.get("effective_route_identity") or request["model"]
+        dispatch_input["review_fence_token"] = int(dispatch_input.get("review_fence_token", 0) or 0)
         result = dispatch(**dispatch_input)
     except Exception:
         ledger.mark_launch_failed(receipt["receipt_id"])
         raise
     if result.get("status") != "dispatched":
-        ledger.mark_launch_failed(receipt["receipt_id"], "launch_rejected")
+        # The async dispatcher can already have terminalized a receipt while
+        # retaining an UNKNOWN durable outbox for crash recovery.  Do not turn
+        # that idempotent rejection into a second state-transition error.
+        if ledger.receipt_state(receipt["receipt_id"]) in {"launching", "dispatching", "running"}:
+            ledger.mark_launch_failed(receipt["receipt_id"], "launch_rejected")
         return {**receipt, "status": "rejected", "dispatch": result}
     returned_id = result.get("delegation_id")
     if returned_id != delegation_id:
@@ -148,3 +155,54 @@ def launch_async_review(
         force_timeout_review_receipt(receipt["receipt_id"], "release review deadline")
     ledger.supervise_deadline(receipt["receipt_id"], _interrupt)
     return {**receipt, "status": "launched", "dispatch": result, "root_pid": os.getpid(), "leaf_pid": None}
+
+
+def launch_async_review(
+    ledger: ReleaseReviewLedger, *, dispatch: Callable[..., Dict[str, Any]],
+    dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
+) -> Dict[str, Any]:
+    """Public generic launcher; recovery-bound reviews have no public bypass."""
+    if dispatch_kwargs.get("recovery_attempt_id"):
+        return {"status": "rejected", "error": "material reviews require the receipt-bound material adapter"}
+    return _launch_async_review(
+        ledger, dispatch=dispatch, dispatch_kwargs=dispatch_kwargs, receipt_id=receipt_id, **request,
+    )
+
+
+def launch_material_async_review(
+    ledger: ReleaseReviewLedger, *, attempt_id: str, fence_token: int,
+    dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
+) -> Dict[str, Any]:
+    """Launch one candidate-bound material review through the durable outbox.
+
+    Material reviews intentionally have no generic-batch escape hatch.  Their
+    retry fence, candidate, environment, and normalized scope are checked
+    before the async dispatcher may accept or submit a child.
+    """
+    from tools.async_delegation import dispatch_async_delegation
+
+    forbidden = {"goals", "is_batch", "dispatch_async_delegation_batch"}
+    if forbidden.intersection(dispatch_kwargs):
+        return {"status": "rejected", "error": "material reviews cannot use generic batch dispatch"}
+    ledger.assert_current_recovery_attempt(
+        attempt_id,
+        fence_token=int(fence_token),
+        candidate_hash=request["candidate_hash"],
+        environment_fingerprint=request["environment_fingerprint"],
+        normalized_scope=request["scope"],
+    )
+    bound = dict(dispatch_kwargs)
+    bound["review_fence_token"] = int(fence_token)
+    bound["recovery_attempt_id"] = attempt_id
+    try:
+        result = _launch_async_review(
+            ledger, dispatch=dispatch_async_delegation, dispatch_kwargs=bound,
+            receipt_id=receipt_id, **request,
+        )
+    except Exception:
+        # Before executor submission the retry stays PREPARED and is not
+        # consumed; after durable acceptance async_delegation owns the fenced
+        # INTERRUPTED/FAILED terminal transition.  Never overwrite either
+        # state from this wrapper.
+        raise
+    return result

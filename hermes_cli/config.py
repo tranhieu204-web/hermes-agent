@@ -2401,6 +2401,11 @@ DEFAULT_CONFIG = {
                            # "codex_responses", or "anthropic_messages". Empty = auto-detect
                            # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
                            # explicitly for non-standard endpoints the heuristic can't detect.
+        # Dispatcher-owned only: material-review tasks are assigned across
+        # these configured provider/model routes without exposing credentials
+        # or endpoints in task arguments. Empty keeps inherited single-route
+        # behavior and records degraded same-model review evidence.
+        "review_lanes": [],
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these

@@ -14,7 +14,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
+from urllib.parse import urlsplit
 
 
 _REQUIRED_PREFLIGHT = ("target", "install", "restart", "health", "rollback")
@@ -30,6 +31,39 @@ def _fingerprint(identity: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _canonical_token(value: Any) -> str:
+    """Normalize presentation aliases without relying on config labels."""
+    return "-".join(
+        part for part in "".join(
+            char.lower() if char.isalnum() else " " for char in str(value or "")
+        ).split()
+        if part
+    )
+
+
+def canonical_effective_route_identity(
+    *, provider: str, base_url: str | None, account_secret: str | None, model: str,
+) -> str:
+    """Secret-free identity for the resolved provider endpoint/account/model.
+
+    A configured lane id is intentionally excluded. Endpoint and account inputs
+    are hashed so aliases collapse without writing URLs or credentials into the
+    review ledger.
+    """
+    raw_endpoint = str(base_url or "").strip()
+    parsed = urlsplit(raw_endpoint) if raw_endpoint else None
+    endpoint = (
+        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/").lower())
+        if parsed else ()
+    )
+    return "|".join((
+        f"provider={_canonical_token(provider) or 'inherited'}",
+        f"endpoint={_fingerprint({'endpoint': endpoint})[:24]}",
+        f"account={_fingerprint({'account': str(account_secret or '')})[:24]}",
+        f"model={_canonical_token(model) or 'inherited-model'}",
+    ))
+
+
 def review_identity(
     candidate_hash: str,
     scope: str,
@@ -40,6 +74,7 @@ def review_identity(
     deadline_seconds: Optional[float] = None,
     environment_fingerprint: str = "",
     evidence_fingerprint: str = "",
+    effective_route_identity: str = "",
 ) -> Dict[str, Any]:
     """Immutable request identity, including output target and timebox."""
     identity: Dict[str, Any] = {
@@ -51,6 +86,7 @@ def review_identity(
         "normalized_output_path": _normalized(output_path),
         "environment_fingerprint": _normalized(environment_fingerprint),
         "evidence_fingerprint": _normalized(evidence_fingerprint),
+        "effective_route_identity": _normalized(effective_route_identity),
     }
     if deadline_seconds is not None:
         identity["deadline_seconds"] = float(deadline_seconds)
@@ -64,6 +100,7 @@ def _logical_identity(identity: Mapping[str, Any]) -> Dict[str, Any]:
         for key in (
             "candidate_hash", "normalized_scope", "lane", "model", "prompt_hash",
             "environment_fingerprint", "evidence_fingerprint",
+            "effective_route_identity",
         )
     }
 
@@ -82,6 +119,7 @@ class ReleaseReviewLedger:
                         candidate_hash TEXT NOT NULL, normalized_scope TEXT NOT NULL,
                         lane TEXT NOT NULL, model TEXT NOT NULL, prompt_hash TEXT NOT NULL,
                         environment_fingerprint TEXT NOT NULL DEFAULT '', evidence_fingerprint TEXT NOT NULL DEFAULT '',
+                        effective_route_identity TEXT NOT NULL DEFAULT '',
                         output_path TEXT NOT NULL, deadline_seconds REAL NOT NULL,
                         deadline_at REAL NOT NULL, state TEXT NOT NULL,
                         root_pid INTEGER, leaf_pid INTEGER, launch_handle TEXT,
@@ -99,6 +137,7 @@ class ReleaseReviewLedger:
                     ("terminal_json", "TEXT", "'{}'"),
                     ("environment_fingerprint", "TEXT", "''"),
                     ("evidence_fingerprint", "TEXT", "''"),
+                    ("effective_route_identity", "TEXT", "''"),
                 ):
                     if name not in columns:
                         nullability = "" if name == "launch_handle" else " NOT NULL"
@@ -150,6 +189,44 @@ class ReleaseReviewLedger:
                         reason TEXT NOT NULL, evidence TEXT NOT NULL, created_at REAL NOT NULL
                     )"""
                 )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_recovery_packets (
+                        packet_hash TEXT PRIMARY KEY, identity_fingerprint TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL, packet_json TEXT NOT NULL,
+                        predecessor_packet_hash TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_recovery_attempts (
+                        attempt_id TEXT PRIMARY KEY, identity_fingerprint TEXT NOT NULL,
+                        candidate_hash TEXT NOT NULL, environment_fingerprint TEXT NOT NULL,
+                        scope_hash TEXT NOT NULL, failure_fingerprint TEXT NOT NULL,
+                        normalized_task_hash TEXT NOT NULL, mode TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                        generation INTEGER NOT NULL, owner TEXT NOT NULL, effective_route_identity TEXT NOT NULL,
+                        lens TEXT NOT NULL, packet_hash TEXT NOT NULL, predecessor_attempt_id TEXT,
+                        fence_token INTEGER NOT NULL UNIQUE, state TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
+                        created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                        UNIQUE(identity_fingerprint, mode, ordinal, generation)
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_recovery_phase_admissions (
+                        phase_fingerprint TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL,
+                        environment_fingerprint TEXT NOT NULL, failure_fingerprint TEXT NOT NULL,
+                        mode TEXT NOT NULL, ordinal INTEGER NOT NULL, status TEXT NOT NULL,
+                        selected_lanes_json TEXT NOT NULL, unavailable_lanes_json TEXT NOT NULL,
+                        capacity_limit INTEGER NOT NULL, token_budget INTEGER NOT NULL,
+                        created_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_recovery_stops (
+                        stop_fingerprint TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL,
+                        environment_fingerprint TEXT NOT NULL, scope_hash TEXT NOT NULL,
+                        failure_fingerprint TEXT NOT NULL, normalized_task_hash TEXT NOT NULL,
+                        generation INTEGER NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL
+                    )"""
+                )
         finally:
             conn.close()
 
@@ -199,11 +276,12 @@ class ReleaseReviewLedger:
         receipt_id: Optional[str] = None,
         environment_fingerprint: str = "",
         evidence_fingerprint: str = "",
+        effective_route_identity: str = "",
     ) -> Dict[str, Any]:
         deadline_seconds = self._validate_deadline(deadline_seconds)
         identity = review_identity(
             candidate_hash, scope, lane, model, prompt, output_path, deadline_seconds,
-            environment_fingerprint, evidence_fingerprint,
+            environment_fingerprint, evidence_fingerprint, effective_route_identity,
         )
         if not all(identity[key] for key in (
             "candidate_hash", "normalized_scope", "lane", "model", "normalized_output_path",
@@ -245,19 +323,49 @@ class ReleaseReviewLedger:
                 conn.execute(
                     """INSERT INTO release_review_receipts
                        (receipt_id, fingerprint, logical_fingerprint, candidate_hash, normalized_scope, lane, model,
-                        prompt_hash, environment_fingerprint, evidence_fingerprint, output_path, deadline_seconds,
+                        prompt_hash, environment_fingerprint, evidence_fingerprint, effective_route_identity, output_path, deadline_seconds,
                         deadline_at, state, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
                     (
                         requested_id, fingerprint, logical_fingerprint, identity["candidate_hash"],
                         identity["normalized_scope"], identity["lane"], identity["model"], identity["prompt_hash"],
-                        identity["environment_fingerprint"], identity["evidence_fingerprint"],
+                        identity["environment_fingerprint"], identity["evidence_fingerprint"], identity["effective_route_identity"],
                         identity["normalized_output_path"], deadline_seconds, now + deadline_seconds, now, now,
                     ),
                 )
         finally:
             conn.close()
         return {"status": "admitted", "receipt_id": requested_id, "identity": identity}
+
+    @staticmethod
+    def assess_independent_review_gate(
+        receipts: Iterable[Mapping[str, Any]], required_models: int,
+    ) -> Dict[str, Any]:
+        """Fail an N-model gate unless N different effective backing lanes exist.
+
+        A distinct lens or delegation id is not evidence of independence.  The
+        caller must pass the secret-free effective route identity captured at
+        dispatch time.
+        """
+        identities: list[str] = []
+        lenses: list[str] = []
+        for receipt in receipts:
+            if str(receipt.get("routing_mode", "")).upper() == "DEGRADED_SAME_MODEL":
+                return {"status": "rejected", "reason": "DEGRADED_SAME_MODEL"}
+            identity = _normalized(str(receipt.get("effective_route_identity", "")))
+            if not identity:
+                return {"status": "rejected", "reason": "missing_effective_route_identity"}
+            identities.append(identity)
+        if len(set(identities)) < required_models:
+            return {"status": "rejected", "reason": "insufficient_distinct_effective_routes"}
+        for receipt in receipts:
+            lens = _normalized(str(receipt.get("review_lens", ""))).lower()
+            if not lens:
+                return {"status": "rejected", "reason": "missing_review_lens"}
+            lenses.append(lens)
+        if len(set(lenses)) < required_models:
+            return {"status": "rejected", "reason": "insufficient_distinct_review_lenses"}
+        return {"status": "accepted", "effective_route_identities": sorted(set(identities)), "review_lenses": sorted(set(lenses))}
 
     @staticmethod
     def _validate_preflight(preflight: Mapping[str, Any]) -> Dict[str, Any]:
@@ -638,6 +746,307 @@ class ReleaseReviewLedger:
         finally:
             conn.close()
 
+    @staticmethod
+    def _recovery_identity(
+        *, candidate_hash: str, environment_fingerprint: str, normalized_scope: str,
+        failure_fingerprint: str, normalized_task: str, effective_route_identity: str, lens: str,
+    ) -> Dict[str, str]:
+        return {
+            "candidate_hash": _normalized(candidate_hash),
+            "environment_fingerprint": _normalized(environment_fingerprint),
+            "scope_hash": _fingerprint({"scope": _normalized(normalized_scope)}),
+            "failure_fingerprint": _normalized(failure_fingerprint),
+            "normalized_task_hash": _fingerprint({"task": _normalized(normalized_task)}),
+            "effective_route_identity": _normalized(effective_route_identity),
+            "lens": _normalized(lens),
+        }
+
+    def record_recovery_packet(self, packet: Mapping[str, Any]) -> Dict[str, str]:
+        """Persist a redacted, content-addressed handoff packet before retry admission."""
+        required = {
+            "schema_version", "candidate_hash", "environment_fingerprint", "normalized_scope",
+            "failure_fingerprint", "normalized_task", "failed_set", "reproducer", "versions",
+            "attempted_remedy_hash", "verified_facts", "unresolved_questions", "quarantined", "redaction_attestation",
+        }
+        if not isinstance(packet, Mapping) or required.difference(packet):
+            raise ValueError(f"recovery packet missing fields: {sorted(required.difference(packet or {}))}")
+        if int(packet["schema_version"]) < 1 or not bool(packet["redaction_attestation"]):
+            raise ValueError("recovery packet requires a supported schema and redaction attestation")
+        forbidden = {"api_key", "token", "password", "chain_of_thought", "authenticated_response", "pid"}
+        def _assert_redacted(value: Any) -> None:
+            if isinstance(value, Mapping):
+                for key, child in value.items():
+                    normalized_key = _normalized(str(key)).lower().replace("-", "_")
+                    if normalized_key in forbidden:
+                        raise ValueError("recovery packet contains forbidden sensitive or transient fields")
+                    _assert_redacted(child)
+            elif isinstance(value, (list, tuple)):
+                for child in value:
+                    _assert_redacted(child)
+        _assert_redacted(packet)
+        identity = self._recovery_identity(
+            candidate_hash=str(packet["candidate_hash"]), environment_fingerprint=str(packet["environment_fingerprint"]),
+            normalized_scope=str(packet["normalized_scope"]), failure_fingerprint=str(packet["failure_fingerprint"]),
+            normalized_task=str(packet["normalized_task"]), effective_route_identity="packet", lens="packet",
+        )
+        packet_json = json.dumps(dict(packet), sort_keys=True, separators=(",", ":"))
+        packet_hash = hashlib.sha256(packet_json.encode("utf-8")).hexdigest()
+        predecessor = _normalized(str(packet.get("predecessor_packet_hash", "")))
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR IGNORE INTO workflow_recovery_packets (packet_hash, identity_fingerprint, schema_version, packet_json, predecessor_packet_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (packet_hash, _fingerprint(identity), int(packet["schema_version"]), packet_json, predecessor, time.time()),
+                )
+        finally:
+            conn.close()
+        return {"packet_hash": packet_hash, "identity_fingerprint": _fingerprint(identity)}
+
+    def admit_recovery_attempt(
+        self, *, packet_hash: str, candidate_hash: str, environment_fingerprint: str, normalized_scope: str,
+        failure_fingerprint: str, normalized_task: str, mode: str, ordinal: int, owner: str,
+        effective_route_identity: str, lens: str, predecessor_attempt_id: str = "", generation: int = 0,
+    ) -> Dict[str, Any]:
+        """Atomically reserve one fenced retry owner; duplicate admission spends nothing."""
+        mode = self._required_text(mode, "recovery mode").upper()
+        if mode not in {"STANDARD", "DEEP"} or ordinal not in {1, 2, 3} or generation < 0:
+            raise ValueError("recovery mode, ordinal, or generation is invalid")
+        identity = self._recovery_identity(
+            candidate_hash=candidate_hash, environment_fingerprint=environment_fingerprint, normalized_scope=normalized_scope,
+            failure_fingerprint=failure_fingerprint, normalized_task=normalized_task,
+            effective_route_identity=effective_route_identity, lens=lens,
+        )
+        if not all(identity.values()):
+            raise ValueError("recovery attempt identity is incomplete")
+        fingerprint = _fingerprint(identity)
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                packet = conn.execute("SELECT identity_fingerprint FROM workflow_recovery_packets WHERE packet_hash=?", (packet_hash,)).fetchone()
+                if packet is None:
+                    raise RuntimeError("recovery packet is absent")
+                if packet[0] != _fingerprint({**identity, "effective_route_identity": "packet", "lens": "packet"}):
+                    raise RuntimeError("recovery packet does not match attempt candidate/environment/scope/failure identity")
+                existing = conn.execute(
+                    "SELECT attempt_id, state, fence_token FROM workflow_recovery_attempts WHERE identity_fingerprint=? AND mode=? AND ordinal=? AND generation=?",
+                    (fingerprint, mode, ordinal, generation),
+                ).fetchone()
+                if existing:
+                    return {"status": "existing", "attempt_id": existing[0], "state": existing[1], "fence_token": existing[2]}
+                phase_rows = conn.execute(
+                    "SELECT attempt_id, mode, ordinal, state, effective_route_identity FROM workflow_recovery_attempts "
+                    "WHERE candidate_hash=? AND environment_fingerprint=? AND scope_hash=? AND failure_fingerprint=? "
+                    "AND normalized_task_hash=? AND generation=?",
+                    (
+                        identity["candidate_hash"], identity["environment_fingerprint"], identity["scope_hash"],
+                        identity["failure_fingerprint"], identity["normalized_task_hash"], generation,
+                    ),
+                ).fetchall()
+                stopped = conn.execute(
+                    "SELECT 1 FROM workflow_recovery_stops WHERE candidate_hash=? AND environment_fingerprint=? "
+                    "AND scope_hash=? AND failure_fingerprint=? AND normalized_task_hash=? AND generation=?",
+                    (identity["candidate_hash"], identity["environment_fingerprint"], identity["scope_hash"],
+                     identity["failure_fingerprint"], identity["normalized_task_hash"], generation),
+                ).fetchone()
+                if stopped:
+                    raise RuntimeError("recovery is terminal STOP_AND_REPORT for this generation")
+                exact_ordinal = [row for row in phase_rows if row[1] == mode and int(row[2]) == ordinal]
+                if mode == "STANDARD" and exact_ordinal:
+                    raise RuntimeError("retry ordinal was already consumed by a different route or lens")
+                if mode == "STANDARD":
+                    previous = [row for row in phase_rows if row[1] == "STANDARD" and int(row[2]) == ordinal - 1]
+                    if ordinal > 1 and (len(previous) != 1 or previous[0][3] != "FAILED" or predecessor_attempt_id != previous[0][0]):
+                        raise RuntimeError("standard retry requires the immediately prior failed handoff")
+                    prior_routes = {row[4] for row in phase_rows if row[1] == "STANDARD" and int(row[2]) < ordinal}
+                    if identity["effective_route_identity"] in prior_routes:
+                        raise RuntimeError("standard retries require a distinct effective route")
+                else:
+                    if ordinal == 1:
+                        standard = [row for row in phase_rows if row[1] == "STANDARD"]
+                        if {int(row[2]) for row in standard} != {1, 2, 3} or any(row[3] != "FAILED" for row in standard):
+                            raise RuntimeError("deep mode requires three failed standard attempts")
+                    else:
+                        previous = [row for row in phase_rows if row[1] == "DEEP" and int(row[2]) == ordinal - 1]
+                        if not previous or any(row[3] != "FAILED" for row in previous) or (
+                            predecessor_attempt_id and predecessor_attempt_id not in {row[0] for row in previous}
+                        ):
+                            raise RuntimeError("deep retry requires all immediately prior failed deep lanes")
+                if predecessor_attempt_id:
+                    prior = conn.execute("SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (predecessor_attempt_id,)).fetchone()
+                    if prior is None or prior[0] not in {"FAILED", "INTERRUPTED", "CANCELLED", "COMMITTED"}:
+                        raise RuntimeError("predecessor attempt is not terminal")
+                active = conn.execute(
+                    "SELECT attempt_id FROM workflow_recovery_attempts WHERE identity_fingerprint=? AND state IN ('PREPARED','ACCEPTED','RUNNING')",
+                    (fingerprint,),
+                ).fetchone()
+                if active:
+                    return {"status": "existing", "attempt_id": active[0], "state": "active"}
+                fence = int(conn.execute("SELECT COALESCE(MAX(fence_token), 0) + 1 FROM workflow_recovery_attempts").fetchone()[0])
+                attempt_id = f"retry_{uuid.uuid4().hex[:12]}"
+                now = time.time()
+                conn.execute(
+                    "INSERT INTO workflow_recovery_attempts (attempt_id, identity_fingerprint, candidate_hash, environment_fingerprint, scope_hash, failure_fingerprint, normalized_task_hash, mode, ordinal, generation, owner, effective_route_identity, lens, packet_hash, predecessor_attempt_id, fence_token, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?)",
+                    (attempt_id, fingerprint, identity["candidate_hash"], identity["environment_fingerprint"], identity["scope_hash"], identity["failure_fingerprint"], identity["normalized_task_hash"], mode, ordinal, generation, self._required_text(owner, "recovery owner"), identity["effective_route_identity"], identity["lens"], packet_hash, predecessor_attempt_id or None, fence, now, now),
+                )
+                return {"status": "admitted", "attempt_id": attempt_id, "fence_token": fence, "identity": identity}
+        finally:
+            conn.close()
+
+    def transition_recovery_attempt(self, attempt_id: str, *, fence_token: int, state: str, outcome: str = "") -> None:
+        """Move a fenced attempt forward; late generations cannot overwrite it."""
+        transitions = {
+            "PREPARED": {"ACCEPTED", "CANCELLED", "INTERRUPTED"},
+            "ACCEPTED": {"RUNNING", "CANCELLED", "INTERRUPTED"},
+            "RUNNING": {"FAILED", "COMMITTED", "INTERRUPTED", "CANCELLED"},
+        }
+        state = self._required_text(state, "recovery state").upper()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT state, fence_token FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+                if row is None or int(row[1]) != int(fence_token) or state not in transitions.get(row[0], set()):
+                    raise RuntimeError("recovery transition rejected by state or fence")
+                conn.execute("UPDATE workflow_recovery_attempts SET state=?, outcome=?, updated_at=? WHERE attempt_id=? AND fence_token=?", (state, _normalized(outcome), time.time(), attempt_id, int(fence_token)))
+        finally:
+            conn.close()
+
+    def assert_current_recovery_attempt(
+        self, attempt_id: str, *, fence_token: int, candidate_hash: str,
+        environment_fingerprint: str, normalized_scope: str,
+    ) -> None:
+        """Prove that a material-review outbox row belongs to its live retry lease."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT candidate_hash, environment_fingerprint, scope_hash, fence_token, state "
+                "FROM workflow_recovery_attempts WHERE attempt_id=?",
+                (self._required_text(attempt_id, "attempt_id"),),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("unknown recovery attempt")
+            expected_scope = _fingerprint({"scope": _normalized(normalized_scope)})
+            if (
+                row[0] != self._required_text(candidate_hash, "candidate_hash")
+                or row[1] != self._required_text(environment_fingerprint, "environment_fingerprint")
+                or row[2] != expected_scope
+                or int(row[3]) != int(fence_token)
+                or row[4] not in {"PREPARED", "ACCEPTED", "RUNNING"}
+            ):
+                raise RuntimeError("recovery attempt is not the current candidate-bound fence")
+        finally:
+            conn.close()
+
+    def admit_deep_capacity(
+        self, *, candidate_hash: str, environment_fingerprint: str, failure_fingerprint: str,
+        ordinal: int, lanes: Sequence[Mapping[str, Any]], configured_concurrency: int,
+        token_budget: int,
+    ) -> Dict[str, Any]:
+        """Reserve bounded, distinct Deep lanes before any worker is launched."""
+        if ordinal not in {1, 2, 3} or configured_concurrency < 1 or token_budget < 0:
+            raise ValueError("deep ordinal, concurrency, or token budget is invalid")
+        min_lanes, max_lanes = {1: (2, 3), 2: (3, 4), 3: (1, len(lanes))}[ordinal]
+        qualified_routes: set[str] = set()
+        qualified_lenses: set[str] = set()
+        for raw in lanes:
+            if bool(raw.get("available", False)):
+                qualified_routes.add(self._required_text(raw.get("effective_route_identity"), "effective_route_identity"))
+                qualified_lenses.add(self._required_text(raw.get("lens"), "lens"))
+        if ordinal == 3:
+            # The third Deep phase is intentionally every available qualified
+            # distinct lane, rather than an arbitrary smaller quorum.
+            min_lanes = max_lanes = min(len(qualified_routes), len(qualified_lenses))
+        selected: list[Dict[str, Any]] = []
+        unavailable: list[Dict[str, str]] = []
+        seen_routes: set[str] = set()
+        seen_lenses: set[str] = set()
+        remaining_budget = int(token_budget)
+        for raw in lanes:
+            route = self._required_text(raw.get("effective_route_identity"), "effective_route_identity")
+            lens = self._required_text(raw.get("lens"), "lens")
+            lane = self._required_text(raw.get("lane"), "lane")
+            if not bool(raw.get("available", False)):
+                unavailable.append({"lane": lane, "reason": "unavailable"})
+                continue
+            if route in seen_routes or lens in seen_lenses:
+                unavailable.append({"lane": lane, "reason": "duplicate_route_lens"})
+                continue
+            cost = int(raw.get("token_cost", 1))
+            if cost < 1 or cost > remaining_budget:
+                unavailable.append({"lane": lane, "reason": "budget"})
+                continue
+            if len(selected) >= min(max_lanes, configured_concurrency):
+                unavailable.append({"lane": lane, "reason": "concurrency"})
+                continue
+            selected.append({"lane": lane, "effective_route_identity": route, "lens": lens, "token_cost": cost})
+            seen_routes.add(route)
+            seen_lenses.add(lens)
+            remaining_budget -= cost
+        status = "ADMITTED" if len(selected) >= min_lanes else (
+            "BUDGET_EXCEEDED" if not selected and token_budget == 0 else "DEGRADED_ROUTE_CAPACITY"
+        )
+        fingerprint = _fingerprint({
+            "candidate_hash": self._required_text(candidate_hash, "candidate_hash"),
+            "environment_fingerprint": self._required_text(environment_fingerprint, "environment_fingerprint"),
+            "failure_fingerprint": self._required_text(failure_fingerprint, "failure_fingerprint"),
+            "mode": "DEEP", "ordinal": ordinal, "lanes": list(lanes),
+            "configured_concurrency": configured_concurrency, "token_budget": token_budget,
+        })
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR IGNORE INTO workflow_recovery_phase_admissions "
+                    "(phase_fingerprint,candidate_hash,environment_fingerprint,failure_fingerprint,mode,ordinal,status,selected_lanes_json,unavailable_lanes_json,capacity_limit,token_budget,created_at) "
+                    "VALUES (?, ?, ?, ?, 'DEEP', ?, ?, ?, ?, ?, ?, ?)",
+                    (fingerprint, candidate_hash, environment_fingerprint, failure_fingerprint, ordinal, status,
+                     json.dumps(selected, sort_keys=True), json.dumps(unavailable, sort_keys=True),
+                     configured_concurrency, token_budget, time.time()),
+                )
+        finally:
+            conn.close()
+        return {"status": status, "selected": selected, "unavailable": unavailable, "fingerprint": fingerprint}
+
+    def stop_and_report_after_deep_three(
+        self, *, candidate_hash: str, environment_fingerprint: str, normalized_scope: str,
+        failure_fingerprint: str, normalized_task: str, generation: int, reason: str,
+    ) -> Dict[str, str]:
+        """Terminalize an exhausted Deep cycle; no automatic fourth cycle exists."""
+        identity = self._recovery_identity(
+            candidate_hash=candidate_hash, environment_fingerprint=environment_fingerprint,
+            normalized_scope=normalized_scope, failure_fingerprint=failure_fingerprint,
+            normalized_task=normalized_task, effective_route_identity="stop", lens="stop",
+        )
+        stop_fingerprint = _fingerprint({**identity, "generation": generation})
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT state FROM workflow_recovery_attempts WHERE candidate_hash=? AND environment_fingerprint=? "
+                    "AND scope_hash=? AND failure_fingerprint=? AND normalized_task_hash=? "
+                    "AND mode='DEEP' AND ordinal=3 AND generation=?",
+                    (identity["candidate_hash"], identity["environment_fingerprint"], identity["scope_hash"],
+                     identity["failure_fingerprint"], identity["normalized_task_hash"], generation),
+                ).fetchall()
+                if not rows or any(row[0] != "FAILED" for row in rows):
+                    raise RuntimeError("STOP_AND_REPORT requires every Deep 3 lane to fail")
+                conn.execute(
+                    "INSERT OR IGNORE INTO workflow_recovery_stops "
+                    "(stop_fingerprint,candidate_hash,environment_fingerprint,scope_hash,failure_fingerprint,normalized_task_hash,generation,reason,created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (stop_fingerprint, identity["candidate_hash"], identity["environment_fingerprint"], identity["scope_hash"],
+                     identity["failure_fingerprint"], identity["normalized_task_hash"], generation,
+                     self._required_text(reason, "stop reason"), time.time()),
+                )
+        finally:
+            conn.close()
+        return {"status": "STOP_AND_REPORT", "stop_fingerprint": stop_fingerprint}
+
     def append_findings(self, receipt_id: str, findings: Iterable[Mapping[str, Any]]) -> None:
         """Append validated finding-to-file/test bindings without losing prior evidence."""
         incoming = []
@@ -700,11 +1109,12 @@ class ReleaseReviewLedger:
                         (json.dumps(terminal, sort_keys=True), time.time(), receipt_id),
                     )
                     return updated.rowcount == 1
-                if row[1] in {"completed", "failed", "unknown"}:
+                if row[1] in {"completed", "failed", "unknown", "cancelled"}:
                     return False
                 state = (
                     "completed" if status == "completed"
                     else "failed" if status in {"error", "failed", "stalled"}
+                    else "cancelled" if _normalized(status) == "cancelled"
                     else "timebox_expired" if _normalized(status) == "timebox_expired"
                     else "unknown"
                 )
