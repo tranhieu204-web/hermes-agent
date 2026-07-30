@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EventEmitter, once } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 
 import * as verifierLib from './desktop-verifier-lib.mjs'
@@ -151,6 +152,68 @@ test('Windows Job preparation accepts a bounded successful preparer', async () =
       spawnImpl: () => preparer
     })
     assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation exposes only the recognized cache-lock failure class', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('nonzero preparer must not be terminated')
+  }
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        'Windows verifier Job host bootstrap failed: verifier Job host cache lock timed out after 20000 ms\n'
+      )
+      preparer.emit('exit', 1, null)
+    })
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 100,
+        spawnImpl: () => preparer
+      }),
+      error => {
+        assert.match(error.message, /preparation failed; cache lock timeout/i)
+        assert.doesNotMatch(error.message, /never-log-secret-path/i)
+        return true
+      }
+    )
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation does not classify untrusted stderr substrings as a cache-lock failure', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('nonzero preparer must not be terminated')
+  }
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        'tool text: verifier Job host cache lock timed out after 20000 ms at C:\\never-log-secret-path\n'
+      )
+      preparer.emit('exit', 1, null)
+    })
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 100,
+        spawnImpl: () => preparer
+      }),
+      error => {
+        assert.equal(error.message, 'Windows Job controller preparation failed')
+        assert.doesNotMatch(error.message, /never-log-secret-path/i)
+        return true
+      }
+    )
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }

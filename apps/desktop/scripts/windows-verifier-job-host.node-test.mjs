@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync as testSpawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import {
   existsSync,
   mkdirSync,
@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,7 +25,7 @@ const JOB_HOST_BOOTSTRAP = fileURLToPath(
   new URL('./windows-verifier-job-host.ps1', import.meta.url)
 )
 const WINDOWS_ONLY = { skip: process.platform !== 'win32' }
-const PREPARATION_DEADLINE_MS = 15_000
+const PREPARATION_DEADLINE_MS = 45_000
 
 function createControllerRunRoot() {
   const root = mkdtempSync(join(tmpdir(), 'windows-job-controller-run-'))
@@ -36,13 +37,26 @@ function createControllerRunRoot() {
   return { hermesHome, root, workspace }
 }
 
-function preparationOptions(fixture) {
+function createShortPreparationRunRoot() {
+  // Add-Type uses the full temporary DLL path in generated compiler metadata.
+  // Keep only the cache-isolation fixture under a short, test-owned root.
+  const root = mkdtempSync('C:\\tmp\\wjh-')
+  const hermesHome = join(root, 'h')
+  const workspace = join(root, 'w')
+  mkdirSync(hermesHome)
+  mkdirSync(workspace)
+
+  return { hermesHome, root, workspace }
+}
+
+function preparationOptions(fixture, { diagnostics = false } = {}) {
   return {
     cwd: fixture.workspace,
     encoding: 'utf8',
     env: {
       ...verifierLib.stripCredentialEnvironment(process.env),
       HERMES_HOME: fixture.hermesHome,
+      ...(diagnostics ? { HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS: '1' } : {}),
       ...(fixture.localAppData ? { LOCALAPPDATA: fixture.localAppData } : {})
     },
     // Match the bounded runtime preparation allowance.  This runs before
@@ -72,7 +86,8 @@ function preparationArgs() {
 async function runPreparation(fixture, {
   command,
   args,
-  deadlineMs = PREPARATION_DEADLINE_MS
+  deadlineMs = PREPARATION_DEADLINE_MS,
+  diagnostics = false
 } = {}) {
   const [defaultCommand, defaultArgs] = preparationArgs()
   const preparation = await launchDirectOwnedVerifierTestProcess(
@@ -81,7 +96,7 @@ async function runPreparation(fixture, {
     {
       shutdownTimeoutMs: 1_000,
       spawnOptions: {
-        ...preparationOptions(fixture),
+        ...preparationOptions(fixture, { diagnostics }),
         stdio: ['ignore', 'ignore', 'pipe']
       }
     }
@@ -98,6 +113,92 @@ async function runPreparation(fixture, {
   } finally {
     await preparation.cleanup()
   }
+}
+
+function phaseElapsed(stderr, phase) {
+  const match = stderr.match(new RegExp(
+    `HermesVerifierJobHost diagnostic phase=${phase} elapsed_ms=(\\d+)`
+  ))
+  assert.ok(match, `expected ${phase} diagnostic`)
+  return Number.parseInt(match[1], 10)
+}
+
+function phaseCount(stderr, phase) {
+  return (stderr.match(new RegExp(
+    `HermesVerifierJobHost diagnostic phase=${phase} elapsed_ms=\\d+`,
+    'g'
+  )) ?? []).length
+}
+
+function mutexIdentity(stderr) {
+  const match = stderr.match(
+    /HermesVerifierJobHost diagnostic mutex_identity_sha256=([a-f0-9]{64})/
+  )
+  assert.ok(match, 'expected fixed-length pseudonymous mutex identity diagnostic')
+  return match[1]
+}
+
+async function holdNamedMutex(mutexIdentityHash) {
+  const holder = await launchDirectOwnedVerifierTestProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$mutex = [System.Threading.Mutex]::new($false, 'Local\\HermesVerifierJobHost_${mutexIdentityHash}'); try { if (-not $mutex.WaitOne(5000)) { exit 2 }; [Console]::Out.WriteLine('READY'); Start-Sleep -Seconds 31 } finally { try { $mutex.ReleaseMutex() } catch {}; $mutex.Dispose() }`
+    ],
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+    }
+  )
+  holder.child.stdout.setEncoding('utf8')
+  const [chunk] = await once(holder.child.stdout, 'data')
+  assert.match(String(chunk), /READY/)
+  return holder
+}
+
+async function abandonNamedMutex(mutexIdentityHash) {
+  const owner = await launchDirectOwnedVerifierTestProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$mutex = [System.Threading.Mutex]::new($false, 'Local\\HermesVerifierJobHost_${mutexIdentityHash}'); if (-not $mutex.WaitOne(5000)) { exit 2 }; [Console]::Out.WriteLine('READY'); exit 0`
+    ],
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+    }
+  )
+  owner.child.stdout.setEncoding('utf8')
+  const [chunk] = await once(owner.child.stdout, 'data')
+  assert.match(String(chunk), /READY/)
+  assert.equal(await owner.waitForExit(1_000), 0)
+}
+
+async function holdPublicationLock(lockPath) {
+  const holder = await launchDirectOwnedVerifierTestProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$lock = [System.IO.File]::Open('${lockPath}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); try { [Console]::Out.WriteLine('READY'); Start-Sleep -Seconds 31 } finally { $lock.Dispose() }`
+    ],
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+    }
+  )
+  holder.child.stdout.setEncoding('utf8')
+  const [chunk] = await once(holder.child.stdout, 'data')
+  assert.match(String(chunk), /READY/)
+  return holder
 }
 
 function cacheEntries(fixture) {
@@ -191,6 +292,119 @@ test('Windows Job host cache cold, warm, corrupt, and concurrent preparation rem
   } finally {
     await sentinel.cleanup()
     rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
+
+test('Windows Job host cache lock is root-scoped, canonical, and diagnostic without leaking paths', WINDOWS_ONLY, async () => {
+  const first = createShortPreparationRunRoot()
+  const second = createShortPreparationRunRoot()
+  const shared = createShortPreparationRunRoot()
+  first.localAppData = join(first.root, 'never-log-a')
+  second.localAppData = join(second.root, 'never-log-b')
+  shared.localAppData = join(shared.root, 'never-log-c')
+  mkdirSync(first.localAppData)
+  mkdirSync(second.localAppData)
+  mkdirSync(shared.localAppData)
+  const sharedAlias = { ...shared, localAppData: `${shared.localAppData}\\` }
+
+  try {
+    const [firstResult, secondResult] = await Promise.all([
+      runPreparation(first, { diagnostics: true }),
+      runPreparation(second, { diagnostics: true })
+    ])
+    assert.deepEqual([firstResult.status, secondResult.status], [0, 0])
+    assert.equal(phaseCount(firstResult.stderr, 'compile'), 1)
+    assert.equal(phaseCount(secondResult.stderr, 'compile'), 1)
+    assert.ok(phaseElapsed(firstResult.stderr, 'lock_wait') < 1_000)
+    assert.ok(phaseElapsed(secondResult.stderr, 'lock_wait') < 1_000)
+
+    const [canonicalResult, aliasResult] = await Promise.all([
+      runPreparation(shared, { diagnostics: true }),
+      runPreparation(sharedAlias, { diagnostics: true })
+    ])
+    assert.deepEqual([canonicalResult.status, aliasResult.status], [0, 0])
+    assert.equal(
+      phaseCount(canonicalResult.stderr, 'compile') + phaseCount(aliasResult.stderr, 'compile'),
+      1,
+      'alias-equivalent cache roots must share one mutex and one cache publication'
+    )
+    assert.equal(
+      phaseCount(canonicalResult.stderr, 'publish') + phaseCount(aliasResult.stderr, 'publish'),
+      2,
+      'only the compiler may publish the DLL and manifest'
+    )
+
+    const physicalAliasRoot = join(shared.root, 'physical-alias')
+    symlinkSync(shared.localAppData, physicalAliasRoot, 'junction')
+    const physicalAlias = { ...shared, localAppData: physicalAliasRoot }
+    const [sharedEntry] = cacheEntries(shared)
+    writeFileSync(join(sharedEntry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    const [physicalResult, physicalAliasResult] = await Promise.all([
+      runPreparation(shared, { diagnostics: true }),
+      runPreparation(physicalAlias, { diagnostics: true })
+    ])
+    assert.deepEqual([physicalResult.status, physicalAliasResult.status], [0, 0])
+    assert.equal(
+      phaseCount(physicalResult.stderr, 'compile') + phaseCount(physicalAliasResult.stderr, 'compile'),
+      1,
+      'physical aliases must share the publication lock and compile once'
+    )
+
+    for (const { stderr, forbiddenRoot } of [
+      { stderr: firstResult.stderr, forbiddenRoot: first.localAppData },
+      { stderr: secondResult.stderr, forbiddenRoot: second.localAppData },
+      { stderr: canonicalResult.stderr, forbiddenRoot: shared.localAppData },
+      { stderr: aliasResult.stderr, forbiddenRoot: shared.localAppData },
+      { stderr: physicalResult.stderr, forbiddenRoot: shared.localAppData },
+      { stderr: physicalAliasResult.stderr, forbiddenRoot: physicalAliasRoot }
+    ]) {
+      for (const phase of ['lock_wait', 'validation']) {
+        assert.ok(phaseCount(stderr, phase) >= 1, `expected ${phase} timing`)
+      }
+      assert.equal(stderr.includes(forbiddenRoot), false, 'diagnostics must not disclose a cache root')
+    }
+  } finally {
+    for (const fixture of [first, second, shared]) {
+      rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+    }
+  }
+})
+
+test('Windows Job host lock contention fails diagnostically before the production preparation budget', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'contention-cache-root')
+  mkdirSync(fixture.localAppData)
+  let holder
+  let productionSpec
+
+  try {
+    const warm = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(warm.status, 0)
+    const [entry] = cacheEntries(fixture)
+    writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    await abandonNamedMutex(mutexIdentity(warm.stderr))
+    holder = await holdPublicationLock(join(entry, 'publication.lock'))
+    productionSpec = verifierLib.createDesktopLaunchSpec({
+      executable: process.execPath,
+      baseEnv: { ...process.env, LOCALAPPDATA: fixture.localAppData },
+      platform: 'win32',
+      tempBaseDir: 'C:\\tmp'
+    })
+
+    const startedAt = Date.now()
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(productionSpec, { prepareTimeoutMs: 29_000 }),
+      /preparation failed; cache lock timeout/i
+    )
+    const elapsedMs = Date.now() - startedAt
+
+    assert.ok(elapsedMs < 29_000, 'lock failure must return before the outer production budget')
+  } finally {
+    if (productionSpec) {
+      verifierLib.cleanupUnlaunchedDesktopSpec(productionSpec)
+    }
+    await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 

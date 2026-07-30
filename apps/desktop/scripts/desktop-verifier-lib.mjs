@@ -1358,6 +1358,9 @@ export async function prepareWindowsJobHost(spec, {
     let settled = false
     let preparationTimedOut = false
     let teardownTimeout
+    let preparerStderr = ''
+    let preparerStderrClosed = false
+    let preparerExitCode
     const settle = callback => value => {
       if (settled) {
         return
@@ -1383,13 +1386,50 @@ export async function prepareWindowsJobHost(spec, {
         {
           cwd: spec.spawnOptions.cwd,
           env: spec.env,
-          stdio: ['ignore', 'ignore', 'ignore'],
+          stdio: ['ignore', 'ignore', 'pipe'],
           windowsHide: true
         }
       )
     } catch (error) {
       rejectPrepare(error)
       return
+    }
+
+    const completeExit = () => {
+      if (preparerExitCode === undefined) {
+        return
+      }
+      if (preparationTimedOut) {
+        settle(rejectPrepare)(new Error(
+          `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
+        ))
+        return
+      }
+      if (!preparerStderrClosed) {
+        return
+      }
+      if (preparerExitCode === 0) {
+        settle(resolvePrepare)()
+      } else {
+        const reason = /(?:^|\r?\n)Windows verifier Job host bootstrap failed: verifier Job host cache lock timed out after \d+ ms(?:\r?\n|$)/i.test(preparerStderr)
+          ? '; cache lock timeout'
+          : ''
+        settle(rejectPrepare)(new Error(`Windows Job controller preparation failed${reason}`))
+      }
+    }
+
+    preparerStderrClosed = !preparer.stderr
+    if (preparer.stderr) {
+      preparer.stderr.setEncoding?.('utf8')
+      preparer.stderr.on('data', chunk => {
+        // Only classify a known, nonsecret failure fingerprint.  Never expose
+        // arbitrary bootstrap stderr, which can contain local paths or tool text.
+        preparerStderr = `${preparerStderr}${String(chunk)}`.slice(-1024)
+      })
+      preparer.stderr.once('end', () => {
+        preparerStderrClosed = true
+        completeExit()
+      })
     }
 
     const timeout = setTimeout(() => {
@@ -1422,17 +1462,8 @@ export async function prepareWindowsJobHost(spec, {
 
     preparer.once('error', settle(rejectPrepare))
     preparer.once('exit', code => {
-      if (preparationTimedOut) {
-        settle(rejectPrepare)(new Error(
-          `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
-        ))
-        return
-      }
-      if (code === 0) {
-        settle(resolvePrepare)()
-      } else {
-        settle(rejectPrepare)(new Error('Windows Job controller preparation failed'))
-      }
+      preparerExitCode = code
+      completeExit()
     })
   })
 }
