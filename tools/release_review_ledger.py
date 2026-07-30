@@ -38,6 +38,8 @@ def review_identity(
     prompt: str,
     output_path: str = "",
     deadline_seconds: Optional[float] = None,
+    environment_fingerprint: str = "",
+    evidence_fingerprint: str = "",
 ) -> Dict[str, Any]:
     """Immutable request identity, including output target and timebox."""
     identity: Dict[str, Any] = {
@@ -47,6 +49,8 @@ def review_identity(
         "model": _normalized(model),
         "prompt_hash": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "normalized_output_path": _normalized(output_path),
+        "environment_fingerprint": _normalized(environment_fingerprint),
+        "evidence_fingerprint": _normalized(evidence_fingerprint),
     }
     if deadline_seconds is not None:
         identity["deadline_seconds"] = float(deadline_seconds)
@@ -57,7 +61,10 @@ def _logical_identity(identity: Mapping[str, Any]) -> Dict[str, Any]:
     """Identity used to reject a dangerous variant of an already-admitted review."""
     return {
         key: identity[key]
-        for key in ("candidate_hash", "normalized_scope", "lane", "model", "prompt_hash")
+        for key in (
+            "candidate_hash", "normalized_scope", "lane", "model", "prompt_hash",
+            "environment_fingerprint", "evidence_fingerprint",
+        )
     }
 
 
@@ -74,6 +81,7 @@ class ReleaseReviewLedger:
                         logical_fingerprint TEXT NOT NULL,
                         candidate_hash TEXT NOT NULL, normalized_scope TEXT NOT NULL,
                         lane TEXT NOT NULL, model TEXT NOT NULL, prompt_hash TEXT NOT NULL,
+                        environment_fingerprint TEXT NOT NULL DEFAULT '', evidence_fingerprint TEXT NOT NULL DEFAULT '',
                         output_path TEXT NOT NULL, deadline_seconds REAL NOT NULL,
                         deadline_at REAL NOT NULL, state TEXT NOT NULL,
                         root_pid INTEGER, leaf_pid INTEGER, launch_handle TEXT,
@@ -89,6 +97,8 @@ class ReleaseReviewLedger:
                     ("deadline_seconds", "REAL", "0"),
                     ("launch_handle", "TEXT", "NULL"),
                     ("terminal_json", "TEXT", "'{}'"),
+                    ("environment_fingerprint", "TEXT", "''"),
+                    ("evidence_fingerprint", "TEXT", "''"),
                 ):
                     if name not in columns:
                         nullability = "" if name == "launch_handle" else " NOT NULL"
@@ -97,6 +107,48 @@ class ReleaseReviewLedger:
                         )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS release_review_receipts_logical ON release_review_receipts(logical_fingerprint)"
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_validation_receipts (
+                        validation_id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL,
+                        candidate_hash TEXT NOT NULL, environment_fingerprint TEXT NOT NULL,
+                        evidence_fingerprint TEXT NOT NULL, command_hash TEXT NOT NULL,
+                        state TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}',
+                        created_at REAL NOT NULL, updated_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_timing_events (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_id TEXT NOT NULL,
+                        phase TEXT NOT NULL, category TEXT NOT NULL, started_at REAL NOT NULL,
+                        ended_at REAL NOT NULL, evidence TEXT NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_alerts (
+                        fingerprint TEXT PRIMARY KEY, owner TEXT NOT NULL, evidence TEXT NOT NULL,
+                        expires_at REAL NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_decisions (
+                        decision_id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL,
+                        scope TEXT NOT NULL, rationale TEXT NOT NULL, owner TEXT NOT NULL,
+                        safety_boundary TEXT NOT NULL, acceptance_criteria TEXT NOT NULL,
+                        classification TEXT NOT NULL, created_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_operation_preflights (
+                        fingerprint TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL, operation TEXT NOT NULL,
+                        controls_json TEXT NOT NULL, created_at REAL NOT NULL
+                    )"""
+                )
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_cleanup_receipts (
+                        receipt_id TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL, eligible INTEGER NOT NULL,
+                        reason TEXT NOT NULL, evidence TEXT NOT NULL, created_at REAL NOT NULL
+                    )"""
                 )
         finally:
             conn.close()
@@ -145,11 +197,19 @@ class ReleaseReviewLedger:
         deadline_seconds: float,
         output_path: str,
         receipt_id: Optional[str] = None,
+        environment_fingerprint: str = "",
+        evidence_fingerprint: str = "",
     ) -> Dict[str, Any]:
         deadline_seconds = self._validate_deadline(deadline_seconds)
-        identity = review_identity(candidate_hash, scope, lane, model, prompt, output_path, deadline_seconds)
-        if not all(identity[key] for key in ("candidate_hash", "normalized_scope", "lane", "model", "normalized_output_path")):
-            raise ValueError("candidate, scope, lane, model, and output_path must be non-empty")
+        identity = review_identity(
+            candidate_hash, scope, lane, model, prompt, output_path, deadline_seconds,
+            environment_fingerprint, evidence_fingerprint,
+        )
+        if not all(identity[key] for key in (
+            "candidate_hash", "normalized_scope", "lane", "model", "normalized_output_path",
+            "environment_fingerprint", "evidence_fingerprint",
+        )):
+            raise ValueError("candidate, scope, lane, model, output_path, environment_fingerprint, and evidence_fingerprint must be non-empty")
         fingerprint = _fingerprint(identity)
         logical_fingerprint = _fingerprint(_logical_identity(identity))
         now = time.time()
@@ -185,11 +245,13 @@ class ReleaseReviewLedger:
                 conn.execute(
                     """INSERT INTO release_review_receipts
                        (receipt_id, fingerprint, logical_fingerprint, candidate_hash, normalized_scope, lane, model,
-                        prompt_hash, output_path, deadline_seconds, deadline_at, state, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
+                        prompt_hash, environment_fingerprint, evidence_fingerprint, output_path, deadline_seconds,
+                        deadline_at, state, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
                     (
                         requested_id, fingerprint, logical_fingerprint, identity["candidate_hash"],
                         identity["normalized_scope"], identity["lane"], identity["model"], identity["prompt_hash"],
+                        identity["environment_fingerprint"], identity["evidence_fingerprint"],
                         identity["normalized_output_path"], deadline_seconds, now + deadline_seconds, now, now,
                     ),
                 )
@@ -262,6 +324,69 @@ class ReleaseReviewLedger:
         finally:
             conn.close()
 
+    def bind_async_dispatch(self, receipt_id: str, delegation_id: str, root_pid: int) -> None:
+        """Durably bind one delegation before its worker is submitted.
+
+        ``dispatching`` is deliberately distinct from ``running``: the
+        dispatcher must activate this exact binding before executor submission,
+        which prevents a fast worker from finalizing before the receipt has an
+        owner/handle.
+        """
+        if not _normalized(delegation_id) or not isinstance(root_pid, int) or root_pid <= 0:
+            raise ValueError("delegation identity and root process are required")
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = self._require_receipt(conn, receipt_id)
+                if row[1] != "launching":
+                    raise RuntimeError(f"receipt {receipt_id} cannot bind async dispatch from state {row[1]}")
+                conn.execute(
+                    "UPDATE release_review_receipts SET root_pid=?, leaf_pid=NULL, launch_handle=?, state='dispatching', updated_at=? "
+                    "WHERE receipt_id=? AND state='launching'",
+                    (root_pid, f"delegation:{delegation_id}", time.time(), receipt_id),
+                )
+        finally:
+            conn.close()
+
+    def activate_async_dispatch(self, receipt_id: str, delegation_id: str, root_pid: int) -> None:
+        """Activate an already-bound delegation immediately before submission."""
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = self._require_receipt(conn, receipt_id)
+                expected_handle = f"delegation:{delegation_id}"
+                actual = conn.execute(
+                    "SELECT launch_handle, deadline_seconds FROM release_review_receipts WHERE receipt_id=?",
+                    (receipt_id,),
+                ).fetchone()
+                if row[1] != "dispatching" or actual is None or actual[0] != expected_handle or row[3] != root_pid:
+                    raise RuntimeError(f"receipt {receipt_id} is not bound to delegation {delegation_id}")
+                now = time.time()
+                conn.execute(
+                    "UPDATE release_review_receipts SET state='running', deadline_at=?, updated_at=? "
+                    "WHERE receipt_id=? AND state='dispatching'",
+                    (now + float(actual[1]), now, receipt_id),
+                )
+        finally:
+            conn.close()
+
+    def assert_async_dispatch_binding(self, receipt_id: str, delegation_id: str, root_pid: int) -> None:
+        """Refuse a dispatcher that was not bound by the receipt launcher."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT state, launch_handle, root_pid FROM release_review_receipts WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"unknown release-review receipt: {receipt_id}")
+            if row[0] != "dispatching" or row[1] != f"delegation:{delegation_id}" or row[2] != root_pid:
+                raise RuntimeError(f"receipt {receipt_id} is not bound to this async dispatcher")
+        finally:
+            conn.close()
+
     def receipt_state(self, receipt_id: str) -> str:
         """Read the durable state for a narrow launcher recovery branch."""
         conn = self._connect()
@@ -301,11 +426,214 @@ class ReleaseReviewLedger:
         try:
             with conn:
                 row = self._require_receipt(conn, receipt_id)
-                if row[1] != "launching":
+                if row[1] not in {"launching", "dispatching", "running"}:
                     raise RuntimeError(f"receipt {receipt_id} cannot fail launch from state {row[1]}")
                 conn.execute(
                     "UPDATE release_review_receipts SET state=?, updated_at=? WHERE receipt_id=?",
                     (state, time.time(), receipt_id),
+                )
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _required_text(value: Any, name: str) -> str:
+        normalized = _normalized(str(value or ""))
+        if not normalized:
+            raise ValueError(f"{name} is required")
+        return normalized
+
+    def record_decision(
+        self, *, decision_id: str, scope: str, rationale: str, owner: str,
+        safety_boundary: str, acceptance_criteria: str, classification: str,
+    ) -> Dict[str, Any]:
+        """Persist the plan decision that authorizes a scoped workflow action."""
+        values = {
+            "decision_id": self._required_text(decision_id, "decision_id"),
+            "scope": self._required_text(scope, "scope"),
+            "rationale": self._required_text(rationale, "rationale"),
+            "owner": self._required_text(owner, "owner"),
+            "safety_boundary": self._required_text(safety_boundary, "safety_boundary"),
+            "acceptance_criteria": self._required_text(acceptance_criteria, "acceptance_criteria"),
+            "classification": self._required_text(classification, "classification"),
+        }
+        fingerprint = _fingerprint({key: value for key, value in values.items() if key != "decision_id"})
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    "SELECT fingerprint FROM workflow_decisions WHERE decision_id=?", (values["decision_id"],)
+                ).fetchone()
+                if existing:
+                    return {"status": "existing" if existing[0] == fingerprint else "conflict", "decision_id": values["decision_id"]}
+                conn.execute(
+                    """INSERT INTO workflow_decisions
+                       (decision_id, fingerprint, scope, rationale, owner, safety_boundary, acceptance_criteria, classification, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (values["decision_id"], fingerprint, values["scope"], values["rationale"], values["owner"],
+                     values["safety_boundary"], values["acceptance_criteria"], values["classification"], time.time()),
+                )
+        finally:
+            conn.close()
+        return {"status": "recorded", "decision_id": values["decision_id"], "fingerprint": fingerprint}
+
+    def require_decision(self, decision_id: str) -> None:
+        conn = self._connect()
+        try:
+            if conn.execute("SELECT 1 FROM workflow_decisions WHERE decision_id=?", (self._required_text(decision_id, "decision_id"),)).fetchone() is None:
+                raise RuntimeError(f"required workflow decision is absent: {decision_id}")
+        finally:
+            conn.close()
+
+    def admit_validation(
+        self, *, candidate_hash: str, environment_fingerprint: str, evidence_fingerprint: str,
+        command: Iterable[str], validation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Cache validation only when candidate, environment, evidence, and command all match."""
+        command_values = [self._required_text(value, "validation command") for value in command]
+        if not command_values:
+            raise ValueError("validation command is required")
+        identity = {
+            "candidate_hash": self._required_text(candidate_hash, "candidate_hash"),
+            "environment_fingerprint": self._required_text(environment_fingerprint, "environment_fingerprint"),
+            "evidence_fingerprint": self._required_text(evidence_fingerprint, "evidence_fingerprint"),
+            "command_hash": _fingerprint({"command": command_values}),
+        }
+        fingerprint = _fingerprint(identity)
+        requested_id = validation_id or f"validation_{uuid.uuid4().hex[:12]}"
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = conn.execute(
+                    "SELECT validation_id, state, result_json FROM workflow_validation_receipts WHERE fingerprint=?", (fingerprint,)
+                ).fetchone()
+                if existing:
+                    return {"status": "cached" if existing[1] == "passed" else "existing", "validation_id": existing[0],
+                            "state": existing[1], "result": json.loads(existing[2])}
+                conflict = conn.execute("SELECT fingerprint FROM workflow_validation_receipts WHERE validation_id=?", (requested_id,)).fetchone()
+                if conflict:
+                    return {"status": "conflict", "validation_id": requested_id}
+                conn.execute(
+                    """INSERT INTO workflow_validation_receipts
+                       (validation_id, fingerprint, candidate_hash, environment_fingerprint, evidence_fingerprint, command_hash, state, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
+                    (requested_id, fingerprint, identity["candidate_hash"], identity["environment_fingerprint"],
+                     identity["evidence_fingerprint"], identity["command_hash"], time.time(), time.time()),
+                )
+        finally:
+            conn.close()
+        return {"status": "admitted", "validation_id": requested_id, "identity": identity}
+
+    def finalize_validation(self, validation_id: str, *, passed: bool, evidence: Mapping[str, Any]) -> None:
+        if not isinstance(evidence, Mapping) or not evidence:
+            raise ValueError("validation evidence is required")
+        conn = self._connect()
+        try:
+            with conn:
+                row = conn.execute("SELECT state FROM workflow_validation_receipts WHERE validation_id=?", (validation_id,)).fetchone()
+                if row is None or row[0] != "admitted":
+                    raise RuntimeError(f"validation {validation_id} cannot finalize from state {row[0] if row else 'missing'}")
+                conn.execute(
+                    "UPDATE workflow_validation_receipts SET state=?, result_json=?, updated_at=? WHERE validation_id=?",
+                    ("passed" if passed else "failed", json.dumps(dict(evidence), sort_keys=True), time.time(), validation_id),
+                )
+        finally:
+            conn.close()
+
+    def record_operation_preflight(self, *, candidate_hash: str, operation: str, controls: Mapping[str, Mapping[str, Any]]) -> str:
+        """Record early, operation-scoped controls without treating them as live evidence."""
+        candidate = self._required_text(candidate_hash, "candidate_hash")
+        operation_name = self._required_text(operation, "operation")
+        if not isinstance(controls, Mapping) or not controls:
+            raise ValueError("operation preflight controls are required")
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for name, control in controls.items():
+            key = self._required_text(name, "preflight control")
+            if not isinstance(control, Mapping) or control.get("status") not in {"verified", "ready"} or not control.get("evidence"):
+                raise ValueError(f"{key} preflight requires a verified status and evidence")
+            normalized[key] = dict(control)
+        fingerprint = _fingerprint({"candidate_hash": candidate, "operation": operation_name, "controls": normalized})
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO workflow_operation_preflights (fingerprint, candidate_hash, operation, controls_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (fingerprint, candidate, operation_name, json.dumps(normalized, sort_keys=True), time.time()),
+                )
+        finally:
+            conn.close()
+        return fingerprint
+
+    def record_timing(self, *, receipt_id: str, phase: str, category: str, started_at: float, ended_at: float, evidence: str) -> None:
+        if category not in {"active", "external_wait"}:
+            raise ValueError("timing category must be active or external_wait")
+        if not all(math.isfinite(float(value)) for value in (started_at, ended_at)) or ended_at < started_at:
+            raise ValueError("timing interval is invalid")
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO workflow_timing_events (receipt_id, phase, category, started_at, ended_at, evidence) VALUES (?, ?, ?, ?, ?, ?)",
+                    (self._required_text(receipt_id, "receipt_id"), self._required_text(phase, "phase"), category,
+                     float(started_at), float(ended_at), self._required_text(evidence, "timing evidence")),
+                )
+        finally:
+            conn.close()
+
+    def timing_summary(self, receipt_id: str) -> Dict[str, float]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT category, COALESCE(SUM(ended_at - started_at), 0) FROM workflow_timing_events WHERE receipt_id=? GROUP BY category",
+                (receipt_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        totals = {"active": 0.0, "external_wait": 0.0}
+        totals.update({row[0]: float(row[1]) for row in rows})
+        return totals
+
+    def record_alert(
+        self, *, fingerprint: str, candidate_hash: str, terminal_state: str,
+        owner: str, evidence: str, ttl_seconds: float,
+    ) -> Dict[str, Any]:
+        if not math.isfinite(float(ttl_seconds)) or not 0 < float(ttl_seconds) <= 7 * 24 * 60 * 60:
+            raise ValueError("alert ttl must be between 0 and 604800 seconds")
+        key = _fingerprint({
+            "fingerprint": self._required_text(fingerprint, "alert fingerprint"),
+            "candidate_hash": self._required_text(candidate_hash, "candidate_hash"),
+            "terminal_state": self._required_text(terminal_state, "terminal_state"),
+        })
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT expires_at FROM workflow_alerts WHERE fingerprint=?", (key,)).fetchone()
+                if row and float(row[0]) > now:
+                    return {"status": "suppressed", "expires_at": float(row[0])}
+                expires_at = now + float(ttl_seconds)
+                conn.execute(
+                    "INSERT OR REPLACE INTO workflow_alerts (fingerprint, owner, evidence, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (key, self._required_text(owner, "alert owner"), self._required_text(evidence, "alert evidence"), expires_at, now, now),
+                )
+        finally:
+            conn.close()
+        return {"status": "recorded", "expires_at": expires_at}
+
+    def record_cleanup_eligibility(self, *, receipt_id: str, candidate_hash: str, reason: str, evidence: str) -> None:
+        """Mark a terminal build cache eligible for later cleanup; never delete it here."""
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT state FROM release_review_receipts WHERE receipt_id=?", (receipt_id,)).fetchone()
+            if row is None or row[0] != "completed":
+                raise RuntimeError(f"cleanup requires a verified completed receipt: {receipt_id}")
+            with conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO workflow_cleanup_receipts (receipt_id, candidate_hash, eligible, reason, evidence, created_at) VALUES (?, ?, 1, ?, ?, ?)",
+                    (receipt_id, self._required_text(candidate_hash, "candidate_hash"), self._required_text(reason, "cleanup reason"),
+                     self._required_text(evidence, "cleanup evidence"), time.time()),
                 )
         finally:
             conn.close()

@@ -4,13 +4,18 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import uuid
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from hermes_constants import get_hermes_home
 from tools.release_review_ledger import ReleaseReviewLedger
 
 
 def _admit_capture_claim(ledger: ReleaseReviewLedger, receipt_id: Optional[str], **request: Any) -> Dict[str, Any]:
     preflight = request.pop("preflight")
+    decision_id = request.pop("decision_id", "")
+    if decision_id:
+        ledger.require_decision(decision_id)
     receipt = ledger.admit(receipt_id=receipt_id, **request)
     if receipt["status"] != "admitted":
         return receipt
@@ -103,6 +108,8 @@ def launch_async_review(
     dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
 ) -> Dict[str, Any]:
     """Claim before forwarding to the existing async-delegation dispatcher."""
+    if ledger.path.resolve() != (get_hermes_home() / "release-review-ledger.db").resolve():
+        return {"status": "rejected", "error": "async reviews require the canonical Hermes ledger path"}
     receipt = _admit_capture_claim(ledger, receipt_id, **request)
     if receipt["status"] != "admitted" or receipt["claim"]["status"] != "claimed":
         return receipt
@@ -110,7 +117,14 @@ def launch_async_review(
         ledger.mark_launch_failed(receipt["receipt_id"], "launch_rejected")
         return {**receipt, "status": "rejected", "dispatch": {"error": "receipt-bound async reviews require interrupt_fn"}}
     try:
+        # Bind the delegation identity before the dispatcher can submit its
+        # runner.  A very fast runner used to be able to finalize before the
+        # post-dispatch attach below, leaving a completed delegation without a
+        # durable receipt-to-owner link.
+        delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
+        ledger.bind_async_dispatch(receipt["receipt_id"], delegation_id, os.getpid())
         dispatch_input = dict(dispatch_kwargs)
+        dispatch_input["delegation_id"] = delegation_id
         dispatch_input["review_receipt_id"] = receipt["receipt_id"]
         dispatch_input["review_ledger_path"] = str(ledger.path)
         result = dispatch(**dispatch_input)
@@ -120,23 +134,13 @@ def launch_async_review(
     if result.get("status") != "dispatched":
         ledger.mark_launch_failed(receipt["receipt_id"], "launch_rejected")
         return {**receipt, "status": "rejected", "dispatch": result}
-    # The real async rail is thread-backed in the existing Hermes process. It
-    # has a root process but no invented leaf PID; a concrete wrapper can add
-    # one later only by creating a new receipt, never by mutating this record.
-    delegation_id = result.get("delegation_id")
-    if not delegation_id:
+    returned_id = result.get("delegation_id")
+    if returned_id != delegation_id:
         ledger.mark_launch_failed(receipt["receipt_id"])
-        raise RuntimeError("async reviewer did not return a delegation identity")
-    try:
-        ledger.attach_processes(receipt["receipt_id"], os.getpid(), None, f"delegation:{delegation_id}")
-    except Exception:
-        from tools.async_delegation import interrupt_review_receipt
-        interrupt_review_receipt(receipt["receipt_id"], "receipt expired before async attachment")
-        try:
-            ledger.mark_launch_failed(receipt["receipt_id"])
-        except RuntimeError:
-            pass
-        raise
+        raise RuntimeError("async reviewer returned an unexpected delegation identity")
+    if ledger.receipt_state(receipt["receipt_id"]) not in {"running", "completed", "failed", "unknown", "timebox_expired"}:
+        ledger.mark_launch_failed(receipt["receipt_id"])
+        return {**receipt, "status": "rejected", "dispatch": {"error": "async dispatcher did not activate the durable receipt"}}
     # Async dispatcher exposes the supplied interrupt function in its record;
     # a deadline only signals that dedicated review, never unrelated work.
     def _interrupt():
