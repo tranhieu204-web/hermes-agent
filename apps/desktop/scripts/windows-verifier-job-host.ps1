@@ -55,6 +55,16 @@ function Write-JobHostMutexIdentityDiagnostic([string]$mutexKey) {
     }
 }
 
+function Write-JobHostPrecompileFailureDiagnostic([string]$sourceHash, [string]$classification) {
+    if ($diagnosticsEnabled) {
+        # Keep the root cause usable without revealing a filesystem path or
+        # forwarding the original exception text.
+        [Console]::Error.WriteLine(
+            "HermesVerifierJobHost diagnostic precompile_failure source_sha256=$sourceHash class=$classification"
+        )
+    }
+}
+
 function Invoke-JobHostPhase([string]$phase, [scriptblock]$operation) {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
@@ -152,7 +162,21 @@ function Get-JobHostAssembly {
         return $assembly
     }
 
-    [System.IO.Directory]::CreateDirectory($entry.Directory) | Out-Null
+    try {
+        [System.IO.Directory]::CreateDirectory($entry.Directory) | Out-Null
+    }
+    catch [System.IO.PathTooLongException] {
+        Write-JobHostPrecompileFailureDiagnostic $entry.SourceHash 'cache_root_unavailable'
+        throw
+    }
+    catch [System.IO.DirectoryNotFoundException] {
+        Write-JobHostPrecompileFailureDiagnostic $entry.SourceHash 'cache_root_unavailable'
+        throw
+    }
+    catch [System.NotSupportedException] {
+        Write-JobHostPrecompileFailureDiagnostic $entry.SourceHash 'cache_root_unavailable'
+        throw
+    }
     $mutex = [System.Threading.Mutex]::new($false, $entry.MutexName)
     $ownsMutex = $false
     $publicationLock = $null

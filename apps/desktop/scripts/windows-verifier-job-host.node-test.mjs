@@ -70,6 +70,21 @@ function createShortPreparationRunRoot(environment) {
   return { hermesHome, root, workspace }
 }
 
+function createPairedProductionPreparationFixture() {
+  const fixture = createShortPreparationRunRoot()
+  const shortLocalAppData = join(fixture.root, 'l')
+  const longLocalAppData = join(
+    fixture.root,
+    'controlled-local-app-data',
+    'length-controlled-segment',
+    'a'.repeat(72)
+  )
+  mkdirSync(shortLocalAppData)
+  mkdirSync(longLocalAppData, { recursive: true })
+
+  return { ...fixture, longLocalAppData, shortLocalAppData }
+}
+
 function preparationOptions(fixture, { diagnostics = false } = {}) {
   return {
     cwd: fixture.workspace,
@@ -144,6 +159,38 @@ async function runPreparation(fixture, {
   }
 }
 
+function productionPreparationSpec(fixture) {
+  const spec = verifierLib.createDesktopLaunchSpec({
+    executable: process.execPath,
+    baseEnv: { ...process.env, LOCALAPPDATA: fixture.shortLocalAppData },
+    platform: 'win32',
+    tempBaseDir: fixture.root
+  })
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+  return spec
+}
+
+function withControlledLocalAppData(spec, localAppData) {
+  const env = { ...spec.env, LOCALAPPDATA: localAppData }
+  return {
+    ...spec,
+    env,
+    spawnOptions: { ...spec.spawnOptions, env }
+  }
+}
+
+async function observeProductionPreparation(spec) {
+  const startedAt = Date.now()
+  try {
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 29_000
+    })
+    return { diagnostics, elapsedMs: Date.now() - startedAt, outcome: 'prepared' }
+  } catch (error) {
+    return { error: String(error.message), elapsedMs: Date.now() - startedAt, outcome: 'failed' }
+  }
+}
+
 function boundedOutput(text) {
   return text.slice(0, MAX_CONTROLLER_OUTPUT_BYTES)
 }
@@ -206,6 +253,14 @@ function compileBoundary(stderr, boundary) {
     sourceSha256: match[1],
     ...(boundary === 'end' ? { outputSha256: match[2] } : {})
   }
+}
+
+function precompileFailure(stderr) {
+  const match = stderr.match(
+    /HermesVerifierJobHost diagnostic precompile_failure source_sha256=([a-f0-9]{64}) class=(cache_root_unavailable)/
+  )
+  assert.ok(match, 'expected a structured pre-compile cache-root failure diagnostic')
+  return { class: match[2], sourceSha256: match[1] }
 }
 
 async function holdNamedMutex(mutexIdentityHash) {
@@ -421,6 +476,64 @@ test('Windows Job cold preparation binds its exact source and fresh output witho
     assert.equal(finished.outputSha256, sha256File(outputPath))
     assert.equal(result.stderr.includes(fixture.root), false, 'diagnostics must not disclose fixture paths')
   } finally {
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
+test('Windows Job production preparation pairs only controlled LOCALAPPDATA roots', WINDOWS_ONLY, async () => {
+  const fixture = createPairedProductionPreparationFixture()
+  const baseSpec = productionPreparationSpec(fixture)
+  const shortSpec = withControlledLocalAppData(baseSpec, fixture.shortLocalAppData)
+  const longSpec = withControlledLocalAppData(baseSpec, fixture.longLocalAppData)
+
+  try {
+    assert.deepEqual(cacheEntries({ localAppData: fixture.shortLocalAppData }), [], 'short cache starts empty')
+    assert.deepEqual(cacheEntries({ localAppData: fixture.longLocalAppData }), [], 'long cache starts empty')
+    assert.equal(shortSpec.spawnOptions.cwd, longSpec.spawnOptions.cwd, 'only LOCALAPPDATA may vary')
+    assert.equal(shortSpec.env.HERMES_HOME, longSpec.env.HERMES_HOME, 'only LOCALAPPDATA may vary')
+    assert.equal(shortSpec.env.LOCALAPPDATA, fixture.shortLocalAppData)
+    assert.equal(longSpec.env.LOCALAPPDATA, fixture.longLocalAppData)
+    assert.equal(shortSpec.env.PATH, longSpec.env.PATH, 'the command environment stays constant')
+    const changedEnvironmentNames = [...new Set([
+      ...Object.keys(shortSpec.env),
+      ...Object.keys(longSpec.env)
+    ])].filter(name => shortSpec.env[name] !== longSpec.env[name]).sort()
+    assert.deepEqual(changedEnvironmentNames, ['LOCALAPPDATA'], 'only LOCALAPPDATA may vary')
+
+    const short = await observeProductionPreparation(shortSpec)
+    const long = await observeProductionPreparation(longSpec)
+    const sourceSha256 = sha256File(JOB_HOST_SOURCE)
+
+    for (const [label, observation, localAppData] of [
+      ['short', short, fixture.shortLocalAppData],
+      ['long', long, fixture.longLocalAppData]
+    ]) {
+      assert.ok(observation.elapsedMs < 31_000, `${label} observation must preserve the 29-second bound`)
+      const evidence = observation.outcome === 'prepared'
+        ? observation.diagnostics
+        : observation.error
+      assert.equal(evidence.includes(localAppData), false, `${label} evidence must not disclose LOCALAPPDATA`)
+      assert.equal(evidence.includes(fixture.root), false, `${label} evidence must not disclose fixture paths`)
+      if (observation.outcome === 'prepared') {
+        const started = compileBoundary(evidence, 'start')
+        const finished = compileBoundary(evidence, 'end')
+        assert.equal(started.sourceSha256, sourceSha256)
+        assert.equal(finished.sourceSha256, sourceSha256)
+      } else {
+        assert.match(evidence, /preparation timed out after 29000ms|preparation failed/i)
+        const failure = precompileFailure(evidence)
+        assert.equal(failure.sourceSha256, sourceSha256)
+        assert.equal(failure.class, 'cache_root_unavailable')
+      }
+    }
+
+    assert.equal(
+      shortSpec.env.LOCALAPPDATA === longSpec.env.LOCALAPPDATA,
+      false,
+      'the paired observations must differ only by their explicitly controlled roots'
+    )
+  } finally {
+    verifierLib.cleanupUnlaunchedDesktopSpec(baseSpec)
     rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
   }
 })

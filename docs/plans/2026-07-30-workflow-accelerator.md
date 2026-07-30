@@ -319,6 +319,47 @@ bind a completed source-to-output result. It deliberately does not claim full
 compiler-descendant attribution. A Job observer is deferred until a testable
 pre-execution whole-tree ownership contract exists in the tracked harness.
 
+#### Paired production-contract falsification — current diagnostic scope
+
+**Scope:** one diagnostic-only paired invocation of the real
+`prepareWindowsJobHost` contract under a short and a long, explicitly
+controlled nonsecret `LOCALAPPDATA` root. **Rationale:** CI run `30553768551`
+proved a direct short-root cold compile can finish while the existing
+production preparation path times out, but those paths previously differed in
+both contract and environment. **Owner:** one Codex writer. **Safety and
+quality boundary:** source, command, cache-key inputs, 29-second bound, owned
+cleanup, working directory, and all environment inputs other than
+`LOCALAPPDATA` stay identical; the pre-existing default production test remains
+separate. Diagnostics expose only a checked-in source hash and a completed
+output hash, never roots, arguments, or raw stderr. No production cache-root
+change, timeout increase, suppression, skip, bridge/main/live/config/restart/
+install/deploy change is admitted. **Acceptance:** each root has a clean cache,
+the real production preparation either returns source-bound compile evidence or
+fails inside its unchanged bound with only sanitized evidence, and the pairing
+can be classified without treating a diagnostic observation as a production
+pass. **Placement:** isolated new diagnostic-architecture candidate, not a
+retry-budget continuation.
+
+The paired fixture must never accept an arbitrary long-root error: a failed
+observation is valid only when the bootstrap emits the source-bound,
+nonsecret `precompile_failure ... class=cache_root_unavailable` marker before
+the actual compile boundary. The default flag-unset `prepareWindowsJobHost`
+return remains `undefined`, and launch-spec isolation strips the opt-in
+diagnostic flag from inherited environment/configuration routes. The
+pre-existing cache-entry/directory-creation operation is retained from
+`2570e711`; this slice adds only a narrow catch that classifies its existing
+root-unavailable exception without forwarding the exception text. Therefore a
+controlled-root failure is documented as a pre-existing cache-root limitation
+to diagnose, not a behavior introduced or resolved by the Accelerator
+candidate.
+
+Changed-scope review tightened this slice further: the test compares the full
+effective environment maps and permits exactly `LOCALAPPDATA` to differ, while
+a deterministic nonzero-preparer regression proves the public failure summary
+admits only the matching source-bound `precompile_failure` marker and excludes
+forged hashes and path-like stderr. These are diagnostic integrity checks, not
+new runtime policy.
+
 ### Baseline exclusions bound to Sakaan fork `556f5a56`
 
 The broader `tests/tools/test_delegate.py` suite has three inherited failures,

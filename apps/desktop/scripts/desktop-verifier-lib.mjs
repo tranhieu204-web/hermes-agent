@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn as nodeSpawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import {
@@ -21,6 +21,10 @@ const OWNED_SPEC = Symbol('desktop-verifier-owned-spec')
 const WINDOWS_JOB_BOOTSTRAP = fileURLToPath(
   new URL('./windows-verifier-job-host.ps1', import.meta.url)
 )
+const WINDOWS_JOB_SOURCE = fileURLToPath(
+  new URL('./windows-verifier-job-host.cs', import.meta.url)
+)
+const WINDOWS_JOB_DIAGNOSTICS_ENV = 'HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS'
 export const WINDOWS_JOB_PROTOCOL_VERSION = 1
 const WINDOWS_MAX_UINT32 = 0xFFFFFFFF
 const WINDOWS_MAX_UINT64 = 18_446_744_073_709_551_615n
@@ -1353,7 +1357,12 @@ export async function prepareWindowsJobHost(spec, {
     throw new Error('Windows Job controller preparation timeout must be a positive integer')
   }
 
-  await new Promise((resolvePrepare, rejectPrepare) => {
+  const diagnosticsRequested = spec?.env?.[WINDOWS_JOB_DIAGNOSTICS_ENV] === '1'
+  const expectedSourceSha256 = diagnosticsRequested
+    ? createHash('sha256').update(readFileSync(WINDOWS_JOB_SOURCE)).digest('hex')
+    : null
+
+  return await new Promise((resolvePrepare, rejectPrepare) => {
     let preparer
     let settled = false
     let preparationTimedOut = false
@@ -1395,13 +1404,33 @@ export async function prepareWindowsJobHost(spec, {
       return
     }
 
+    const diagnosticSummary = () => {
+      if (!diagnosticsRequested) {
+        return ''
+      }
+
+      const markers = [
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic precompile_failure source_sha256=([a-f0-9]{64}) class=(cache_root_unavailable)/g)]
+          .filter(match => match[1] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_start source_sha256=([a-f0-9]{64})/g)]
+          .filter(match => match[1] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
+          .filter(match => match[1] === expectedSourceSha256)
+      ].map(match => match[0])
+
+      return [...new Set(markers)].join('; ')
+    }
+    const diagnosticSuffix = () => {
+      const summary = diagnosticSummary()
+      return summary === '' ? '' : `; ${summary}`
+    }
     const completeExit = () => {
       if (preparerExitCode === undefined) {
         return
       }
       if (preparationTimedOut) {
         settle(rejectPrepare)(new Error(
-          `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
+          `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms${diagnosticSuffix()}`
         ))
         return
       }
@@ -1409,12 +1438,14 @@ export async function prepareWindowsJobHost(spec, {
         return
       }
       if (preparerExitCode === 0) {
-        settle(resolvePrepare)()
+        settle(resolvePrepare)(diagnosticsRequested ? diagnosticSummary() : undefined)
       } else {
         const reason = /(?:^|\r?\n)Windows verifier Job host bootstrap failed: verifier Job host cache lock timed out after \d+ ms(?:\r?\n|$)/i.test(preparerStderr)
           ? '; cache lock timeout'
           : ''
-        settle(rejectPrepare)(new Error(`Windows Job controller preparation failed${reason}`))
+        settle(rejectPrepare)(new Error(
+          `Windows Job controller preparation failed${reason}${diagnosticSuffix()}`
+        ))
       }
     }
 
@@ -1452,7 +1483,7 @@ export async function prepareWindowsJobHost(spec, {
         teardownTimeout = setTimeout(() => {
           settle(rejectPrepare)(new Error(
             `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms; ` +
-            'owned preparer did not exit after termination request'
+            `owned preparer did not exit after termination request${diagnosticSuffix()}`
           ))
         }, 1_000)
         teardownTimeout.unref?.()

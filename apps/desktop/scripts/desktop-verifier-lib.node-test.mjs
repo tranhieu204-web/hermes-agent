@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -10,6 +11,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { EventEmitter, once } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
@@ -31,6 +33,14 @@ function createNodeProcessSpec(options = {}) {
     executableArgs: ['-e', options.script ?? 'setInterval(() => {}, 1_000)', '--'],
     tempBaseDir: options.tempBaseDir
   })
+}
+
+const WINDOWS_JOB_SOURCE = fileURLToPath(
+  new URL('./windows-verifier-job-host.cs', import.meta.url)
+)
+
+function windowsJobSourceSha256() {
+  return createHash('sha256').update(readFileSync(WINDOWS_JOB_SOURCE)).digest('hex')
 }
 
 async function waitForExit(child, timeoutMs = 5000) {
@@ -147,11 +157,82 @@ test('Windows Job preparation accepts a bounded successful preparer', async () =
 
   try {
     queueMicrotask(() => preparer.emit('exit', 0, null))
-    await verifierLib.prepareWindowsJobHost(spec, {
+    const result = await verifierLib.prepareWindowsJobHost(spec, {
       prepareTimeoutMs: 100,
       spawnImpl: () => preparer
     })
+    assert.equal(result, undefined, 'the default production contract remains void')
     assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation returns only source-bound compile diagnostics when requested', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  const forgedSourceSha256 = 'a'.repeat(64)
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceSha256}\n` +
+        `HermesVerifierJobHost diagnostic compile_end source_sha256=${sourceSha256} output_sha256=${'b'.repeat(64)}\n` +
+        `HermesVerifierJobHost diagnostic compile_start source_sha256=${forgedSourceSha256}\n` +
+        'C:\\never-log-controlled-root\n'
+      )
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.deepEqual(diagnostics.split('; '), [
+      `HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceSha256}`,
+      `HermesVerifierJobHost diagnostic compile_end source_sha256=${sourceSha256} output_sha256=${'b'.repeat(64)}`
+    ])
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation appends only a source-bound precompile failure diagnostic', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  const forgedSourceSha256 = 'c'.repeat(64)
+  const marker = `HermesVerifierJobHost diagnostic precompile_failure source_sha256=${sourceSha256} class=cache_root_unavailable`
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('failed preparer must not be terminated after exit')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `${marker}\n` +
+        `HermesVerifierJobHost diagnostic precompile_failure source_sha256=${forgedSourceSha256} class=cache_root_unavailable\n` +
+        'C:\\never-log-controlled-root\n'
+      )
+      preparer.emit('exit', 1, null)
+    })
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 100,
+        spawnImpl: () => preparer
+      }),
+      error => {
+        assert.equal(error.message, `Windows Job controller preparation failed; ${marker}`)
+        return true
+      }
+    )
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }
@@ -246,6 +327,7 @@ test('launch spec pins exact isolation args/env and platform-owned process-group
       OPENAI_API_KEY: 'openai-secret',
       OPENAI_BASE_URL: 'https://credential-bearing.example',
       HERMES_DESKTOP_BOOT_FAKE_ERROR: 'inherited failure',
+      HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS: '1',
       HERMES_HOME: 'live-home',
       HERMES_DESKTOP_APP_NAME: 'Hermes',
       HERMES_DESKTOP_USER_DATA_DIR: 'live-user-data'
@@ -267,6 +349,7 @@ test('launch spec pins exact isolation args/env and platform-owned process-group
     assert.equal(spec.env.HERMES_DESKTOP_BOOT_FAKE, '1')
     assert.equal(spec.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS, '120')
     assert.equal(spec.env.HERMES_DESKTOP_BOOT_FAKE_ERROR, undefined)
+    assert.equal(spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS, undefined)
     assert.equal(spec.env.CUSTOM_API_KEY, undefined)
     assert.equal(spec.env.OPENAI_API_KEY, undefined)
     assert.equal(spec.env.OPENAI_BASE_URL, undefined)
