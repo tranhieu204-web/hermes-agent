@@ -31,6 +31,8 @@ def _request(**overrides):
         "prompt": "p",
         "deadline_seconds": 60,
         "output_path": "out.json",
+        "environment_fingerprint": "test-environment",
+        "evidence_fingerprint": "test-evidence",
     }
     request.update(overrides)
     return request
@@ -52,6 +54,26 @@ def test_variant_output_or_deadline_is_conflict_not_silent_reuse(tmp_path):
     deadline_variant = ledger.admit(**_request(deadline_seconds=120))
     assert output_variant["status"] == "conflict"
     assert deadline_variant["status"] == "conflict"
+
+
+@pytest.mark.parametrize("missing_field", ["environment_fingerprint", "evidence_fingerprint"])
+def test_review_admission_rejects_missing_immutable_identity(tmp_path, missing_field):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    request = _request()
+    request[missing_field] = ""
+    with pytest.raises(ValueError, match=missing_field):
+        ledger.admit(**request)
+
+
+def test_changed_environment_or_evidence_creates_a_fresh_review_identity(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    first = ledger.admit(**_request(environment_fingerprint="env-a", evidence_fingerprint="evidence-a"))
+    changed_environment = ledger.admit(**_request(environment_fingerprint="env-b", evidence_fingerprint="evidence-a"))
+    changed_evidence = ledger.admit(**_request(environment_fingerprint="env-a", evidence_fingerprint="evidence-b"))
+    assert first["status"] == "admitted"
+    assert changed_environment["status"] == "admitted"
+    assert changed_evidence["status"] == "admitted"
+    assert len({first["receipt_id"], changed_environment["receipt_id"], changed_evidence["receipt_id"]}) == 3
 
 
 def test_conflicting_requested_id_is_rejected(tmp_path):
@@ -79,6 +101,60 @@ def test_preflight_requires_verifiable_controls_and_authenticated_health(tmp_pat
     with pytest.raises(ValueError):
         ledger.capture_preflight(receipt["receipt_id"], incomplete)
     ledger.capture_preflight(receipt["receipt_id"], _preflight())
+
+
+def test_validation_cache_requires_exact_candidate_environment_evidence_and_command(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    first = ledger.admit_validation(
+        candidate_hash="a" * 64, environment_fingerprint="clean-env-a", evidence_fingerprint="lock-a",
+        command=["scripts/run_tests.sh", "tests/tools/test_release_review_ledger.py"],
+    )
+    assert first["status"] == "admitted"
+    ledger.finalize_validation(first["validation_id"], passed=True, evidence={"tests": "26 passed"})
+    assert ledger.admit_validation(
+        candidate_hash="a" * 64, environment_fingerprint="clean-env-a", evidence_fingerprint="lock-a",
+        command=["scripts/run_tests.sh", "tests/tools/test_release_review_ledger.py"],
+    )["status"] == "cached"
+    assert ledger.admit_validation(
+        candidate_hash="a" * 64, environment_fingerprint="clean-env-b", evidence_fingerprint="lock-a",
+        command=["scripts/run_tests.sh", "tests/tools/test_release_review_ledger.py"],
+    )["status"] == "admitted"
+
+
+def test_early_preflight_timing_and_alerts_are_scoped_and_deduplicated(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    fingerprint = ledger.record_operation_preflight(
+        candidate_hash="a" * 64, operation="local validation",
+        controls={"environment": {"status": "verified", "evidence": "fresh temp home"},
+                  "dependencies": {"status": "ready", "evidence": "locked input"}},
+    )
+    assert len(fingerprint) == 64
+    ledger.record_timing(receipt_id="build-a", phase="tests", category="active", started_at=10, ended_at=15, evidence="runner")
+    ledger.record_timing(receipt_id="build-a", phase="ci", category="external_wait", started_at=15, ended_at=27, evidence="remote")
+    assert ledger.timing_summary("build-a") == {"active": 5.0, "external_wait": 12.0}
+    alert = {"fingerprint": "same-failure", "candidate_hash": "a" * 64, "terminal_state": "failed",
+             "owner": "codex", "evidence": "exit 1", "ttl_seconds": 60}
+    assert ledger.record_alert(**alert)["status"] == "recorded"
+    assert ledger.record_alert(**alert)["status"] == "suppressed"
+    assert ledger.record_alert(**{**alert, "candidate_hash": "b" * 64})["status"] == "recorded"
+
+
+def test_decision_record_can_gate_launch_and_terminal_receipts_can_only_mark_cleanup(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    decision = ledger.record_decision(
+        decision_id="async-scope", scope="receipt-bound async review", rationale="dedupe work", owner="codex",
+        safety_boundary="no live mutation", acceptance_criteria="temp-home regression", classification="post-release",
+    )
+    assert decision["status"] == "recorded"
+    ledger.require_decision("async-scope")
+    receipt = ledger.admit(**_request())
+    ledger.capture_preflight(receipt["receipt_id"], _preflight())
+    assert ledger.claim_launch(receipt["receipt_id"])["status"] == "claimed"
+    ledger.attach_processes(receipt["receipt_id"], 1, None, "test")
+    assert ledger.finalize_async_receipt(receipt["receipt_id"], "completed", {"result": "ok"}) is True
+    assert ledger.record_cleanup_eligibility(
+        receipt_id=receipt["receipt_id"], candidate_hash="a" * 64, reason="terminal artifact cache", evidence="completed receipt",
+    ) is None
 
 
 def test_claim_is_atomic_and_second_claim_cannot_launch(tmp_path):
@@ -309,8 +385,9 @@ def test_simultaneous_timeboxes_terminate_each_reviewers_own_process(tmp_path):
     assert second.terminated is True
 
 
-def test_async_launch_uses_one_receipt_and_preserves_rejected_state(tmp_path):
-    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+def test_async_launch_uses_one_receipt_and_preserves_rejected_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ledger = ReleaseReviewLedger(tmp_path / "hermes-home" / "release-review-ledger.db")
     calls = []
 
     def dispatch(**kwargs):
@@ -333,7 +410,7 @@ def test_async_launcher_uses_the_real_async_delegation_rail(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     ad._reset_for_tests()
     try:
-        ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+        ledger = ReleaseReviewLedger(tmp_path / "hermes-home" / "release-review-ledger.db")
         result = launch_async_review(
             ledger,
             **_request(),
@@ -359,7 +436,7 @@ def test_async_launcher_uses_the_real_async_delegation_rail(tmp_path, monkeypatc
         deadline = time.monotonic() + 2
         while ad.active_count() and time.monotonic() < deadline:
             time.sleep(0.01)
-        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        with sqlite3.connect(tmp_path / "hermes-home" / "release-review-ledger.db") as conn:
             state, terminal = conn.execute(
                 "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?",
                 (result["receipt_id"],),
@@ -381,7 +458,7 @@ def test_async_timeout_records_terminal_outcome_when_interrupt_is_noop(tmp_path,
     ad._reset_for_tests()
     gate = threading.Event()
     try:
-        ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+        ledger = ReleaseReviewLedger(tmp_path / "hermes-home" / "release-review-ledger.db")
         result = launch_async_review(
             ledger,
             **_request(),
@@ -401,7 +478,7 @@ def test_async_timeout_records_terminal_outcome_when_interrupt_is_noop(tmp_path,
         )
         assert result["status"] == "launched"
         assert ad.force_timeout_review_receipt(result["receipt_id"]) == 1
-        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        with sqlite3.connect(tmp_path / "hermes-home" / "release-review-ledger.db") as conn:
             state, terminal = conn.execute(
                 "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?",
                 (result["receipt_id"],),
@@ -412,7 +489,7 @@ def test_async_timeout_records_terminal_outcome_when_interrupt_is_noop(tmp_path,
         deadline = time.monotonic() + 2
         while ad.active_count() and time.monotonic() < deadline:
             time.sleep(0.01)
-        with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        with sqlite3.connect(tmp_path / "hermes-home" / "release-review-ledger.db") as conn:
             assert conn.execute(
                 "SELECT state FROM release_review_receipts WHERE receipt_id=?", (result["receipt_id"],)
             ).fetchone()[0] == "timebox_expired"
@@ -424,25 +501,155 @@ def test_async_timeout_records_terminal_outcome_when_interrupt_is_noop(tmp_path,
         ad._reset_for_tests()
 
 
-def test_direct_async_dispatch_refuses_unclaimed_review_receipt(tmp_path):
+def test_async_recovery_terminalizes_the_linked_receipt_in_a_fresh_temp_home(tmp_path, monkeypatch):
     from tools import async_delegation as ad
 
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    gate = threading.Event()
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        result = launch_async_review(
+            ledger, **_request(), preflight=_preflight(), dispatch=ad.dispatch_async_delegation,
+            dispatch_kwargs={
+                "goal": "read-only review", "context": "candidate", "toolsets": None, "role": "reviewer",
+                "model": "m", "session_key": "test", "runner": lambda: (gate.wait(2), {"status": "completed"})[1],
+                "interrupt_fn": lambda: None, "max_async_children": 1,
+            },
+        )
+        with sqlite3.connect(hermes_home / "state.db") as conn:
+            conn.execute("UPDATE async_delegations SET owner_pid=0 WHERE delegation_id=?", (result["dispatch"]["delegation_id"],))
+        assert ad.recover_abandoned_delegations() == 1
+        assert ledger.receipt_state(result["receipt_id"]) == "unknown"
+    finally:
+        gate.set()
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ad._reset_for_tests()
+
+
+def test_recovery_terminalizes_a_crash_between_durable_lease_and_activation(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    receipt = ledger.admit(**_request())
+    ledger.capture_preflight(receipt["receipt_id"], _preflight())
+    assert ledger.claim_launch(receipt["receipt_id"])["status"] == "claimed"
+    ledger.bind_async_dispatch(receipt["receipt_id"], "deleg_crash", 1)
+    record = {
+        "delegation_id": "deleg_crash", "goal": "review", "context": None, "toolsets": None,
+        "role": "reviewer", "model": "m", "session_key": "test", "origin_ui_session_id": "",
+        "origin_session_id": "", "parent_session_id": None, "review_receipt_id": receipt["receipt_id"],
+        "review_ledger_path": str(hermes_home / "release-review-ledger.db"), "dispatched_at": time.time(),
+    }
+    assert ad._persist_dispatch(record, max_async_children=1, state="dispatching") is True
+    with sqlite3.connect(hermes_home / "state.db") as conn:
+        conn.execute("UPDATE async_delegations SET owner_pid=0 WHERE delegation_id='deleg_crash'")
+    assert ad.recover_abandoned_delegations() == 1
+    assert ledger.receipt_state(receipt["receipt_id"]) == "unknown"
+
+
+def test_durable_capacity_rejects_a_second_process_view(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ad._reset_for_tests()
+    gate = threading.Event()
+    try:
+        first = ad.dispatch_async_delegation(
+            goal="first", context=None, toolsets=None, role="builder", model="m", session_key="test",
+            runner=lambda: (gate.wait(2), {"status": "completed"})[1], interrupt_fn=lambda: None, max_async_children=1,
+        )
+        assert first["status"] == "dispatched"
+        with ad._records_lock:
+            ad._records.clear()
+        second = ad.dispatch_async_delegation(
+            goal="second", context=None, toolsets=None, role="builder", model="m", session_key="test",
+            runner=lambda: {"status": "completed"}, interrupt_fn=lambda: None, max_async_children=1,
+        )
+        assert second["status"] == "rejected"
+        assert "across Hermes processes" in second["error"]
+    finally:
+        gate.set()
+        deadline = time.monotonic() + 2
+        while ad.active_count() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ad._reset_for_tests()
+
+
+def test_durable_capacity_is_atomic_across_two_processes(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ready_one, ready_two, go = tmp_path / "ready-one", tmp_path / "ready-two", tmp_path / "go"
+    source = (
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "from tools.async_delegation import _persist_dispatch\n"
+        f"os.environ['HERMES_HOME'] = r'{hermes_home}'\n"
+        "ready, go, identity = map(Path, sys.argv[1:4])\n"
+        "ready.write_text('ready')\n"
+        "while not go.exists(): time.sleep(0.01)\n"
+        "record={'delegation_id': identity.name, 'goal':'review', 'context':None, 'toolsets':None, 'role':'reviewer', 'model':'m', 'session_key':'test', 'origin_ui_session_id':'', 'origin_session_id':'', 'parent_session_id':None, 'dispatched_at':time.time()}\n"
+        "print(_persist_dispatch(record, max_async_children=1, state='dispatching'))\n"
+    )
+    cwd = Path(__file__).resolve().parents[2]
+    one = subprocess.Popen([sys.executable, "-c", source, str(ready_one), str(go), str(tmp_path / "deleg-one")], cwd=cwd, stdout=subprocess.PIPE, text=True)
+    two = subprocess.Popen([sys.executable, "-c", source, str(ready_two), str(go), str(tmp_path / "deleg-two")], cwd=cwd, stdout=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 5
+    while not (ready_one.exists() and ready_two.exists()) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    go.write_text("go")
+    outcomes = {one.communicate(timeout=5)[0].strip(), two.communicate(timeout=5)[0].strip()}
+    assert outcomes == {"True", "False"}
+
+
+def test_pruning_never_deletes_a_dispatching_durable_lease(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ad._reset_for_tests()
+    try:
+        record = {
+            "delegation_id": "deleg-prune", "goal": "review", "context": None, "toolsets": None,
+            "role": "reviewer", "model": "m", "session_key": "test", "origin_ui_session_id": "",
+            "origin_session_id": "", "parent_session_id": None, "dispatched_at": time.time(),
+        }
+        assert ad._persist_dispatch(record, state="dispatching") is True
+        monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 0)
+        monkeypatch.setattr(ad, "_MAX_DURABLE_PENDING", 0)
+        ad._prune_durable_records()
+        with sqlite3.connect(tmp_path / "hermes-home" / "state.db") as conn:
+            assert conn.execute("SELECT state FROM async_delegations WHERE delegation_id='deleg-prune'").fetchone()[0] == "dispatching"
+    finally:
+        ad._reset_for_tests()
+
+
+def test_direct_async_dispatch_refuses_unclaimed_review_receipt(tmp_path, monkeypatch):
+    from tools import async_delegation as ad
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     rejected = ad.dispatch_async_delegation(
         goal="review", context=None, toolsets=None, role="reviewer", model="m", session_key="test",
         runner=lambda: {"status": "completed"}, interrupt_fn=lambda: None,
-        review_receipt_id="not-claimed", review_ledger_path=str(tmp_path / "reviews.db"),
+        review_receipt_id="not-claimed", review_ledger_path=str(tmp_path / "hermes-home" / "release-review-ledger.db"),
     )
     assert rejected["status"] == "rejected"
     assert "not admitted" in rejected["error"]
 
 
-def test_async_adapter_never_dispatches_existing_or_conflicting_receipt(tmp_path):
-    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+def test_async_adapter_never_dispatches_existing_or_conflicting_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ledger = ReleaseReviewLedger(tmp_path / "hermes-home" / "release-review-ledger.db")
     calls = []
 
     def dispatch(**kwargs):
         calls.append(kwargs)
-        return {"status": "dispatched", "delegation_id": "deleg_test"}
+        ledger.activate_async_dispatch(kwargs["review_receipt_id"], kwargs["delegation_id"], __import__("os").getpid())
+        return {"status": "dispatched", "delegation_id": kwargs["delegation_id"]}
 
     args = {**_request(), "preflight": _preflight(), "dispatch": dispatch,
             "dispatch_kwargs": {"goal": "review", "interrupt_fn": lambda: None}}
@@ -455,13 +662,24 @@ def test_async_adapter_never_dispatches_existing_or_conflicting_receipt(tmp_path
     assert len(calls) == 1
 
 
+def test_async_adapter_rejects_noncanonical_ledger_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    result = launch_async_review(
+        ledger, **_request(), preflight=_preflight(), dispatch=lambda **_kwargs: {"status": "dispatched"},
+        dispatch_kwargs={"goal": "review", "interrupt_fn": lambda: None},
+    )
+    assert result["status"] == "rejected"
+    assert "canonical Hermes ledger path" in result["error"]
+
+
 def test_separate_process_same_identity_allows_one_claim(tmp_path):
     db = tmp_path / "reviews.db"
     source = (
         "from pathlib import Path\n"
         "from tools.release_review_ledger import ReleaseReviewLedger\n"
         f"l=ReleaseReviewLedger(Path(r'{db}'))\n"
-        "r=l.admit(candidate_hash='a'*64,scope='runtime',lane='codex',model='m',prompt='p',deadline_seconds=60,output_path='out')\n"
+        "r=l.admit(candidate_hash='a'*64,scope='runtime',lane='codex',model='m',prompt='p',deadline_seconds=60,output_path='out',environment_fingerprint='test-environment',evidence_fingerprint='test-evidence')\n"
         "if r['status']=='admitted':\n l.capture_preflight(r['receipt_id'], {'target':{'status':'verified','evidence':'x'},'install':{'status':'verified','evidence':'x'},'restart':{'status':'verified','evidence':'x'},'rollback':{'status':'verified','evidence':'x'},'health':{'status':'verified','evidence':'x','authenticated':True,'method':'probe','endpoint':'/health'}})\n print(l.claim_launch(r['receipt_id'])['status'])\n"
         "else:\n print(r['status'])\n"
     )

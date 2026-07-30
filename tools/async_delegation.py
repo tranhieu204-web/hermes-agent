@@ -202,7 +202,15 @@ def _transaction() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _persist_dispatch(record: Dict[str, Any]) -> None:
+def _persist_dispatch(
+    record: Dict[str, Any], max_async_children: Optional[int] = None, state: str = "dispatching",
+) -> bool:
+    """Create one durable dispatch lease before a worker can be submitted.
+
+    The SQLite transaction is the cross-process admission boundary.  The
+    in-memory registry remains useful for local cancellation, but cannot be
+    used to enforce a shared Hermes-home concurrency limit.
+    """
     now = time.time()
     try:
         from gateway.status import get_process_start_time
@@ -214,21 +222,44 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
         if key in record
     }
+    if state not in {"dispatching", "running"}:
+        raise ValueError(f"unsupported durable dispatch state: {state}")
     with _DB_LOCK, _transaction() as conn:
+        # SQLite's deferred transaction permits two processes to read the
+        # same available count before either writes. Acquire the writer lease
+        # first so count plus lease insertion is one cross-process admission.
+        conn.execute("BEGIN IMMEDIATE")
+        if max_async_children is not None:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM async_delegations WHERE state IN ('dispatching', 'running', 'finalizing')"
+            ).fetchone()[0]
+            if active >= max_async_children:
+                return False
         conn.execute(
-            """INSERT OR REPLACE INTO async_delegations
+            """INSERT INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
                owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
-             record["dispatched_at"], now, __import__("os").getpid(),
+             state, record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
              record.get("origin_session_id", ""), record.get("review_receipt_id", ""), record.get("review_ledger_path", "")),
         )
     _prune_durable_records()
+    return True
+
+
+def _activate_durable_dispatch(delegation_id: str) -> bool:
+    """Make a pre-submission lease runnable without creating a second record."""
+    with _DB_LOCK, _transaction() as conn:
+        updated = conn.execute(
+            "UPDATE async_delegations SET state='running', updated_at=? WHERE delegation_id=? AND state='dispatching'",
+            (time.time(), delegation_id),
+        )
+        return updated.rowcount == 1
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
@@ -246,14 +277,14 @@ def _prune_durable_records() -> None:
             (cutoff,),
         )
         terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')"
+            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('dispatching','running','finalizing')"
         ).fetchone()[0]
         excess = max(0, terminal_count - _MAX_RETAINED_COMPLETED)
         if excess:
             conn.execute(
                 """DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
+                     WHERE state NOT IN ('dispatching','running','finalizing')
                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                               updated_at ASC LIMIT ?
                    )""",
@@ -261,14 +292,14 @@ def _prune_durable_records() -> None:
             )
         pending_count = conn.execute(
             """SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'"""
+               WHERE state NOT IN ('dispatching','running','finalizing') AND delivery_state='pending'"""
         ).fetchone()[0]
         overflow = max(0, pending_count - _MAX_DURABLE_PENDING)
         if overflow:
             conn.execute(
                 """DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                     WHERE state NOT IN ('dispatching','running','finalizing') AND delivery_state='pending'
                      ORDER BY updated_at ASC LIMIT ?
                    )""",
                 (overflow,),
@@ -289,8 +320,11 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     if receipt_id:
         try:
             from tools.release_review_ledger import ReleaseReviewLedger
-            ledger_path = event.get("review_ledger_path") or str(get_hermes_home() / "release-review-ledger.db")
-            ReleaseReviewLedger(Path(ledger_path)).finalize_async_receipt(receipt_id, event.get("status", "unknown"), {
+            canonical_path = (get_hermes_home() / "release-review-ledger.db").resolve()
+            stored_path = event.get("review_ledger_path") or str(canonical_path)
+            if Path(stored_path).resolve() != canonical_path:
+                raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
+            ReleaseReviewLedger(canonical_path).finalize_async_receipt(receipt_id, event.get("status", "unknown"), {
                 "delegation_id": event["delegation_id"], "result": result,
             })
         except Exception:
@@ -313,21 +347,20 @@ def recover_abandoned_delegations() -> int:
         return 0
     now = time.time()
     recovered = 0
+    review_terminalizations = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path
-               FROM async_delegations WHERE state IN ('running','finalizing')"""
+               FROM async_delegations WHERE state IN ('dispatching','running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
              pid, started, task_json, origin_session_id, review_receipt_id, review_ledger_path) = row
             live = False
-            if pid:
-                live = _pid_exists(int(pid))
-                if live and started is not None:
-                    live = get_process_start_time(int(pid)) == int(started)
+            if pid and started is not None:
+                live = _pid_exists(int(pid)) and get_process_start_time(int(pid)) == int(started)
             if live:
                 continue
             task = json.loads(task_json or "{}")
@@ -354,7 +387,21 @@ def recover_abandoned_delegations() -> int:
                    WHERE delegation_id=?""",
                 (now, now, json.dumps(event), json.dumps(result), delegation_id),
             )
+            if review_receipt_id:
+                review_terminalizations.append((review_receipt_id, review_ledger_path, event, result))
             recovered += 1
+    for receipt_id, ledger_path, event, result in review_terminalizations:
+        try:
+            from tools.release_review_ledger import ReleaseReviewLedger
+            canonical_path = (get_hermes_home() / "release-review-ledger.db").resolve()
+            stored_path = Path(ledger_path).resolve() if ledger_path else canonical_path
+            if stored_path != canonical_path:
+                raise RuntimeError("stored release-review ledger path does not match the canonical Hermes home")
+            ReleaseReviewLedger(canonical_path).finalize_async_receipt(receipt_id, "unknown", {
+                "delegation_id": event["delegation_id"], "result": result,
+            })
+        except Exception:
+            logger.exception("Could not terminalize abandoned release review receipt %s", receipt_id)
     return recovered
 
 
@@ -625,6 +672,7 @@ def dispatch_async_delegation(
     progress_fn: Optional[Callable[[], tuple]] = None,
     review_receipt_id: str = "",
     review_ledger_path: str = "",
+    delegation_id: str = "",
 ) -> Dict[str, Any]:
     """Spawn ``runner`` on the daemon executor and return a handle immediately.
 
@@ -668,15 +716,20 @@ def dispatch_async_delegation(
         ``{"status": "dispatched", "delegation_id": ...}`` on success, or
         ``{"status": "rejected", "error": ...}`` when at capacity.
     """
+    delegation_id = delegation_id or _new_delegation_id()
+    ledger = None
     if review_receipt_id:
         if not review_ledger_path:
             return {"status": "rejected", "error": "receipt-bound review is missing its ledger path"}
+        expected_ledger_path = (get_hermes_home() / "release-review-ledger.db").resolve()
+        if Path(review_ledger_path).resolve() != expected_ledger_path:
+            return {"status": "rejected", "error": "receipt-bound review must use the canonical Hermes ledger path"}
         try:
             from tools.release_review_ledger import ReleaseReviewLedger
-            ReleaseReviewLedger(Path(review_ledger_path)).assert_launching(review_receipt_id)
+            ledger = ReleaseReviewLedger(Path(review_ledger_path))
+            ledger.assert_async_dispatch_binding(review_receipt_id, delegation_id, __import__("os").getpid())
         except Exception as exc:
             return {"status": "rejected", "error": f"receipt-bound review was not admitted: {exc}"}
-    delegation_id = _new_delegation_id()
     dispatched_at = time.time()
     record: Dict[str, Any] = {
         "delegation_id": delegation_id,
@@ -691,7 +744,7 @@ def dispatch_async_delegation(
         "review_receipt_id": review_receipt_id,
         "review_ledger_path": review_ledger_path,
         "parent_session_id": parent_session_id,
-        "status": "running",
+        "status": "dispatching",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
@@ -707,7 +760,7 @@ def dispatch_async_delegation(
     with _records_lock:
         running = sum(
             1 for r in _records.values()
-            if r.get("status") in ("running", "stalling")
+            if r.get("status") in ("dispatching", "running", "stalling")
         )
         if running >= max_async_children:
             return {
@@ -722,7 +775,35 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    if not _persist_dispatch(record, max_async_children):
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        if ledger is not None:
+            try:
+                ledger.mark_launch_failed(review_receipt_id, "launch_rejected")
+            except RuntimeError:
+                pass
+        return {
+            "status": "rejected",
+            "error": f"Async delegation capacity reached ({max_async_children} running across Hermes processes).",
+        }
+    try:
+        if ledger is not None:
+            ledger.activate_async_dispatch(review_receipt_id, delegation_id, __import__("os").getpid())
+        if not _activate_durable_dispatch(delegation_id):
+            raise RuntimeError("durable dispatch lease was not activatable")
+    except Exception as exc:
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        _delete_durable_delegation(delegation_id)
+        if ledger is not None:
+            try:
+                ledger.mark_launch_failed(review_receipt_id, "launch_rejected")
+            except RuntimeError:
+                pass
+        return {"status": "rejected", "error": f"receipt-bound review activation failed: {exc}"}
+    with _records_lock:
+        record["status"] = "running"
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -752,6 +833,11 @@ def dispatch_async_delegation(
         with _records_lock:
             _records.pop(delegation_id, None)
         _delete_durable_delegation(delegation_id)
+        if ledger is not None:
+            try:
+                ledger.mark_launch_failed(review_receipt_id)
+            except RuntimeError:
+                pass
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
@@ -933,7 +1019,7 @@ def dispatch_async_delegation_batch(
         "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
-        "status": "running",
+        "status": "dispatching",
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
@@ -946,7 +1032,7 @@ def dispatch_async_delegation_batch(
     with _records_lock:
         running = sum(
             1 for r in _records.values()
-            if r.get("status") in ("running", "stalling")
+            if r.get("status") in ("dispatching", "running", "stalling")
         )
         if running >= max_async_children:
             return {
@@ -960,7 +1046,20 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    if not _persist_dispatch(record, max_async_children):
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        return {
+            "status": "rejected",
+            "error": f"Async delegation capacity reached ({max_async_children} running across Hermes processes).",
+        }
+    if not _activate_durable_dispatch(delegation_id):
+        with _records_lock:
+            _records.pop(delegation_id, None)
+        _delete_durable_delegation(delegation_id)
+        return {"status": "rejected", "error": "durable dispatch lease was not activatable"}
+    with _records_lock:
+        record["status"] = "running"
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
