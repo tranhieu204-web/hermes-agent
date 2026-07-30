@@ -90,7 +90,7 @@ def test_writer_collapses_newlines_to_single_line_events():
 def test_writer_swallows_failures_when_dir_unwritable(tmp_path):
     # Point the writer at a root that is actually a FILE — mkdir will fail.
     bogus_root = tmp_path / "not-a-dir"
-    bogus_root.write_text("occupied")
+    bogus_root.write_text("occupied", encoding="utf-8")
     w = LiveTranscriptWriter("deleg_fail", 0, "g", root=bogus_root)
     assert w.path is None
     # All writes must be silent no-ops.
@@ -233,7 +233,7 @@ def test_create_live_transcripts_precreates_paths_and_manifest():
         assert p.endswith(f"task-{i}.log")
         assert Path(p).exists()  # tail -f works immediately
     manifest = json.loads(
-        (live_transcript_root() / deleg_id / "manifest.json").read_text()
+        (live_transcript_root() / deleg_id / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["task_count"] == 2
     assert manifest["tasks"][0]["goal"] == "task A"
@@ -253,7 +253,7 @@ def test_update_manifest_statuses():
         {"task_index": 1, "status": "error"},
     ])
     manifest = json.loads(
-        (live_transcript_root() / deleg_id / "manifest.json").read_text()
+        (live_transcript_root() / deleg_id / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["tasks"][0]["status"] == "completed"
     assert manifest["tasks"][1]["status"] == "error"
@@ -270,8 +270,8 @@ def test_prune_stale_live_dirs():
     new_dir = root / "deleg_new00001"
     old_dir.mkdir(parents=True)
     new_dir.mkdir(parents=True)
-    (old_dir / "task-0.log").write_text("old")
-    (new_dir / "task-0.log").write_text("new")
+    (old_dir / "task-0.log").write_text("old", encoding="utf-8")
+    (new_dir / "task-0.log").write_text("new", encoding="utf-8")
     stale = time.time() - 8 * 86400
     os.utime(old_dir, (stale, stale))
     removed = prune_stale_live_dirs(max_age_days=7)

@@ -591,18 +591,18 @@ def test_durable_capacity_is_atomic_across_two_processes(tmp_path, monkeypatch):
         "from tools.async_delegation import _persist_dispatch\n"
         f"os.environ['HERMES_HOME'] = r'{hermes_home}'\n"
         "ready, go, identity = map(Path, sys.argv[1:4])\n"
-        "ready.write_text('ready')\n"
+        "ready.write_text('ready', encoding='utf-8')\n"
         "while not go.exists(): time.sleep(0.01)\n"
         "record={'delegation_id': identity.name, 'goal':'review', 'context':None, 'toolsets':None, 'role':'reviewer', 'model':'m', 'session_key':'test', 'origin_ui_session_id':'', 'origin_session_id':'', 'parent_session_id':None, 'dispatched_at':time.time()}\n"
         "print(_persist_dispatch(record, max_async_children=1, state='dispatching'))\n"
     )
     cwd = Path(__file__).resolve().parents[2]
-    one = subprocess.Popen([sys.executable, "-c", source, str(ready_one), str(go), str(tmp_path / "deleg-one")], cwd=cwd, stdout=subprocess.PIPE, text=True)
-    two = subprocess.Popen([sys.executable, "-c", source, str(ready_two), str(go), str(tmp_path / "deleg-two")], cwd=cwd, stdout=subprocess.PIPE, text=True)
+    one = subprocess.Popen([sys.executable, "-c", source, str(ready_one), str(go), str(tmp_path / "deleg-one")], cwd=cwd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    two = subprocess.Popen([sys.executable, "-c", source, str(ready_two), str(go), str(tmp_path / "deleg-two")], cwd=cwd, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     deadline = time.monotonic() + 5
     while not (ready_one.exists() and ready_two.exists()) and time.monotonic() < deadline:
         time.sleep(0.01)
-    go.write_text("go")
+    go.write_text("go", encoding="utf-8")
     outcomes = {one.communicate(timeout=5)[0].strip(), two.communicate(timeout=5)[0].strip()}
     assert outcomes == {"True", "False"}
 
@@ -684,7 +684,7 @@ def test_separate_process_same_identity_allows_one_claim(tmp_path):
         "else:\n print(r['status'])\n"
     )
     proc = [sys.executable, "-c", source]
-    first = subprocess.Popen(proc, cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE, text=True)
-    second = subprocess.Popen(proc, cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE, text=True)
+    first = subprocess.Popen(proc, cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    second = subprocess.Popen(proc, cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     outputs = {first.communicate(timeout=10)[0].strip(), second.communicate(timeout=10)[0].strip()}
     assert outputs == {"claimed", "existing"}
