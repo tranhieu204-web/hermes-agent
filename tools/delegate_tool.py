@@ -20,6 +20,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -2501,6 +2502,55 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+_REVIEW_CANDIDATE_RE = re.compile(r"\b[0-9a-f]{7,64}\b", re.IGNORECASE)
+
+
+def _review_batch_conflict(
+    task_list: List[Dict[str, Any]], *, model: Optional[str], context: Optional[str],
+) -> Optional[str]:
+    """Reject overlapping same-model review work before child construction.
+
+    A batch may deliberately use one model for distinct lenses when another
+    qualified model is unavailable.  It must not spend two calls on the same
+    candidate and lens merely because the natural-language wording differs.
+    """
+    candidate_text = context or ""
+    candidate_match = _REVIEW_CANDIDATE_RE.search(candidate_text)
+    default_candidate = candidate_match.group(0).lower() if candidate_match else "current-worktree"
+    seen: Dict[tuple[str, str, str], int] = {}
+    for index, task in enumerate(task_list):
+        goal = str(task.get("goal", ""))
+        lowered = goal.lower()
+        if "review" not in lowered:
+            continue
+        explicit_candidate = str(task.get("candidate_hash", "")).strip().lower()
+        goal_candidate = _REVIEW_CANDIDATE_RE.search(goal)
+        candidate = explicit_candidate or (goal_candidate.group(0).lower() if goal_candidate else default_candidate)
+        explicit_lens = str(task.get("review_lens", "")).strip().lower()
+        if explicit_lens:
+            lens = explicit_lens
+        elif any(token in lowered for token in ("security", "false-pass", "false pass", "vulnerab")):
+            lens = "security"
+        elif any(token in lowered for token in ("spec", "compliance", "contract")):
+            lens = "spec"
+        elif any(token in lowered for token in ("integration", "regression", "end-to-end")):
+            lens = "integration"
+        elif "test" in lowered:
+            lens = "tests"
+        else:
+            lens = "general"
+        key = (candidate, str(model or "inherited-model").strip().lower(), lens)
+        previous = seen.get(key)
+        if previous is not None:
+            return (
+                "Duplicate review admission rejected before dispatch: tasks "
+                f"{previous} and {index} share candidate={candidate}, model={key[1]}, lens={lens}. "
+                "Use one task, or assign explicit distinct review_lens values for materially different checks."
+            )
+        seen[key] = index
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2626,6 +2676,10 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    review_conflict = _review_batch_conflict(task_list, model=creds.get("model"), context=context)
+    if review_conflict:
+        return tool_error(review_conflict)
 
     overall_start = time.monotonic()
     results = []
@@ -3773,6 +3827,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "review_lens": {
+                            "type": "string",
+                            "description": "Required for material parallel reviews when the requested check is not clearly spec, security, integration, or tests. Distinct lenses may share a model; identical lenses are rejected before dispatch.",
+                        },
+                        "candidate_hash": {
+                            "type": "string",
+                            "description": "Exact candidate identity for a material review batch. Used only for duplicate-admission identity, never as a model selector.",
                         },
                     },
                     "required": ["goal"],
