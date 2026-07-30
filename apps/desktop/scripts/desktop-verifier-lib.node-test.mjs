@@ -193,10 +193,14 @@ test('Windows Job preparation returns only source-bound compile diagnostics when
       prepareTimeoutMs: 100,
       spawnImpl: () => preparer
     })
-    assert.deepEqual(diagnostics.split('; '), [
-      `HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceSha256}`,
-      `HermesVerifierJobHost diagnostic compile_end source_sha256=${sourceSha256} output_sha256=${'b'.repeat(64)}`
-    ])
+    assert.match(diagnostics, new RegExp(`compile_start source_sha256=${sourceSha256}`))
+    assert.match(diagnostics, new RegExp(`compile_end source_sha256=${sourceSha256} output_sha256=${'b'.repeat(64)}`))
+    assert.match(diagnostics, /lifecycle=spawn_requested elapsed_ms=\d+/)
+    assert.match(diagnostics, /lifecycle=exit code=0 elapsed_ms=\d+/)
+    assert.match(diagnostics, /lifecycle=stderr_end elapsed_ms=\d+/)
+    assert.match(diagnostics, /classification=FALSIFIED/)
+    assert.equal(diagnostics.includes(forgedSourceSha256), false)
+    assert.equal(diagnostics.includes('C:\\never-log-controlled-root'), false)
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }
@@ -229,7 +233,11 @@ test('Windows Job preparation appends only a source-bound precompile failure dia
         spawnImpl: () => preparer
       }),
       error => {
-        assert.equal(error.message, `Windows Job controller preparation failed; ${marker}`)
+        assert.match(error.message, new RegExp(`Windows Job controller preparation failed; ${marker}`))
+        assert.match(error.message, /lifecycle=exit code=1 elapsed_ms=\d+/)
+        assert.match(error.message, /classification=DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP/)
+        assert.equal(error.message.includes(forgedSourceSha256), false)
+        assert.equal(error.message.includes('C:\\never-log-controlled-root'), false)
         return true
       }
     )

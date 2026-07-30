@@ -229,6 +229,14 @@ function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
   return [...new Set(entries)].join('; ')
 }
 
+function preparationClassification(evidence) {
+  const match = evidence.match(
+    /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
+  )
+  assert.ok(match, 'expected one safe diagnostic classification')
+  return match[1]
+}
+
 function mutexIdentity(stderr) {
   const match = stderr.match(
     /HermesVerifierJobHost diagnostic mutex_identity_sha256=([a-f0-9]{64})/
@@ -469,6 +477,16 @@ test('Windows Job cold preparation binds its exact source and fresh output witho
     const started = compileBoundary(result.stderr, 'start')
     const finished = compileBoundary(result.stderr, 'end')
     assert.equal(started.sourceSha256, finished.sourceSha256)
+    for (const phase of ['cache_entry', 'cache_directory', 'compile', 'publish']) {
+      assert.match(
+        result.stderr,
+        new RegExp(`event=phase_begin phase=${phase} source_sha256=${started.sourceSha256} sequence=\\d+`)
+      )
+      assert.match(
+        result.stderr,
+        new RegExp(`event=phase_end phase=${phase} source_sha256=${started.sourceSha256} sequence=\\d+`)
+      )
+    }
 
     const [entry] = cacheEntries(fixture)
     const outputPath = join(entry, 'HermesVerifierJobHost.dll')
@@ -514,16 +532,28 @@ test('Windows Job production preparation pairs only controlled LOCALAPPDATA root
         : observation.error
       assert.equal(evidence.includes(localAppData), false, `${label} evidence must not disclose LOCALAPPDATA`)
       assert.equal(evidence.includes(fixture.root), false, `${label} evidence must not disclose fixture paths`)
+      const classification = preparationClassification(evidence)
       if (observation.outcome === 'prepared') {
-        const started = compileBoundary(evidence, 'start')
-        const finished = compileBoundary(evidence, 'end')
-        assert.equal(started.sourceSha256, sourceSha256)
-        assert.equal(finished.sourceSha256, sourceSha256)
+        assert.equal(classification, 'FALSIFIED', `${label} completed preparation should falsify the timeout hypothesis`)
+        if (/HermesVerifierJobHost diagnostic compile_start/.test(evidence)) {
+          const started = compileBoundary(evidence, 'start')
+          const finished = compileBoundary(evidence, 'end')
+          assert.equal(started.sourceSha256, sourceSha256)
+          assert.equal(finished.sourceSha256, sourceSha256)
+        } else {
+          assert.match(
+            evidence,
+            new RegExp(`event=phase_end phase=validation source_sha256=${sourceSha256}`),
+            `${label} prepared through an already-valid cache without claiming a fresh compile`
+          )
+        }
       } else {
         assert.match(evidence, /preparation timed out after 29000ms|preparation failed/i)
-        const failure = precompileFailure(evidence)
-        assert.equal(failure.sourceSha256, sourceSha256)
-        assert.equal(failure.class, 'cache_root_unavailable')
+        if (/precompile_failure/.test(evidence)) {
+          const failure = precompileFailure(evidence)
+          assert.equal(failure.sourceSha256, sourceSha256)
+          assert.equal(failure.class, 'cache_root_unavailable')
+        }
       }
     }
 
@@ -717,6 +747,93 @@ test('owned preparation timeout reports only allowlisted cold-compile diagnostic
     )
   } finally {
     rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
+
+test('Windows Job preparation diagnostics classify direct-child, pipe, phase, and compiler evidence without disclosure', () => {
+  const sourceHash = sha256File(JOB_HOST_SOURCE)
+  const fixedPrefix = 'HermesVerifierJobHost diagnostic'
+
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
+    ),
+    'DIRECT_CHILD_NONEXIT'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} lifecycle=exit code=0 elapsed_ms=29000`
+    ),
+    'PIPE_CLOSE_WAIT'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} event=phase_begin phase=cache_entry source_sha256=${sourceHash} sequence=1`
+    ),
+    'PHASE_BEGIN_NO_END:cache_entry'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} compile_start source_sha256=${sourceHash}\n${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
+    ),
+    'ADD_TYPE_COMPILE_STALL'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} lifecycle=exit code=1 elapsed_ms=20`
+    ),
+    'PIPE_CLOSE_WAIT'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} lifecycle=exit code=1 elapsed_ms=20\n${fixedPrefix} lifecycle=stderr_end elapsed_ms=21`
+    ),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics('untrusted C:\\fixture\\secret'),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  )
+})
+
+test('Windows Job diagnostics retain only a directly proven owned descendant chain', async () => {
+  const spec = verifierLib.createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  preparer.pid = 10
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.emit('spawn')
+      preparer.stderr.end()
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      diagnosticOwnedDescendantSampler: ({ ownedDirectPid, stage }) => {
+        assert.equal(ownedDirectPid, 10)
+        assert.equal(stage, 'spawn')
+        return [
+          { pid: 12, parentPid: 10, state: 'running', commandLine: 'not retained' },
+          { pid: 13, parentPid: 12, state: 'exited', environment: 'not retained' },
+          { pid: 99, parentPid: 77, state: 'running', commandLine: 'unrelated' }
+        ]
+      },
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.match(diagnostics, /lifecycle=owned_descendant relation=direct state=running elapsed_ms=\d+/)
+    assert.match(diagnostics, /lifecycle=owned_descendant relation=direct state=exited elapsed_ms=\d+/)
+    assert.match(diagnostics, /lifecycle=owned_descendant relation=direct_child state=running elapsed_ms=\d+/)
+    assert.match(diagnostics, /lifecycle=owned_descendant relation=descendant state=exited elapsed_ms=\d+/)
+    assert.equal(diagnostics.includes('not retained'), false)
+    assert.equal(diagnostics.includes('99'), false)
+    assert.equal(diagnostics.includes('commandLine'), false)
+  } finally {
+    verifierLib.cleanupUnlaunchedDesktopSpec(spec)
   }
 })
 

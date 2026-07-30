@@ -9,6 +9,8 @@ $sourcePath = Join-Path $PSScriptRoot 'windows-verifier-job-host.cs'
 $cacheSchema = 'v1'
 $mutexAcquireTimeoutMs = 20000
 $diagnosticsEnabled = $env:HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS -eq '1'
+$script:jobHostDiagnosticSequence = 0
+$script:jobHostDiagnosticSourceHash = $null
 
 function Get-Sha256([byte[]]$bytes) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -44,6 +46,19 @@ function Write-JobHostDiagnostic([string]$phase, [long]$elapsedMs) {
         # Diagnostics deliberately contain only a fixed phase label and duration.
         # Cache roots, source bytes, environment values, and command lines remain private.
         [Console]::Error.WriteLine("HermesVerifierJobHost diagnostic phase=$phase elapsed_ms=$elapsedMs")
+        [Console]::Error.Flush()
+    }
+}
+
+function Write-JobHostDiagnosticEvent([string]$eventName, [string]$phase) {
+    if ($diagnosticsEnabled -and -not [string]::IsNullOrWhiteSpace($script:jobHostDiagnosticSourceHash)) {
+        # Every event is bound to the static source hash and uses a fixed label.
+        # It never emits a cache root, command line, PID, environment value, or exception text.
+        $script:jobHostDiagnosticSequence += 1
+        [Console]::Error.WriteLine(
+            "HermesVerifierJobHost diagnostic event=$eventName phase=$phase source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
+        )
+        [Console]::Error.Flush()
     }
 }
 
@@ -52,6 +67,7 @@ function Write-JobHostMutexIdentityDiagnostic([string]$mutexKey) {
         # This pseudonymous fixed-length digest correlates lock behavior
         # without disclosing the cache root or any environment value.
         [Console]::Error.WriteLine("HermesVerifierJobHost diagnostic mutex_identity_sha256=$mutexKey")
+        [Console]::Error.Flush()
     }
 }
 
@@ -62,10 +78,12 @@ function Write-JobHostPrecompileFailureDiagnostic([string]$sourceHash, [string]$
         [Console]::Error.WriteLine(
             "HermesVerifierJobHost diagnostic precompile_failure source_sha256=$sourceHash class=$classification"
         )
+        [Console]::Error.Flush()
     }
 }
 
 function Invoke-JobHostPhase([string]$phase, [scriptblock]$operation) {
+    Write-JobHostDiagnosticEvent 'phase_begin' $phase
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         return & $operation
@@ -73,6 +91,7 @@ function Invoke-JobHostPhase([string]$phase, [scriptblock]$operation) {
     finally {
         $stopwatch.Stop()
         Write-JobHostDiagnostic $phase $stopwatch.ElapsedMilliseconds
+        Write-JobHostDiagnosticEvent 'phase_end' $phase
     }
 }
 
@@ -155,7 +174,11 @@ function Get-ValidatedJobHostAssembly($entry) {
 }
 
 function Get-JobHostAssembly {
-    $entry = Get-JobHostCacheEntry
+    if ($diagnosticsEnabled -and (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        # A source hash is an immutable correlation token, not a source disclosure.
+        $script:jobHostDiagnosticSourceHash = Get-FileSha256 $sourcePath
+    }
+    $entry = Invoke-JobHostPhase 'cache_entry' { Get-JobHostCacheEntry }
     Write-JobHostMutexIdentityDiagnostic $entry.MutexKey
     $assembly = Invoke-JobHostPhase 'validation' { Get-ValidatedJobHostAssembly $entry }
     if ($null -ne $assembly) {
@@ -163,7 +186,7 @@ function Get-JobHostAssembly {
     }
 
     try {
-        [System.IO.Directory]::CreateDirectory($entry.Directory) | Out-Null
+        Invoke-JobHostPhase 'cache_directory' { [System.IO.Directory]::CreateDirectory($entry.Directory) | Out-Null }
     }
     catch [System.IO.PathTooLongException] {
         Write-JobHostPrecompileFailureDiagnostic $entry.SourceHash 'cache_root_unavailable'
@@ -211,6 +234,7 @@ function Get-JobHostAssembly {
                 # its path or contents. A missing end marker is fail-closed evidence
                 # that the real Add-Type boundary did not return.
                 [Console]::Error.WriteLine("HermesVerifierJobHost diagnostic compile_start source_sha256=$($entry.SourceHash)")
+                [Console]::Error.Flush()
             }
             Invoke-JobHostPhase 'compile' {
                 Add-Type -Path $sourcePath -ReferencedAssemblies 'System.Web.Extensions.dll' -OutputAssembly $temporaryDll -ErrorAction Stop
@@ -219,6 +243,7 @@ function Get-JobHostAssembly {
                 [Console]::Error.WriteLine(
                     "HermesVerifierJobHost diagnostic compile_end source_sha256=$($entry.SourceHash) output_sha256=$(Get-FileSha256 $temporaryDll)"
                 )
+                [Console]::Error.Flush()
             }
             Invoke-JobHostPhase 'publish' {
                 Move-Item -LiteralPath $temporaryDll -Destination $entry.DllPath -Force

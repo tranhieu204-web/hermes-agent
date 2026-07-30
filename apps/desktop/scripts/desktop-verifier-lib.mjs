@@ -25,10 +25,97 @@ const WINDOWS_JOB_SOURCE = fileURLToPath(
   new URL('./windows-verifier-job-host.cs', import.meta.url)
 )
 const WINDOWS_JOB_DIAGNOSTICS_ENV = 'HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS'
+const WINDOWS_JOB_DIAGNOSTIC_PHASES = new Set([
+  'cache_entry',
+  'cache_directory',
+  'validation',
+  'lock_wait',
+  'compile',
+  'publish'
+])
 export const WINDOWS_JOB_PROTOCOL_VERSION = 1
 const WINDOWS_MAX_UINT32 = 0xFFFFFFFF
 const WINDOWS_MAX_UINT64 = 18_446_744_073_709_551_615n
 const WINDOWS_JOB_ERROR_STAGES = new Set(['cleanup', 'controller', 'protocol'])
+
+export function classifyWindowsJobHostPreparationDiagnostics(summary) {
+  if (typeof summary !== 'string') {
+    return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  }
+
+  const lifecycle = new Set(
+    [...summary.matchAll(/HermesVerifierJobHost diagnostic lifecycle=([a-z_]+)(?: [a-z_]+=-?\d+)?(?: elapsed_ms=\d+)?/g)]
+      .map(match => match[1])
+  )
+  const phases = [...summary.matchAll(
+    /HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=([a-z_]+) source_sha256=[a-f0-9]{64} sequence=\d+/g
+  )]
+  const begun = new Set(phases.filter(match => match[1] === 'phase_begin').map(match => match[2]))
+  const ended = new Set(phases.filter(match => match[1] === 'phase_end').map(match => match[2]))
+  const compileStarted = /HermesVerifierJobHost diagnostic compile_start source_sha256=[a-f0-9]{64}/.test(summary)
+  const compileFinished = /HermesVerifierJobHost diagnostic compile_end source_sha256=[a-f0-9]{64} output_sha256=[a-f0-9]{64}/.test(summary)
+
+  if (compileStarted && !compileFinished) {
+    return 'ADD_TYPE_COMPILE_STALL'
+  }
+  const incompletePhase = [...begun].find(phase => WINDOWS_JOB_DIAGNOSTIC_PHASES.has(phase) && !ended.has(phase))
+  if (incompletePhase) {
+    return `PHASE_BEGIN_NO_END:${incompletePhase}`
+  }
+  if (lifecycle.has('deadline') && !lifecycle.has('exit')) {
+    return 'DIRECT_CHILD_NONEXIT'
+  }
+  if (lifecycle.has('exit') && !lifecycle.has('stderr_end')) {
+    return 'PIPE_CLOSE_WAIT'
+  }
+  if (/HermesVerifierJobHost diagnostic lifecycle=exit code=-?[1-9]\d* elapsed_ms=\d+/.test(summary)) {
+    return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  }
+  if (!lifecycle.has('exit') || !lifecycle.has('stderr_end')) {
+    return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  }
+  return 'FALSIFIED'
+}
+
+export function sanitizeOwnedDescendantLifecycleSamples(records, ownedDirectPid) {
+  if (!Number.isSafeInteger(ownedDirectPid) || ownedDirectPid <= 0 || !Array.isArray(records)) {
+    return []
+  }
+
+  const knownParents = new Set([ownedDirectPid])
+  const sanitized = []
+  let remaining = records
+    .filter(record => record && Number.isSafeInteger(record.pid) && Number.isSafeInteger(record.parentPid))
+    .map(record => ({
+      pid: record.pid,
+      parentPid: record.parentPid,
+      state: record.state === 'exited' ? 'exited' : 'running'
+    }))
+
+  while (remaining.length > 0) {
+    let admitted = false
+    const next = []
+    for (const record of remaining) {
+      if (!knownParents.has(record.parentPid)) {
+        next.push(record)
+        continue
+      }
+      knownParents.add(record.pid)
+      sanitized.push({
+        relation: record.parentPid === ownedDirectPid ? 'direct_child' : 'descendant',
+        state: record.state
+      })
+      admitted = true
+    }
+    if (!admitted) {
+      break
+    }
+    remaining = next
+  }
+
+  return sanitized
+}
+
 const WINDOWS_JOB_RECORD_SCHEMAS = {
   cleaned: {
     fields: new Set([
@@ -1351,6 +1438,7 @@ async function launchWindowsOwnedDesktop(spec, {
 
 export async function prepareWindowsJobHost(spec, {
   prepareTimeoutMs = DEFAULT_WINDOWS_JOB_PREPARE_TIMEOUT_MS,
+  diagnosticOwnedDescendantSampler = null,
   spawnImpl = nodeSpawn
 } = {}) {
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs <= 0) {
@@ -1370,6 +1458,40 @@ export async function prepareWindowsJobHost(spec, {
     let preparerStderr = ''
     let preparerStderrClosed = false
     let preparerExitCode
+    const diagnosticLifecycle = []
+    const preparationStartedAt = Date.now()
+    const recordDiagnosticLifecycle = (label, details = '') => {
+      if (!diagnosticsRequested) {
+        return
+      }
+      diagnosticLifecycle.push(
+        `HermesVerifierJobHost diagnostic lifecycle=${label}${details} elapsed_ms=${Math.max(0, Date.now() - preparationStartedAt)}`
+      )
+    }
+    const recordOwnedDescendantSamples = stage => {
+      if (!diagnosticsRequested ||
+          typeof diagnosticOwnedDescendantSampler !== 'function' ||
+          !Number.isSafeInteger(preparer?.pid) ||
+          preparer.pid <= 0) {
+        return
+      }
+      let records
+      try {
+        records = diagnosticOwnedDescendantSampler({
+          ownedDirectPid: preparer.pid,
+          stage
+        })
+      } catch {
+        recordDiagnosticLifecycle('owned_descendant_sample_error')
+        return
+      }
+      for (const sample of sanitizeOwnedDescendantLifecycleSamples(records, preparer.pid)) {
+        recordDiagnosticLifecycle(
+          'owned_descendant',
+          ` relation=${sample.relation} state=${sample.state}`
+        )
+      }
+    }
     const settle = callback => value => {
       if (settled) {
         return
@@ -1399,6 +1521,7 @@ export async function prepareWindowsJobHost(spec, {
           windowsHide: true
         }
       )
+      recordDiagnosticLifecycle('spawn_requested')
     } catch (error) {
       rejectPrepare(error)
       return
@@ -1415,10 +1538,14 @@ export async function prepareWindowsJobHost(spec, {
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_start source_sha256=([a-f0-9]{64})/g)]
           .filter(match => match[1] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
-          .filter(match => match[1] === expectedSourceSha256)
+          .filter(match => match[1] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
+          .filter(match => match[3] === expectedSourceSha256)
       ].map(match => match[0])
-
-      return [...new Set(markers)].join('; ')
+      const summary = [...new Set([...markers, ...diagnosticLifecycle])].join('; ')
+      return summary === ''
+        ? ''
+        : `${summary}; HermesVerifierJobHost diagnostic classification=${classifyWindowsJobHostPreparationDiagnostics(summary)}`
     }
     const diagnosticSuffix = () => {
       const summary = diagnosticSummary()
@@ -1459,6 +1586,7 @@ export async function prepareWindowsJobHost(spec, {
       })
       preparer.stderr.once('end', () => {
         preparerStderrClosed = true
+        recordDiagnosticLifecycle('stderr_end')
         completeExit()
       })
     }
@@ -1472,11 +1600,14 @@ export async function prepareWindowsJobHost(spec, {
       // reject until that owned process has exited, otherwise a timed-out
       // compiler can retain the cache lock into the next controller attempt.
       preparationTimedOut = true
+      recordDiagnosticLifecycle('deadline')
       try {
-        preparer.kill()
+        const terminationRequested = preparer.kill()
+        recordDiagnosticLifecycle('termination_request', ` result=${terminationRequested === false ? 0 : 1}`)
       } catch {
         // The bounded teardown wait below still fails closed if the preparer
         // has already exited or cannot be signalled.
+        recordDiagnosticLifecycle('termination_request', ' result=-1')
       }
 
       if (!settled) {
@@ -1491,10 +1622,26 @@ export async function prepareWindowsJobHost(spec, {
     }, prepareTimeoutMs)
     timeout.unref?.()
 
-    preparer.once('error', settle(rejectPrepare))
+    preparer.once('spawn', () => {
+      recordDiagnosticLifecycle('spawn')
+      // The direct preparer is the only process relationship this module can
+      // prove without a prohibited process census. Never claim a compiler or
+      // other descendant unless a bounded test-owned sampler proves the chain.
+      recordDiagnosticLifecycle('owned_descendant', ' relation=direct state=running')
+      recordOwnedDescendantSamples('spawn')
+    })
+    preparer.once('error', error => {
+      recordDiagnosticLifecycle('spawn_error')
+      settle(rejectPrepare)(error)
+    })
     preparer.once('exit', code => {
       preparerExitCode = code
+      recordDiagnosticLifecycle('exit', ` code=${Number.isSafeInteger(code) ? code : -1}`)
+      recordDiagnosticLifecycle('owned_descendant', ' relation=direct state=exited')
       completeExit()
+    })
+    preparer.once('close', () => {
+      recordDiagnosticLifecycle('close')
     })
   })
 }
