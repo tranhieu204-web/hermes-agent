@@ -120,6 +120,16 @@ class TestReviewBatchAdmission(unittest.TestCase):
         )
         self.assertIsNone(conflict)
 
+    def test_explicit_review_identity_rejects_audit_wording_before_dispatch(self):
+        conflict = _review_batch_conflict(
+            [
+                {"goal": "Audit the termination controls.", "candidate_hash": "abcdef1", "review_lens": "security"},
+                {"goal": "Inspect failure behavior.", "candidate_hash": "abcdef1", "review_lens": "security"},
+            ],
+            model="gpt-5.6-sol", context=None,
+        )
+        self.assertIn("Duplicate review admission rejected", conflict)
+
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
         not the framework defaults. Without this, models that read 'default 3'

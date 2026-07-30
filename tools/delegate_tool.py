@@ -2521,7 +2521,11 @@ def _review_batch_conflict(
     for index, task in enumerate(task_list):
         goal = str(task.get("goal", ""))
         lowered = goal.lower()
-        if "review" not in lowered:
+        if (
+            "review" not in lowered
+            and not str(task.get("candidate_hash", "")).strip()
+            and not str(task.get("review_lens", "")).strip()
+        ):
             continue
         explicit_candidate = str(task.get("candidate_hash", "")).strip().lower()
         goal_candidate = _REVIEW_CANDIDATE_RE.search(goal)
