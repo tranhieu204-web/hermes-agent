@@ -1,0 +1,19 @@
+name: Fork Actions Dispatch Probe
+
+on:
+  push:
+    branches:
+      - ci-dispatch-probe-20260730
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report event identity
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "sha=${{ github.sha }}"
+          echo "ref=${{ github.ref }}"
