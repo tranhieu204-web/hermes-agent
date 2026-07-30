@@ -110,7 +110,7 @@ const RAW_PROCESS_API_ALLOWLIST = {
       // Launches only the source-controlled PowerShell Job controller.
       launchWindowsOwnedDesktop: new Set(['spawnImpl']),
       // Prepares only the source-controlled Job-host cache before the protocol deadline begins.
-      prepareWindowsJobHost: new Set(['spawnImpl']),
+      prepareWindowsJobHost: new Set(['member.kill', 'spawnImpl']),
       // POSIX behavior remains a direct exact executable launch.
       launchOwnedDesktop: new Set(['spawnImpl']),
       // POSIX cleanup signals only the negative PGID created for this launch.

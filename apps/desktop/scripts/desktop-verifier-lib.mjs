@@ -91,6 +91,7 @@ const DEFAULT_PORT_TIMEOUT_MS = 30_000
 const DEFAULT_PAGE_TIMEOUT_MS = 30_000
 const DEFAULT_POLL_INTERVAL_MS = 100
 const DEFAULT_TERMINATION_TIMEOUT_MS = 5_000
+const DEFAULT_WINDOWS_JOB_PREPARE_TIMEOUT_MS = 45_000
 
 const CREDENTIAL_ENV_SUFFIXES = [
   '_API_KEY',
@@ -1228,7 +1229,7 @@ async function launchWindowsOwnedDesktop(spec, {
   }
 
   if (spawnImpl === nodeSpawn) {
-    await prepareWindowsJobHost(spec, spawnImpl)
+    await prepareWindowsJobHost(spec, { spawnImpl })
   }
   ownership.launchAttempted = true
   const nonce = randomUUID()
@@ -1335,9 +1336,25 @@ async function launchWindowsOwnedDesktop(spec, {
   }
 }
 
-async function prepareWindowsJobHost(spec, spawnImpl) {
+export async function prepareWindowsJobHost(spec, {
+  prepareTimeoutMs = DEFAULT_WINDOWS_JOB_PREPARE_TIMEOUT_MS,
+  spawnImpl = nodeSpawn
+} = {}) {
+  if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs <= 0) {
+    throw new Error('Windows Job controller preparation timeout must be a positive integer')
+  }
+
   await new Promise((resolvePrepare, rejectPrepare) => {
     let preparer
+    let settled = false
+    const settle = callback => value => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timeout)
+      callback(value)
+    }
     try {
       preparer = spawnImpl(
         'powershell.exe',
@@ -1363,12 +1380,27 @@ async function prepareWindowsJobHost(spec, spawnImpl) {
       return
     }
 
-    preparer.once('error', rejectPrepare)
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return
+      }
+      settle(rejectPrepare)(new Error(
+        `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
+      ))
+      try {
+        preparer.kill()
+      } catch {
+        // The timeout still fails closed if the preparer has already exited.
+      }
+    }, prepareTimeoutMs)
+    timeout.unref?.()
+
+    preparer.once('error', settle(rejectPrepare))
     preparer.once('exit', code => {
       if (code === 0) {
-        resolvePrepare()
+        settle(resolvePrepare)()
       } else {
-        rejectPrepare(new Error('Windows Job controller preparation failed'))
+        settle(rejectPrepare)(new Error('Windows Job controller preparation failed'))
       }
     })
   })

@@ -64,6 +64,50 @@ async function waitForFile(filePath, timeoutMs = 5000) {
   throw new Error(`timed out waiting for ${filePath}`)
 }
 
+test('Windows Job preparation is bounded and terminates only its preparer', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  preparer.killCalls = 0
+  preparer.kill = () => {
+    preparer.killCalls += 1
+    preparer.emit('exit', null, 'SIGTERM')
+    return true
+  }
+
+  try {
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 10,
+        spawnImpl: () => preparer
+      }),
+      /preparation timed out after 10ms/i
+    )
+    assert.equal(preparer.killCalls, 1)
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation accepts a bounded successful preparer', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+
+  try {
+    queueMicrotask(() => preparer.emit('exit', 0, null))
+    await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.equal(existsSync(spec.paths.root), true)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
 
 test('two launch specs own unique roots, state paths, and app identities', () => {
   const first = createDesktopLaunchSpec({ executable: 'Hermes.exe' })
