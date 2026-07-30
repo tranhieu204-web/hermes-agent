@@ -36,6 +36,12 @@ scheduled tasks, or shared branches.
    and forces UTF-8 inside its hermetic runner. This is part of the candidate:
    without it, the real async-suite import path cannot resolve a home on
    Windows and the runner can fail after otherwise-passing results.
+6. `tools/delegate_tool.py` rejects a same-candidate, same-model, same-lens
+   review before child construction. Review batches declare `review_lens` and
+   `candidate_hash` when inference is insufficient. Distinct lenses may run
+   together; the receipt reports model reuse honestly rather than calling it
+   cross-model independence. Fleet lane selection remains a separate runtime
+   routing seam and must not be simulated by changing a prompt label.
 
 ## Explicit deferrals
 

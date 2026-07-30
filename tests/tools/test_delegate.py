@@ -34,6 +34,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _review_batch_conflict,
     _inherit_parent_base_url,
 )
 
@@ -87,6 +88,28 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+
+class TestReviewBatchAdmission(unittest.TestCase):
+    def test_same_model_same_candidate_same_lens_is_rejected_before_dispatch(self):
+        conflict = _review_batch_conflict(
+            [
+                {"goal": "Independently adversarially review exact abcdef1 for security false-PASS paths."},
+                {"goal": "Independently review candidate abcdef1 for security vulnerabilities and false pass defects."},
+            ],
+            model="gpt-5.6-sol", context=None,
+        )
+        self.assertIn("Duplicate review admission rejected", conflict)
+
+    def test_same_model_distinct_spec_and_security_lenses_are_allowed(self):
+        conflict = _review_batch_conflict(
+            [
+                {"goal": "Independently review the completed working tree for exact repair-plan/spec compliance."},
+                {"goal": "Independently adversarially review the working tree for security, logic, and false-PASS defects."},
+            ],
+            model="gpt-5.6-sol", context=None,
+        )
+        self.assertIsNone(conflict)
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
