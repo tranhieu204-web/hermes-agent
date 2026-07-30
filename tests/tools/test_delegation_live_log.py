@@ -220,7 +220,10 @@ def test_wrap_progress_callback_writer_failure_does_not_block_inner():
 
 
 def test_create_live_transcripts_precreates_paths_and_manifest():
-    tasks = [{"goal": "task A"}, {"goal": "task B", "context": "ctx B"}]
+    tasks = [
+        {"goal": "task A", "display_label": "gpt-5.6-sol · leaf", "effective_model": "gpt-5.6-sol"},
+        {"goal": "task B", "context": "ctx B"},
+    ]
     deleg_id, writers, paths = create_live_transcripts(tasks, context="shared ctx")
     assert deleg_id and deleg_id.startswith("deleg_")
     assert len(writers) == 2 and all(w is not None for w in writers)
@@ -234,6 +237,8 @@ def test_create_live_transcripts_precreates_paths_and_manifest():
     )
     assert manifest["task_count"] == 2
     assert manifest["tasks"][0]["goal"] == "task A"
+    assert manifest["tasks"][0]["display_label"] == "gpt-5.6-sol · leaf"
+    assert manifest["tasks"][0]["model"] == "gpt-5.6-sol"
     assert manifest["tasks"][0]["status"] == "running"
     assert manifest["tasks"][1]["log"] == paths[1]
     # Per-task context beats shared context in the kickoff line.

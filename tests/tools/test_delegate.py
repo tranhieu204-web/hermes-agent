@@ -35,6 +35,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _review_batch_conflict,
+    _task_display_identity,
     _inherit_parent_base_url,
 )
 
@@ -91,6 +92,14 @@ class TestDelegateRequirements(unittest.TestCase):
 
 
 class TestReviewBatchAdmission(unittest.TestCase):
+    def test_worker_display_identity_leads_with_model_and_role(self):
+        identity = _task_display_identity(
+            {"role": "leaf", "review_lens": "security"},
+            effective_model="gpt-5.6-sol", default_role="orchestrator",
+        )
+        self.assertEqual(identity["label"], "gpt-5.6-sol · leaf · security review")
+        self.assertNotIn("deleg_", identity["label"])
+
     def test_same_model_same_candidate_same_lens_is_rejected_before_dispatch(self):
         conflict = _review_batch_conflict(
             [

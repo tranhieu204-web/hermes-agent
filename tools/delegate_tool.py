@@ -2551,6 +2551,22 @@ def _review_batch_conflict(
     return None
 
 
+def _task_display_identity(task: Dict[str, Any], *, effective_model: Optional[str], default_role: str) -> Dict[str, str]:
+    """Return human-facing worker identity without replacing the durable ID.
+
+    ``deleg_*`` remains the correlation key for receipts and process recovery.
+    Status surfaces should lead with a model/provider and role, then expose the
+    trace ID only when someone needs to inspect the durable record.
+    """
+    model = str(effective_model or "inherited model").strip() or "inherited model"
+    role = _normalize_role(task.get("role") or default_role)
+    lens = str(task.get("review_lens") or "").strip()
+    label = f"{model} · {role}"
+    if lens:
+        label += f" · {lens} review"
+    return {"model": model, "role": role, "review_lens": lens, "label": label}
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2699,8 +2715,23 @@ def delegate_task(
         wrap_progress_callback,
     )
 
+    _effective_display_model = creds.get("model") or getattr(parent_agent, "model", None)
+    _worker_identities = [
+        _task_display_identity(
+            task, effective_model=_effective_display_model, default_role=top_role,
+        )
+        for task in task_list
+    ]
+    _display_tasks = [
+        {
+            **task,
+            "display_label": _worker_identities[index]["label"],
+            "effective_model": _worker_identities[index]["model"],
+        }
+        for index, task in enumerate(task_list)
+    ]
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context
+        _display_tasks, context
     )
 
     # Save parent tool names BEFORE any child construction mutates the global.
@@ -2718,17 +2749,6 @@ def delegate_task(
         if isinstance(_raw_dispatch_parent_session_id, str)
         else ""
     )
-    _dispatch_parent_telemetry = getattr(parent_agent, "_progress_telemetry", None)
-    _dispatch_usage_receipt_sink = None
-    if _dispatch_parent_session_id:
-        from agent.usage_provenance import capture_delegated_usage_receipt_sink
-
-        _dispatch_usage_receipt_sink = capture_delegated_usage_receipt_sink(
-            parent_agent,
-            parent_session_id=_dispatch_parent_session_id,
-            telemetry=_dispatch_parent_telemetry,
-        )
-
     # Capture the ORIGINATING session's wake target BEFORE any child agent is
     # constructed: _build_child_agent() -> AIAgent() -> agent_init calls
     # set_current_session_id(child.session_id), which clobbers the
@@ -3303,6 +3323,13 @@ def delegate_task(
                 "count": n,
                 "delegation_id": dispatch["delegation_id"],
                 "goals": _goals,
+                "workers": [
+                    {
+                        "task_index": index,
+                        **identity,
+                    }
+                    for index, identity in enumerate(_worker_identities)
+                ],
                 "note": note,
             }
             if live_paths:

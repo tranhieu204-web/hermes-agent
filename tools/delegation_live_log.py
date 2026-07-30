@@ -366,6 +366,12 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
                     # while serialising the goal verbatim here would leave the
                     # credential exposed one file over.
                     "goal": _redact(str(t.get("goal", ""))[:500]),
+                    # Human-readable identity comes first in live status
+                    # surfaces.  The directory/delegation id remains the
+                    # durable correlation key, not the primary display name.
+                    "display_label": _redact(str(t.get("display_label", ""))[:256]),
+                    "model": _redact(str(t.get("effective_model", ""))[:256]),
+                    "review_lens": _redact(str(t.get("review_lens", ""))[:128]),
                     "log": paths[i] if i < len(paths) else None,
                     "status": "running",
                 }
