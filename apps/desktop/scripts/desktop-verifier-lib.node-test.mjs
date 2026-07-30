@@ -68,6 +68,7 @@ async function waitForFile(filePath, timeoutMs = 5000) {
 test('Windows Job preparation is bounded and terminates only its preparer', async () => {
   const spec = createDesktopLaunchSpec({ executable: process.execPath })
   const preparer = new EventEmitter()
+  const keepEventLoopAlive = setInterval(() => {}, 10)
   preparer.killCalls = 0
   preparer.kill = () => {
     preparer.killCalls += 1
@@ -86,6 +87,7 @@ test('Windows Job preparation is bounded and terminates only its preparer', asyn
     assert.equal(preparer.killCalls, 1)
     assert.equal(existsSync(spec.paths.root), true)
   } finally {
+    clearInterval(keepEventLoopAlive)
     cleanupUnlaunchedDesktopSpec(spec)
   }
 })

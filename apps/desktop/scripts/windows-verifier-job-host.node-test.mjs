@@ -23,6 +23,8 @@ import { launchDirectOwnedVerifierTestProcess } from './owned-verifier-test-proc
 const JOB_HOST_BOOTSTRAP = fileURLToPath(
   new URL('./windows-verifier-job-host.ps1', import.meta.url)
 )
+const WINDOWS_ONLY = { skip: process.platform !== 'win32' }
+const PREPARATION_DEADLINE_MS = 15_000
 
 function createControllerRunRoot() {
   const root = mkdtempSync(join(tmpdir(), 'windows-job-controller-run-'))
@@ -51,8 +53,8 @@ function preparationOptions(fixture) {
   }
 }
 
-function runPreparation(fixture) {
-  return testSpawnSync(
+function preparationArgs() {
+  return [
     'powershell.exe',
     [
       '-NoLogo',
@@ -63,32 +65,36 @@ function runPreparation(fixture) {
       '-File',
       JOB_HOST_BOOTSTRAP,
       '-Prepare'
-    ],
-    preparationOptions(fixture)
-  )
+    ]
+  ]
 }
 
-async function runPreparationAsync(fixture) {
+async function runPreparation(fixture, {
+  command,
+  args,
+  deadlineMs = PREPARATION_DEADLINE_MS
+} = {}) {
+  const [defaultCommand, defaultArgs] = preparationArgs()
   const preparation = await launchDirectOwnedVerifierTestProcess(
-    'powershell.exe',
-    [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      JOB_HOST_BOOTSTRAP,
-      '-Prepare'
-    ],
+    command ?? defaultCommand,
+    args ?? defaultArgs,
     {
       shutdownTimeoutMs: 1_000,
-      spawnOptions: { ...preparationOptions(fixture), stdio: 'ignore' }
+      spawnOptions: {
+        ...preparationOptions(fixture),
+        stdio: ['ignore', 'ignore', 'pipe']
+      }
     }
   )
+  let stderr = ''
+  preparation.child.stderr.setEncoding('utf8')
+  preparation.child.stderr.on('data', chunk => {
+    stderr += chunk
+  })
 
   try {
-    return await preparation.waitForExit(45_000)
+    const status = await preparation.waitForExit(deadlineMs)
+    return { status, stderr }
   } finally {
     await preparation.cleanup()
   }
@@ -108,10 +114,13 @@ function cacheEntries(fixture) {
   return readdirSync(root).map(entry => join(root, entry))
 }
 
-function runRealController(fixture, input = '') {
-  const preparation = runPreparation(fixture)
-  if (preparation.error || preparation.status !== 0) {
-    throw new Error('Windows Job host preparation failed before controller test')
+async function runRealController(fixture, input = '') {
+  const preparation = await runPreparation(fixture)
+  if (preparation.status !== 0 || preparation.stderr !== '') {
+    throw new Error(
+      `Windows Job host preparation failed before controller test: ` +
+      `status=${preparation.status}; stderr=${preparation.stderr}`
+    )
   }
 
   return testSpawnSync(
@@ -140,13 +149,20 @@ function runRealController(fixture, input = '') {
   )
 }
 
-test('Windows Job host cache cold, warm, corrupt, and concurrent preparation remains bounded', async () => {
+test('Windows Job host cache cold, warm, corrupt, and concurrent preparation remains bounded', WINDOWS_ONLY, async () => {
   const fixture = createControllerRunRoot()
   fixture.localAppData = join(fixture.root, 'local-app-data')
   mkdirSync(fixture.localAppData)
+  const sentinel = await launchDirectOwnedVerifierTestProcess(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1_000)'],
+    { spawnOptions: { stdio: 'ignore', windowsHide: true } }
+  )
 
   try {
-    assert.equal(runPreparation(fixture).status, 0, 'cold preparation')
+    const cold = await runPreparation(fixture)
+    assert.equal(cold.status, 0, 'cold preparation')
+    assert.equal(cold.stderr, '', 'cold preparation stderr')
     const entries = cacheEntries(fixture)
     assert.equal(entries.length, 1)
     const entry = entries[0]
@@ -155,18 +171,66 @@ test('Windows Job host cache cold, warm, corrupt, and concurrent preparation rem
     assert.equal(existsSync(dll), true)
     assert.equal(existsSync(manifest), true)
 
-    assert.equal(runPreparation(fixture).status, 0, 'warm preparation')
+    const warm = await runPreparation(fixture)
+    assert.equal(warm.status, 0, 'warm preparation')
+    assert.equal(warm.stderr, '', 'warm preparation stderr')
     writeFileSync(dll, 'corrupt-cache')
-    assert.equal(runPreparation(fixture).status, 0, 'corrupt cache recovery')
+    const corrupt = await runPreparation(fixture)
+    assert.equal(corrupt.status, 0, 'corrupt cache recovery')
+    assert.equal(corrupt.stderr, '', 'corrupt cache recovery stderr')
     assert.notEqual(readFileSync(dll, 'utf8'), 'corrupt-cache')
 
-    const exits = await Promise.all([
-      runPreparationAsync(fixture),
-      runPreparationAsync(fixture)
+    const preparations = await Promise.all([
+      runPreparation(fixture),
+      runPreparation(fixture)
     ])
-    assert.deepEqual(exits, [0, 0])
+    assert.deepEqual(preparations.map(result => result.status), [0, 0])
+    assert.deepEqual(preparations.map(result => result.stderr), ['', ''])
     assert.equal(existsSync(manifest), true)
+    assert.equal(sentinel.child.exitCode, null, 'unrelated sentinel must remain alive')
   } finally {
+    await sentinel.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
+
+test('owned preparation reports an explicit nonzero status and stderr', async () => {
+  const fixture = createControllerRunRoot()
+
+  try {
+    const result = await runPreparation(fixture, {
+      command: process.execPath,
+      args: ['-e', "process.stderr.write('expected preparer failure'); process.exit(7)"],
+      deadlineMs: 1_000
+    })
+
+    assert.equal(result.status, 7)
+    assert.match(result.stderr, /expected preparer failure/)
+  } finally {
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
+
+test('owned preparation deadline terminates only its direct preparer', async () => {
+  const fixture = createControllerRunRoot()
+  const sentinel = await launchDirectOwnedVerifierTestProcess(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1_000)'],
+    { spawnOptions: { stdio: 'ignore', windowsHide: true } }
+  )
+
+  try {
+    await assert.rejects(
+      runPreparation(fixture, {
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1_000)'],
+        deadlineMs: 25
+      }),
+      /did not exit within 25ms/i
+    )
+    assert.equal(sentinel.child.exitCode, null, 'unrelated sentinel must remain alive')
+  } finally {
+    await sentinel.cleanup()
     rmSync(fixture.root, { force: true, recursive: true })
   }
 })
@@ -397,13 +461,11 @@ function createBurstExitController(spec, {
   return controller
 }
 
-test('checked-in Windows Job bootstrap compiles and reports launch EOF', {
-  skip: process.platform !== 'win32'
-}, () => {
+test('checked-in Windows Job bootstrap compiles and reports launch EOF', WINDOWS_ONLY, async () => {
   const fixture = createControllerRunRoot()
 
   try {
-    const result = runRealController(fixture)
+    const result = await runRealController(fixture)
 
     assert.equal(result.error, undefined)
     assert.equal(result.status, 1)
@@ -413,16 +475,14 @@ test('checked-in Windows Job bootstrap compiles and reports launch EOF', {
   }
 })
 
-test('checked-in Windows Job host rejects a missing target without starting it', {
-  skip: process.platform !== 'win32'
-}, () => {
+test('checked-in Windows Job host rejects a missing target without starting it', WINDOWS_ONLY, async () => {
   const fixture = createControllerRunRoot()
 
   try {
     const request = realLaunchRecord(fixture, {
       executable: join(fixture.root, 'missing-target.exe')
     })
-    const result = runRealController(fixture, `${JSON.stringify(request)}\n`)
+    const result = await runRealController(fixture, `${JSON.stringify(request)}\n`)
 
     assert.equal(result.status, 1)
     assert.match(result.stderr, /does not exist|failed/i)
@@ -432,9 +492,7 @@ test('checked-in Windows Job host rejects a missing target without starting it',
   }
 })
 
-test('checked-in Windows Job host fails closed on malformed launch fields before target start', {
-  skip: process.platform !== 'win32'
-}, () => {
+test('checked-in Windows Job host fails closed on malformed launch fields before target start', WINDOWS_ONLY, async () => {
   const fixture = createControllerRunRoot()
 
   try {
@@ -477,7 +535,7 @@ test('checked-in Windows Job host fails closed on malformed launch fields before
       { terminationTimeoutMs: 600_001 }
     ]) {
       const request = realLaunchRecord(fixture, overrides)
-      const result = runRealController(fixture, `${JSON.stringify(request)}\n`)
+      const result = await runRealController(fixture, `${JSON.stringify(request)}\n`)
 
       assert.equal(result.status, 1, JSON.stringify(overrides))
       assert.match(
