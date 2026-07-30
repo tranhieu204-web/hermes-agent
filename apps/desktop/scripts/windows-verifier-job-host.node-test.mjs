@@ -229,6 +229,31 @@ function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
   return [...new Set(entries)].join('; ')
 }
 
+function controllerPreparationDiagnosticSummary(stderr, expectedSourceSha256) {
+  const phaseEvents = [...stderr.matchAll(new RegExp(
+    `HermesVerifierJobHost diagnostic event=phase_(?:begin|end) phase=(?:cache_entry|cache_directory|lock_wait|validation|compile|publish) source_sha256=${expectedSourceSha256} sequence=\\d+`,
+    'g'
+  ))].map(match => match[0])
+  const compileEvents = [
+    ...stderr.matchAll(new RegExp(
+      `HermesVerifierJobHost diagnostic compile_(?:start|end) source_sha256=${expectedSourceSha256}(?: output_sha256=[a-f0-9]{64})?`,
+      'g'
+    ))
+  ].map(match => match[0])
+
+  return [...new Set([...phaseEvents, ...compileEvents])].join('; ')
+}
+
+function assertBoundControllerPreparationDiagnostics(result, fixture) {
+  const diagnostics = controllerPreparationDiagnosticSummary(
+    result.stderr,
+    sha256File(JOB_HOST_SOURCE)
+  )
+  assert.notEqual(diagnostics, '', 'expected source-bound controller preparation diagnostics')
+  assert.equal(result.stderr.includes(fixture.root), false, 'diagnostics must not disclose the test root')
+  return diagnostics
+}
+
 function preparationClassification(evidence) {
   const match = evidence.match(
     /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
@@ -351,12 +376,13 @@ function cacheEntries(fixture) {
 async function runRealController(fixture, input = '') {
   // Deep Mode 2 reconciliation for 52efb8e: prewarm is test-only and has a
   // 45-second owned-child deadline. Runtime controller preparation remains 29s.
-  fixture.preparation ??= runPreparation(fixture)
+  fixture.preparation ??= runPreparation(fixture, { diagnostics: true })
   const preparation = await fixture.preparation
-  if (preparation.status !== 0 || preparation.stderr !== '') {
+  const diagnostics = assertBoundControllerPreparationDiagnostics(preparation, fixture)
+  if (preparation.status !== 0) {
     throw new Error(
       `Windows Job host preparation failed before controller test: ` +
-      preparationFailure(preparation.status, preparation.stderr)
+      `${preparationFailure(preparation.status, preparation.stderr)}; ${diagnostics}`
     )
   }
 
@@ -378,6 +404,7 @@ async function runRealController(fixture, input = '') {
         env: {
           ...verifierLib.stripCredentialEnvironment(process.env),
           HERMES_HOME: fixture.hermesHome,
+          HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS: '1',
           LOCALAPPDATA: fixture.localAppData
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -431,9 +458,9 @@ test('Windows Job host cache cold, warm, corrupt, and concurrent preparation rem
   )
 
   try {
-    const cold = await runPreparation(fixture)
+    const cold = await runPreparation(fixture, { diagnostics: true })
     assert.equal(cold.status, 0, 'cold preparation')
-    assert.equal(cold.stderr, '', 'cold preparation stderr')
+    assertBoundControllerPreparationDiagnostics(cold, fixture)
     const entries = cacheEntries(fixture)
     assert.equal(entries.length, 1)
     const entry = entries[0]
@@ -442,21 +469,23 @@ test('Windows Job host cache cold, warm, corrupt, and concurrent preparation rem
     assert.equal(existsSync(dll), true)
     assert.equal(existsSync(manifest), true)
 
-    const warm = await runPreparation(fixture)
+    const warm = await runPreparation(fixture, { diagnostics: true })
     assert.equal(warm.status, 0, 'warm preparation')
-    assert.equal(warm.stderr, '', 'warm preparation stderr')
+    assertBoundControllerPreparationDiagnostics(warm, fixture)
     writeFileSync(dll, 'corrupt-cache')
-    const corrupt = await runPreparation(fixture)
+    const corrupt = await runPreparation(fixture, { diagnostics: true })
     assert.equal(corrupt.status, 0, 'corrupt cache recovery')
-    assert.equal(corrupt.stderr, '', 'corrupt cache recovery stderr')
+    assertBoundControllerPreparationDiagnostics(corrupt, fixture)
     assert.notEqual(readFileSync(dll, 'utf8'), 'corrupt-cache')
 
     const preparations = await Promise.all([
-      runPreparation(fixture),
-      runPreparation(fixture)
+      runPreparation(fixture, { diagnostics: true }),
+      runPreparation(fixture, { diagnostics: true })
     ])
     assert.deepEqual(preparations.map(result => result.status), [0, 0])
-    assert.deepEqual(preparations.map(result => result.stderr), ['', ''])
+    for (const result of preparations) {
+      assertBoundControllerPreparationDiagnostics(result, fixture)
+    }
     assert.equal(existsSync(manifest), true)
     assert.equal(sentinel.child.exitCode, null, 'unrelated sentinel must remain alive')
   } finally {
@@ -663,6 +692,8 @@ test('Windows Job host lock contention fails diagnostically before the productio
       platform: 'win32',
       tempBaseDir: fixture.root
     })
+    productionSpec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+    productionSpec.spawnOptions.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
 
     const startedAt = Date.now()
     await assert.rejects(
