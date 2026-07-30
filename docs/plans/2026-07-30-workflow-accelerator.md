@@ -42,6 +42,12 @@ scheduled tasks, or shared branches.
    together; the receipt reports model reuse honestly rather than calling it
    cross-model independence. Fleet lane selection remains a separate runtime
    routing seam and must not be simulated by changing a prompt label.
+7. Dispatch and live-transcript status payloads lead with the effective model,
+   role, and review lens. `deleg_*` remains a durable trace/correlation ID,
+   never the primary human-facing worker name. When qualified distinct lanes
+   are available, the future routing seam must prefer model diversity; when
+   one model is the only available lane, distinct lenses may be consolidated
+   but must not be presented as independent models.
 
 ## Explicit deferrals
 

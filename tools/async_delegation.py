@@ -36,6 +36,7 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -161,7 +162,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             delivery_claimed_at REAL,
             origin_session_id TEXT NOT NULL DEFAULT '',
             review_receipt_id TEXT NOT NULL DEFAULT '',
-            review_ledger_path TEXT NOT NULL DEFAULT ''
+            review_ledger_path TEXT NOT NULL DEFAULT '',
+            event_stream_id TEXT NOT NULL DEFAULT '',
+            event_sequence INTEGER NOT NULL DEFAULT 0
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -178,6 +181,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         ("origin_session_id", "TEXT"),
         ("review_receipt_id", "TEXT NOT NULL DEFAULT ''"),
         ("review_ledger_path", "TEXT NOT NULL DEFAULT ''"),
+        ("event_stream_id", "TEXT NOT NULL DEFAULT ''"),
+        ("event_sequence", "INTEGER NOT NULL DEFAULT 0"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
@@ -200,6 +205,38 @@ def _transaction() -> Iterator[sqlite3.Connection]:
             yield conn
     finally:
         conn.close()
+
+
+def _async_event_stream_id(record: Dict[str, Any]) -> str:
+    existing = str(record.get("event_stream_id") or "").strip()
+    if existing:
+        return existing
+    delegation_id = str(record.get("delegation_id") or "unknown").strip()
+    producer_scope = {
+        "delegation_id": delegation_id,
+        "parent_session_id": str(record.get("parent_session_id") or ""),
+        "session_key": str(record.get("session_key") or ""),
+        "origin_ui_session_id": str(record.get("origin_ui_session_id") or ""),
+        "origin_session_id": str(record.get("origin_session_id") or ""),
+    }
+    digest = hashlib.sha256(
+        json.dumps(producer_scope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:24]
+    return f"async-delegation:{delegation_id}:{digest}"
+
+
+def _next_completion_event_identity(record: Dict[str, Any]) -> Dict[str, Any]:
+    stream_id = _async_event_stream_id(record)
+    prior = record.get("event_sequence", 0)
+    if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
+        prior = 0
+    sequence = prior + 1
+    return {
+        "event_id": f"{stream_id}:completion:{sequence}",
+        "event_stream_id": stream_id,
+        "event_sequence": sequence,
+        "event_seq": sequence,
+    }
 
 
 def _persist_dispatch(
@@ -240,13 +277,15 @@ def _persist_dispatch(
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-               owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)""",
+               owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path,
+               event_stream_id, event_sequence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              state, record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", ""), record.get("review_receipt_id", ""), record.get("review_ledger_path", "")),
+             record.get("origin_session_id", ""), record.get("review_receipt_id", ""), record.get("review_ledger_path", ""),
+             record.get("event_stream_id", ""), record.get("event_sequence", 0)),
         )
     _prune_durable_records()
     return True
@@ -311,10 +350,12 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
             """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
+               event_json=?, result_json=?, delivery_state='pending',
+               event_stream_id=?, event_sequence=?
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]),
+             json.dumps(event), json.dumps(result), event.get("event_stream_id", ""),
+             event.get("event_sequence", 0), event["delegation_id"]),
         )
     receipt_id = event.get("review_receipt_id") or ""
     if receipt_id:
@@ -352,12 +393,14 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path
+                      owner_started_at, task_json, origin_session_id, review_receipt_id, review_ledger_path,
+                      event_stream_id, event_sequence
                FROM async_delegations WHERE state IN ('dispatching','running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id, review_receipt_id, review_ledger_path) = row
+             pid, started, task_json, origin_session_id, review_receipt_id, review_ledger_path,
+             event_stream_id, event_sequence) = row
             live = False
             if pid and started is not None:
                 live = _pid_exists(int(pid)) and get_process_start_time(int(pid)) == int(started)
@@ -380,12 +423,19 @@ def recover_abandoned_delegations() -> int:
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
+            event.update(_next_completion_event_identity({
+                **event,
+                "event_stream_id": event_stream_id or "",
+                "event_sequence": event_sequence or 0,
+            }))
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                   updated_at=?, event_json=?, result_json=?, delivery_state='pending',
+                   event_stream_id=?, event_sequence=?
                    WHERE delegation_id=?""",
-                (now, now, json.dumps(event), json.dumps(result), delegation_id),
+                (now, now, json.dumps(event), json.dumps(result),
+                 event["event_stream_id"], event["event_sequence"], delegation_id),
             )
             if review_receipt_id:
                 review_terminalizations.append((review_receipt_id, review_ledger_path, event, result))
@@ -748,12 +798,14 @@ def dispatch_async_delegation(
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
+        "event_sequence": 0,
         "progress_fn": progress_fn,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
     }
+    record["event_stream_id"] = _async_event_stream_id(record)
     # Capacity check and record insert under ONE lock hold — checking
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
@@ -942,6 +994,7 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
+    evt.update(_next_completion_event_identity(record))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
@@ -1024,11 +1077,13 @@ def dispatch_async_delegation_batch(
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
         "is_batch": True,
+        "event_sequence": 0,
         "progress_fn": progress_fn,
         "_progress_token": None,
         "_progress_ts": dispatched_at,
         "_interrupted_at": None,
     }
+    record["event_stream_id"] = _async_event_stream_id(record)
     with _records_lock:
         running = sum(
             1 for r in _records.values()
@@ -1164,6 +1219,7 @@ def _push_batch_completion_event(
         "dispatched_at": dispatched_at,
         "completed_at": completed_at,
     }
+    evt.update(_next_completion_event_identity(event_record))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (
