@@ -252,6 +252,73 @@ records `STOP_AND_REPORT` and rejects an automatic new cycle.  This remains
 post-release candidate work only until its own acceptance and release gates
 complete.
 
+### Decision: hosted Windows cold-source diagnostic architecture
+
+| Field | Record |
+| --- | --- |
+| Scope | New isolated diagnostic candidate for the hosted Windows `Add-Type -Path ... -OutputAssembly` failure at frozen `74a5be017`. It adds observable, fail-closed evidence around the actual cold source-compilation boundary without changing the current production 29-second contract or accepting cache/prebuilt output as proof. |
+| Rationale | Deep 2 resolved the `C:\\tmp` fixture defect, but run `30544647183` still exceeded both the 29-second production preparation limit and the 45-second owned cold-test bound on GitHub-hosted Windows. The cause remains unattributed. |
+| Owner | Codex is the sole writer. Hermes and Claude Code are independent, tool-free architecture reviewers; neither may mutate. |
+| Safety and quality boundary | Preserve an independently mandatory cold source proof, exact owned cleanup, and the separate 29-second production gate. No timeout increase, cache-only/prebuilt proof, custom runner, global serialization, scanner weakening, secret/path leakage, bridge/main/live/config/restart/install/deploy mutation, or automatic retry-cycle continuation. |
+| Acceptance criterion | Hosted Windows records a sanitized, candidate-bound outcome for the actual source compile; a fresh source-to-assembly identity proof cannot be satisfied by reuse; the unchanged 29-second production lane remains independently proven; incomplete telemetry, timeout, or ambiguous cleanup fails closed. |
+| Placement | New user-authorized diagnostic scope after terminal Deep 3; it is neither `DEEP MODE 4/3` nor a retry-budget continuation. |
+
+#### Consultation reconciliation (2026-07-30)
+
+The immutable inputs are Deep 1, 2, and 3 evidence packets and the Deep 3
+reconciliation for candidate `74a5be0173b77b5e79fd304cfc7fc2be4c3b3151`.
+Hermes returned **CONDITIONAL**: it approves two independent gates (unchanged
+29-second production preparation and a fresh 45-second cold source proof) plus
+an external, allowlisted observer that is attached before the root runs and
+can prove exact owned cleanup. Claude Code returned **CONDITIONAL**: it approves
+strictly non-perturbing query-only diagnostic evidence and treats an
+inconclusive result as an honest terminal diagnostic outcome. Both reject
+timeout inflation, cache/prebuilt substitution, skipped/advisory CI, runner
+substitution, global serialization, scanner weakening, and secret/path capture.
+
+The reconciled implementation order is deliberately narrow:
+
+1. Map the existing real paths before editing: `apps/desktop/scripts/windows-verifier-job-host.ps1`,
+   `apps/desktop/scripts/windows-verifier-job-host.node-test.mjs`,
+   `apps/desktop/scripts/desktop-verifier-lib.mjs`, and `.github/workflows/js-tests.yml`.
+2. Add regression-first, nonsecret start/end phase evidence around the existing
+   `Add-Type` call and a deterministic source/output identity check. A missing
+   completion marker, invalid identity, or failed cleanup remains failure.
+3. Add a job-scoped diagnostic observer only if it can attach before execution,
+   account for the complete owned process tree, and remain observational. A
+   named-handle or sidecar design that cannot prove those properties is rejected.
+4. Keep the current production 29-second lane byte/argument equivalent and run
+   a separate fresh-source cold proof under the existing 45-second bound. The
+   diagnostic result cannot turn either failed gate into a pass.
+5. Upload only sanitized failure evidence, then require fresh exact-diff review
+   before one candidate-bound CI run.
+
+Disagreement is recorded: Hermes proposed a stronger suspended-process Job
+Object observer; Claude proposed a query-only observer. The latter is only
+admissible if actual repository handles make it observable without weakening
+ownership proof. The first implementation slice therefore starts with common
+phase/identity evidence and rejects either observer until its process-ownership
+contract is tested.
+
+#### First implementation slice and measured boundary
+
+The first slice changes only the existing test bootstrap and its Node test
+harness. In diagnostic mode, `windows-verifier-job-host.ps1` now emits a
+source-hash-bound `compile_start` marker before the real `Add-Type` call and a
+source/output-hash-bound `compile_end` marker after it returns. The test harness
+forwards only allowlisted marker forms whose source hash matches the checked-in
+`windows-verifier-job-host.cs`; raw stderr, paths, and forged hash-shaped lines
+are excluded. Fresh fixture coverage proves a cache-empty compile produces the
+reported output hash, while timeout coverage proves only verified nonsecret
+markers survive a failure. The existing 29-second production path remains
+unchanged.
+
+This creates a truthful next hosted-Windows observation: `compile_start` with
+no `compile_end` means the actual source boundary did not return; both markers
+bind a completed source-to-output result. It deliberately does not claim full
+compiler-descendant attribution. A Job observer is deferred until a testable
+pre-execution whole-tree ownership contract exists in the tracked harness.
+
 ### Baseline exclusions bound to Sakaan fork `556f5a56`
 
 The broader `tests/tools/test_delegate.py` suite has three inherited failures,

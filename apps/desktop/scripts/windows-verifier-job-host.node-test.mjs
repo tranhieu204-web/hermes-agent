@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { EventEmitter, once } from 'node:events'
 import {
   existsSync,
@@ -23,6 +23,9 @@ import { launchDirectOwnedVerifierTestProcess } from './owned-verifier-test-proc
 
 const JOB_HOST_BOOTSTRAP = fileURLToPath(
   new URL('./windows-verifier-job-host.ps1', import.meta.url)
+)
+const JOB_HOST_SOURCE = fileURLToPath(
+  new URL('./windows-verifier-job-host.cs', import.meta.url)
 )
 const WINDOWS_ONLY = { skip: process.platform !== 'win32' }
 const PREPARATION_DEADLINE_MS = 45_000
@@ -128,6 +131,14 @@ async function runPreparation(fixture, {
   try {
     const status = await preparation.waitForExit(deadlineMs)
     return { status, stderr }
+  } catch (error) {
+    const diagnosticSummary = diagnostics
+      ? safePreparationDiagnosticSummary(stderr, sha256File(JOB_HOST_SOURCE))
+      : ''
+    if (diagnosticSummary !== '') {
+      error.message = `${error.message}; ${diagnosticSummary}`
+    }
+    throw error
   } finally {
     await preparation.cleanup()
   }
@@ -159,12 +170,42 @@ function phaseCount(stderr, phase) {
   )) ?? []).length
 }
 
+function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
+  const entries = [
+    ...[...stderr.matchAll(/HermesVerifierJobHost diagnostic compile_start source_sha256=([a-f0-9]{64})/g)]
+      .filter(match => match[1] === expectedSourceSha256),
+    ...[...stderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
+      .filter(match => match[1] === expectedSourceSha256),
+    ...stderr.matchAll(/HermesVerifierJobHost diagnostic phase=(lock_wait|validation|compile|publish) elapsed_ms=(\d+)/g)
+  ].map(match => match[0])
+
+  return [...new Set(entries)].join('; ')
+}
+
 function mutexIdentity(stderr) {
   const match = stderr.match(
     /HermesVerifierJobHost diagnostic mutex_identity_sha256=([a-f0-9]{64})/
   )
   assert.ok(match, 'expected fixed-length pseudonymous mutex identity diagnostic')
   return match[1]
+}
+
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function compileBoundary(stderr, boundary) {
+  const output = boundary === 'end'
+    ? ' output_sha256=([a-f0-9]{64})'
+    : ''
+  const match = stderr.match(new RegExp(
+    `HermesVerifierJobHost diagnostic compile_${boundary} source_sha256=([a-f0-9]{64})${output}`
+  ))
+  assert.ok(match, `expected compile_${boundary} identity diagnostic`)
+  return {
+    sourceSha256: match[1],
+    ...(boundary === 'end' ? { outputSha256: match[2] } : {})
+  }
 }
 
 async function holdNamedMutex(mutexIdentityHash) {
@@ -361,6 +402,29 @@ test('Windows Job host cache cold, warm, corrupt, and concurrent preparation rem
   }
 })
 
+test('Windows Job cold preparation binds its exact source and fresh output without path disclosure', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'cold-identity-cache')
+  mkdirSync(fixture.localAppData)
+
+  try {
+    assert.deepEqual(cacheEntries(fixture), [], 'isolated cache must start empty')
+    const result = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(result.status, 0)
+    const started = compileBoundary(result.stderr, 'start')
+    const finished = compileBoundary(result.stderr, 'end')
+    assert.equal(started.sourceSha256, finished.sourceSha256)
+
+    const [entry] = cacheEntries(fixture)
+    const outputPath = join(entry, 'HermesVerifierJobHost.dll')
+    assert.equal(existsSync(outputPath), true)
+    assert.equal(finished.outputSha256, sha256File(outputPath))
+    assert.equal(result.stderr.includes(fixture.root), false, 'diagnostics must not disclose fixture paths')
+  } finally {
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
 test('Windows Job host cache lock is root-scoped, canonical, and diagnostic without leaking paths', WINDOWS_ONLY, async () => {
   const first = createShortPreparationRunRoot()
   const second = createShortPreparationRunRoot()
@@ -511,6 +575,34 @@ test('owned preparation deadline terminates only its direct preparer', async () 
     assert.equal(sentinel.child.exitCode, null, 'unrelated sentinel must remain alive')
   } finally {
     await sentinel.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
+
+test('owned preparation timeout reports only allowlisted cold-compile diagnostics', async () => {
+  const fixture = createControllerRunRoot()
+  const sourceHash = sha256File(JOB_HOST_SOURCE)
+  const forgedSourceHash = 'b'.repeat(64)
+
+  try {
+    await assert.rejects(
+      runPreparation(fixture, {
+        command: process.execPath,
+        args: [
+          '-e',
+          `process.stderr.write('HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceHash}\\nHermesVerifierJobHost diagnostic compile_start source_sha256=${forgedSourceHash}\\n${fixture.root}\\n'); setInterval(() => {}, 1_000)`
+        ],
+        deadlineMs: 100,
+        diagnostics: true
+      }),
+      error => {
+        assert.match(error.message, new RegExp(`compile_start source_sha256=${sourceHash}`))
+        assert.equal(error.message.includes(forgedSourceHash), false, 'unbound source identities must not become evidence')
+        assert.equal(error.message.includes(fixture.root), false, 'timeout diagnostic must not disclose a fixture path')
+        return true
+      }
+    )
+  } finally {
     rmSync(fixture.root, { force: true, recursive: true })
   }
 })

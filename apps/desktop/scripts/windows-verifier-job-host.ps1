@@ -182,9 +182,20 @@ function Get-JobHostAssembly {
 
         $temporaryDll = Join-Path $entry.Directory ("HermesVerifierJobHost.$PID.$([Guid]::NewGuid().ToString('N')).tmp.dll")
         try {
+            if ($diagnosticsEnabled) {
+                # Bind the diagnostic to the exact static source without exposing
+                # its path or contents. A missing end marker is fail-closed evidence
+                # that the real Add-Type boundary did not return.
+                [Console]::Error.WriteLine("HermesVerifierJobHost diagnostic compile_start source_sha256=$($entry.SourceHash)")
+            }
             Invoke-JobHostPhase 'compile' {
                 Add-Type -Path $sourcePath -ReferencedAssemblies 'System.Web.Extensions.dll' -OutputAssembly $temporaryDll -ErrorAction Stop
             } | Out-Null
+            if ($diagnosticsEnabled) {
+                [Console]::Error.WriteLine(
+                    "HermesVerifierJobHost diagnostic compile_end source_sha256=$($entry.SourceHash) output_sha256=$(Get-FileSha256 $temporaryDll)"
+                )
+            }
             Invoke-JobHostPhase 'publish' {
                 Move-Item -LiteralPath $temporaryDll -Destination $entry.DllPath -Force
             } | Out-Null
