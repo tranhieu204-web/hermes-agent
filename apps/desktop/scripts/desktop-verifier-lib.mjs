@@ -1229,7 +1229,16 @@ async function launchWindowsOwnedDesktop(spec, {
   }
 
   if (spawnImpl === nodeSpawn) {
-    await prepareWindowsJobHost(spec, { spawnImpl })
+    // Preparation is a prerequisite of the controller, not an unbounded
+    // second launch phase.  Reserve a small margin so it cannot consume the
+    // full controller-receipt deadline on a cold Windows host.
+    await prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: Math.max(1, Math.min(
+        DEFAULT_WINDOWS_JOB_PREPARE_TIMEOUT_MS,
+        controllerTimeoutMs - 1_000
+      )),
+      spawnImpl
+    })
   }
   ownership.launchAttempted = true
   const nonce = randomUUID()
@@ -1347,12 +1356,15 @@ export async function prepareWindowsJobHost(spec, {
   await new Promise((resolvePrepare, rejectPrepare) => {
     let preparer
     let settled = false
+    let preparationTimedOut = false
+    let teardownTimeout
     const settle = callback => value => {
       if (settled) {
         return
       }
       settled = true
       clearTimeout(timeout)
+      clearTimeout(teardownTimeout)
       callback(value)
     }
     try {
@@ -1384,19 +1396,38 @@ export async function prepareWindowsJobHost(spec, {
       if (settled) {
         return
       }
-      settle(rejectPrepare)(new Error(
-        `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
-      ))
+
+      // Keep the failure scoped to the exact preparer we spawned.  Do not
+      // reject until that owned process has exited, otherwise a timed-out
+      // compiler can retain the cache lock into the next controller attempt.
+      preparationTimedOut = true
       try {
         preparer.kill()
       } catch {
-        // The timeout still fails closed if the preparer has already exited.
+        // The bounded teardown wait below still fails closed if the preparer
+        // has already exited or cannot be signalled.
+      }
+
+      if (!settled) {
+        teardownTimeout = setTimeout(() => {
+          settle(rejectPrepare)(new Error(
+            `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms; ` +
+            'owned preparer did not exit after termination request'
+          ))
+        }, 1_000)
+        teardownTimeout.unref?.()
       }
     }, prepareTimeoutMs)
     timeout.unref?.()
 
     preparer.once('error', settle(rejectPrepare))
     preparer.once('exit', code => {
+      if (preparationTimedOut) {
+        settle(rejectPrepare)(new Error(
+          `Windows Job controller preparation timed out after ${prepareTimeoutMs}ms`
+        ))
+        return
+      }
       if (code === 0) {
         settle(resolvePrepare)()
       } else {

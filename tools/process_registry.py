@@ -143,7 +143,14 @@ class ProcessSession:
 
     def __post_init__(self) -> None:
         if not self.event_stream_id:
-            self.event_stream_id = f"process:{self.id}:{uuid.uuid4().hex}"
+            # A restarted registry reconstructs the same logical process from
+            # its checkpoint.  The stream identity must therefore derive from
+            # producer facts that survive that handoff, rather than from a new
+            # observer-local random UUID.
+            scope = f"hermes-process:{self.id}:{self.started_at!r}"
+            self.event_stream_id = (
+                f"process:{self.id}:{uuid.uuid5(uuid.NAMESPACE_URL, scope).hex}"
+            )
 
 
 class ProcessRegistry:

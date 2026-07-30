@@ -86,6 +86,8 @@ _MAX_DURABLE_PENDING = 1000
 # instead of replaying on every restart forever.
 _MAX_DELIVERY_ATTEMPTS = 8
 _DB_LOCK = threading.Lock()
+_SCHEMA_INITIALIZATION_RETRY_SECONDS = 10.0
+_SCHEMA_INITIALIZATION_RETRY_INTERVAL_SECONDS = 0.025
 
 def _db_path():
     return get_hermes_home() / "state.db"
@@ -95,8 +97,20 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
+    deadline = time.monotonic() + _SCHEMA_INITIALIZATION_RETRY_SECONDS
     try:
-        _initialize_schema(conn)
+        while True:
+            try:
+                _initialize_schema(conn)
+                break
+            except sqlite3.OperationalError as error:
+                # A fresh shared Hermes home can have two processes opening
+                # state.db at once.  WAL activation/DDL needs a writer lock;
+                # wait only for that expected bootstrap race, never swallow a
+                # malformed schema or another operational failure.
+                if "locked" not in str(error).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(_SCHEMA_INITIALIZATION_RETRY_INTERVAL_SECONDS)
     except Exception:
         # A PRAGMA/DDL failure after a successful connect() must not leak the
         # just-opened connection back to the caller.

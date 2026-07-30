@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -85,6 +86,44 @@ test('Windows Job preparation is bounded and terminates only its preparer', asyn
     assert.equal(preparer.killCalls, 1)
     assert.equal(existsSync(spec.paths.root), true)
   } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation timeout waits for its owned preparer and preserves an unrelated sentinel', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], {
+    stdio: 'ignore',
+    windowsHide: true
+  })
+  let preparer
+  let ownedPreparerExited = false
+
+  try {
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 25,
+        spawnImpl: () => {
+          preparer = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], {
+            stdio: 'ignore',
+            windowsHide: true
+          })
+          preparer.once('exit', () => {
+            ownedPreparerExited = true
+          })
+          return preparer
+        }
+      }),
+      /preparation timed out after 25ms/i
+    )
+    assert.ok(preparer)
+    assert.equal(ownedPreparerExited, true, 'owned preparer must exit before timeout rejects')
+    assert.equal(sentinel.exitCode, null, 'unrelated sentinel must remain alive')
+  } finally {
+    if (sentinel.exitCode === null && sentinel.signalCode === null) {
+      sentinel.kill()
+      await waitForExit(sentinel)
+    }
     cleanupUnlaunchedDesktopSpec(spec)
   }
 })

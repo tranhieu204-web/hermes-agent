@@ -287,3 +287,38 @@ cannot strand a retry lease. Regression coverage includes generic-ingress
 rejection, unaccepted reuse, activation failure with retained unknown outbox,
 two-connection identity mutation rejection, stale-fence completion, and
 duplicate/alias/lens rejection.
+
+### STANDARD 1/3 CI-repair decision — exact `a57c898b`
+
+**Scope:** only the two candidate-caused fingerprints from exact CI run
+`30523267994`: bounded Windows Job-host preparation and completion-envelope
+identity/persistence. **Rationale:** 86 of 87 Python failure identities match
+the completed `sakaan/main` run `30518252106`; the aggregate gate and those
+baseline failures are excluded rather than repaired here. **Owner:** one Codex
+writer. **Safety and quality boundary:** no workflow trigger, main, bridge,
+runtime, config, install, restart, or live mutation; preparation remains
+handle-scoped and a corrupt cache is a cold miss, never a usable cache.
+**Acceptance:** a producer envelope is durable before enqueue and stable across
+registry reconstruction; stale/failed persistence never enqueues; the Windows
+cache passes cold, warm, corrupt, concurrent, and timeout coverage while the
+controller receipt budget retains a margin.
+
+Hermes was consulted once through the repo-owned wrapper and timed out without
+a verdict; it will not be retried for this unchanged scope. Claude returned
+**CONDITIONAL** and required a distinct preparation fingerprint, cache
+atomicity, handle-only termination, monotonic fence behavior, and unchanged
+baseline identities. The implementation binds preparation below the controller
+deadline, derives reconstructed process stream identity from durable producer
+facts, and adds isolated cache and enqueue-acknowledgement regression tests.
+
+The Windows lifecycle delta review found and then cleared one teardown gap:
+on preparation timeout the exact directly spawned preparer is now asked to
+exit, and the caller waits for that owned handle's exit before reporting the
+timeout. A bounded fail-closed fallback reports an unexited owned preparer;
+there is no PID scan, process-name kill, or broad process-tree action. A real
+child/sentinel regression proves the owned preparer exits while an unrelated
+same-executable process survives. The async/recovery review separately
+approved a bounded retry for only SQLite's expected schema-bootstrap lock;
+malformed and unrelated database errors still raise. The two-process durable
+capacity admission regression passes. These are current candidate repairs,
+not changes to baseline exclusions or live runtime behavior.

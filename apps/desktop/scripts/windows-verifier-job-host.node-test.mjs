@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { spawnSync as testSpawnSync } from 'node:child_process'
+import { spawn, spawnSync as testSpawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync
@@ -32,8 +33,25 @@ function createControllerRunRoot() {
   return { hermesHome, root, workspace }
 }
 
-function runRealController(fixture, input = '') {
-  const preparation = testSpawnSync(
+function preparationOptions(fixture) {
+  return {
+    cwd: fixture.workspace,
+    encoding: 'utf8',
+    env: {
+      ...verifierLib.stripCredentialEnvironment(process.env),
+      HERMES_HOME: fixture.hermesHome,
+      ...(fixture.localAppData ? { LOCALAPPDATA: fixture.localAppData } : {})
+    },
+    // Match the bounded runtime preparation allowance.  This runs before
+    // the controller receipt deadline, so a cold compiler cannot consume
+    // that separate protocol budget.
+    timeout: 45_000,
+    windowsHide: true
+  }
+}
+
+function runPreparation(fixture) {
+  return testSpawnSync(
     'powershell.exe',
     [
       '-NoLogo',
@@ -45,17 +63,47 @@ function runRealController(fixture, input = '') {
       JOB_HOST_BOOTSTRAP,
       '-Prepare'
     ],
-    {
-      cwd: fixture.workspace,
-      encoding: 'utf8',
-      env: {
-        ...verifierLib.stripCredentialEnvironment(process.env),
-        HERMES_HOME: fixture.hermesHome
-      },
-      timeout: 30_000,
-      windowsHide: true
-    }
+    preparationOptions(fixture)
   )
+}
+
+function runPreparationAsync(fixture) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        JOB_HOST_BOOTSTRAP,
+        '-Prepare'
+      ],
+      { ...preparationOptions(fixture), stdio: 'ignore' }
+    )
+    child.once('error', reject)
+    child.once('exit', code => resolve(code))
+  })
+}
+
+function cacheEntries(fixture) {
+  const root = join(
+    fixture.localAppData,
+    'Hermes',
+    'cache',
+    'desktop-verifier-job-host',
+    'v1'
+  )
+  if (!existsSync(root)) {
+    return []
+  }
+  return readdirSync(root).map(entry => join(root, entry))
+}
+
+function runRealController(fixture, input = '') {
+  const preparation = runPreparation(fixture)
   if (preparation.error || preparation.status !== 0) {
     throw new Error('Windows Job host preparation failed before controller test')
   }
@@ -76,7 +124,8 @@ function runRealController(fixture, input = '') {
       encoding: 'utf8',
       env: {
         ...verifierLib.stripCredentialEnvironment(process.env),
-        HERMES_HOME: fixture.hermesHome
+        HERMES_HOME: fixture.hermesHome,
+        ...(fixture.localAppData ? { LOCALAPPDATA: fixture.localAppData } : {})
       },
       input,
       timeout: 20_000,
@@ -84,6 +133,37 @@ function runRealController(fixture, input = '') {
     }
   )
 }
+
+test('Windows Job host cache cold, warm, corrupt, and concurrent preparation remains bounded', async () => {
+  const fixture = createControllerRunRoot()
+  fixture.localAppData = join(fixture.root, 'local-app-data')
+  mkdirSync(fixture.localAppData)
+
+  try {
+    assert.equal(runPreparation(fixture).status, 0, 'cold preparation')
+    const entries = cacheEntries(fixture)
+    assert.equal(entries.length, 1)
+    const entry = entries[0]
+    const dll = join(entry, 'HermesVerifierJobHost.dll')
+    const manifest = join(entry, 'manifest.json')
+    assert.equal(existsSync(dll), true)
+    assert.equal(existsSync(manifest), true)
+
+    assert.equal(runPreparation(fixture).status, 0, 'warm preparation')
+    writeFileSync(dll, 'corrupt-cache')
+    assert.equal(runPreparation(fixture).status, 0, 'corrupt cache recovery')
+    assert.notEqual(readFileSync(dll, 'utf8'), 'corrupt-cache')
+
+    const exits = await Promise.all([
+      runPreparationAsync(fixture),
+      runPreparationAsync(fixture)
+    ])
+    assert.deepEqual(exits, [0, 0])
+    assert.equal(existsSync(manifest), true)
+  } finally {
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
 
 function realLaunchRecord(fixture, overrides = {}) {
   const environment = verifierLib.stripCredentialEnvironment(process.env)

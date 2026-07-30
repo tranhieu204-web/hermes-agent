@@ -54,11 +54,17 @@ def test_async_completion_persists_producer_stream_and_sequence_before_enqueue()
     }
     result = {"status": "completed", "summary": "done", "api_calls": 1}
 
+    def persist(event, _result):
+        persisted.append(dict(event))
+        # _push_completion_event requires a durable-write acknowledgement
+        # before exposing the envelope to consumers.
+        return True
+
     with (
         patch("tools.process_registry.process_registry", target),
         patch(
             "tools.async_delegation._persist_completion",
-            side_effect=lambda event, _result: persisted.append(dict(event)),
+            side_effect=persist,
         ),
     ):
         _push_completion_event(record, result, "completed")
@@ -72,3 +78,22 @@ def test_async_completion_persists_producer_stream_and_sequence_before_enqueue()
     assert emitted[1]["event_stream_id"] == emitted[0]["event_stream_id"]
     assert emitted[1]["event_sequence"] == emitted[0]["event_sequence"]
     assert persisted == emitted
+
+
+def test_async_completion_never_enqueues_before_durable_acknowledgement():
+    target = SimpleNamespace(completion_queue=queue.Queue())
+    record = {
+        "delegation_id": "deleg_envelope_fence",
+        "session_key": "gateway:owner",
+        "goal": "bounded test",
+        "dispatched_at": 100.0,
+        "completed_at": 101.0,
+    }
+
+    with (
+        patch("tools.process_registry.process_registry", target),
+        patch("tools.async_delegation._persist_completion", return_value=False),
+    ):
+        _push_completion_event(record, {"status": "completed"}, "completed")
+
+    assert target.completion_queue.empty()
