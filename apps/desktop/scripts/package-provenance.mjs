@@ -324,7 +324,8 @@ export function readProvenanceManifest({
   expectedCandidateRoot,
   expectedHead,
   expectedRepoRoot,
-  requiredMarker
+  requiredMarker,
+  executableName = 'Hermes.exe'
 }) {
   requireExactPath(manifestPath, path.join(candidateRoot, MANIFEST_NAME), 'provenance manifest path')
   requireNonemptyFile(manifestPath, MANIFEST_NAME)
@@ -355,7 +356,10 @@ export function readProvenanceManifest({
     throw new Error('provenance manifest files are missing')
   }
 
-  requireManifestFileBinding(candidateRoot, provenance.files.hermesExe, 'Hermes.exe', 'Hermes.exe')
+  if (typeof executableName !== 'string' || !executableName || path.basename(executableName) !== executableName) {
+    throw new Error(`executable name must be one non-empty filename: ${executableName}`)
+  }
+  requireManifestFileBinding(candidateRoot, provenance.files.hermesExe, executableName, executableName)
   requireManifestFileBinding(candidateRoot, provenance.files.appAsar, 'resources/app.asar', 'resources/app.asar')
   requireManifestFileBinding(
     candidateRoot,
@@ -370,7 +374,8 @@ export function readProvenanceManifest({
     expectedCandidateRoot,
     expectedHead,
     expectedRepoRoot,
-    requiredMarker
+    requiredMarker,
+    executableName
   })
   if (JSON.stringify(current.files) !== JSON.stringify(provenance.files)) {
     throw new Error('provenance manifest file bindings do not match the current package')
@@ -397,12 +402,14 @@ function main() {
   const expectedRepoRoot = option('expected-repo-root')
   const requiredMarker = option('required-marker')
   const manifestPath = option('write-manifest')
+  const executableName = option('executable-name') || 'Hermes.exe'
   const provenance = validatePackageProvenance({
     candidateRoot,
     expectedCandidateRoot,
     expectedHead,
     expectedRepoRoot,
-    requiredMarker
+    requiredMarker,
+    executableName
   })
   let manifest = null
   if (manifestPath) {
@@ -413,7 +420,8 @@ function main() {
       expectedCandidateRoot,
       expectedHead,
       expectedRepoRoot,
-      requiredMarker
+      requiredMarker,
+      executableName
     })
     manifest = {
       ...written,

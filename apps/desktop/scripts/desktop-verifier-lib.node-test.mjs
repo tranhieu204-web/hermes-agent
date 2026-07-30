@@ -476,11 +476,13 @@ test('POSIX cleanup terminates the owned parent and grandchild group but not an 
 }, async () => {
   const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-posix-tree-'))
   const grandchildPidFile = join(parent, 'grandchild.pid')
+  const grandchildReadyFile = join(parent, 'grandchild.ready')
   const parentTerminatedFile = join(parent, 'parent-terminated')
   const grandchildTerminatedFile = join(parent, 'grandchild-terminated')
   const grandchildScript = [
     "const fs = require('node:fs')",
     `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(grandchildTerminatedFile)}, 'yes'); process.exit(0) })`,
+    `fs.writeFileSync(${JSON.stringify(grandchildReadyFile)}, 'ready')`,
     'setInterval(() => {}, 1_000)'
   ].join(';')
   const parentScript = [
@@ -498,6 +500,7 @@ test('POSIX cleanup terminates the owned parent and grandchild group but not an 
 
   try {
     await waitForFile(grandchildPidFile)
+    await waitForFile(grandchildReadyFile)
     await tree.cleanup()
     assert.equal(readFileSync(parentTerminatedFile, 'utf8'), 'yes')
     assert.equal(readFileSync(grandchildTerminatedFile, 'utf8'), 'yes')

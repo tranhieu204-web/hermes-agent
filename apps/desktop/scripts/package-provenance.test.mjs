@@ -53,14 +53,15 @@ function manifestPath(current) {
   return path.join(current.candidateRoot, 'provenance-manifest.json')
 }
 
-function readManifest(current, manifest = manifestPath(current)) {
+function readManifest(current, manifest = manifestPath(current), patch = {}) {
   return readProvenanceManifest({
     manifestPath: manifest,
     candidateRoot: current.candidateRoot,
     expectedCandidateRoot: current.candidateRoot,
     expectedHead: HEAD,
     expectedRepoRoot: current.repoRoot,
-    requiredMarker: MARKER
+    requiredMarker: MARKER,
+    ...patch
   })
 }
 
@@ -89,6 +90,19 @@ test('binds the platform-specific Linux executable without weakening root valida
 
   assert.equal(result.files.hermesExe.path, 'Hermes')
   assert.match(result.files.hermesExe.sha256, /^[a-f0-9]{64}$/)
+})
+
+test('writes and reads back a Linux executable manifest binding', () => {
+  const current = fixture()
+  fs.renameSync(
+    path.join(current.candidateRoot, 'Hermes.exe'),
+    path.join(current.candidateRoot, 'Hermes')
+  )
+  const provenance = validate(current, { executableName: 'Hermes' })
+  writeProvenanceManifest(manifestPath(current), provenance)
+
+  const readback = readManifest(current, manifestPath(current), { executableName: 'Hermes' })
+  assert.equal(readback.provenance.files.hermesExe.path, 'Hermes')
 })
 
 test('binds the unpacked renderer artifact satisfying the required marker by path and SHA-256', () => {

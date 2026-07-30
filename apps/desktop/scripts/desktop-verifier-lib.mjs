@@ -1227,6 +1227,9 @@ async function launchWindowsOwnedDesktop(spec, {
     )
   }
 
+  if (spawnImpl === nodeSpawn) {
+    await prepareWindowsJobHost(spec, spawnImpl)
+  }
   ownership.launchAttempted = true
   const nonce = randomUUID()
   let controller
@@ -1330,6 +1333,45 @@ async function launchWindowsOwnedDesktop(spec, {
     }
     throw error
   }
+}
+
+async function prepareWindowsJobHost(spec, spawnImpl) {
+  await new Promise((resolvePrepare, rejectPrepare) => {
+    let preparer
+    try {
+      preparer = spawnImpl(
+        'powershell.exe',
+        [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          WINDOWS_JOB_BOOTSTRAP,
+          '-Prepare'
+        ],
+        {
+          cwd: spec.spawnOptions.cwd,
+          env: spec.env,
+          stdio: ['ignore', 'ignore', 'ignore'],
+          windowsHide: true
+        }
+      )
+    } catch (error) {
+      rejectPrepare(error)
+      return
+    }
+
+    preparer.once('error', rejectPrepare)
+    preparer.once('exit', code => {
+      if (code === 0) {
+        resolvePrepare()
+      } else {
+        rejectPrepare(new Error('Windows Job controller preparation failed'))
+      }
+    })
+  })
 }
 
 async function terminateOwnedProcessGroup({

@@ -33,6 +33,33 @@ function createControllerRunRoot() {
 }
 
 function runRealController(fixture, input = '') {
+  const preparation = testSpawnSync(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      JOB_HOST_BOOTSTRAP,
+      '-Prepare'
+    ],
+    {
+      cwd: fixture.workspace,
+      encoding: 'utf8',
+      env: {
+        ...verifierLib.stripCredentialEnvironment(process.env),
+        HERMES_HOME: fixture.hermesHome
+      },
+      timeout: 30_000,
+      windowsHide: true
+    }
+  )
+  if (preparation.error || preparation.status !== 0) {
+    throw new Error('Windows Job host preparation failed before controller test')
+  }
+
   return testSpawnSync(
     'powershell.exe',
     [
