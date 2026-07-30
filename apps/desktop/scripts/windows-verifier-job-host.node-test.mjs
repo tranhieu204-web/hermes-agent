@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawnSync as testSpawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter, once } from 'node:events'
 import {
@@ -9,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync
 } from 'node:fs'
@@ -26,21 +26,39 @@ const JOB_HOST_BOOTSTRAP = fileURLToPath(
 )
 const WINDOWS_ONLY = { skip: process.platform !== 'win32' }
 const PREPARATION_DEADLINE_MS = 45_000
+const CONTROLLER_DEADLINE_MS = 20_000
+const MAX_CONTROLLER_OUTPUT_BYTES = 1_024
 
 function createControllerRunRoot() {
   const root = mkdtempSync(join(tmpdir(), 'windows-job-controller-run-'))
   const hermesHome = join(root, 'hermes-home')
+  const localAppData = join(root, 'local-app-data')
   const workspace = join(root, 'workspace')
   mkdirSync(hermesHome)
+  mkdirSync(localAppData)
   mkdirSync(workspace)
 
-  return { hermesHome, root, workspace }
+  return { hermesHome, localAppData, root, workspace }
 }
 
-function createShortPreparationRunRoot() {
+function portableTestTempBaseDir(environment = process.env) {
+  const runnerTemp = environment.RUNNER_TEMP
+  if (typeof runnerTemp === 'string' && runnerTemp.trim() !== '') {
+    try {
+      if (statSync(runnerTemp).isDirectory()) {
+        return runnerTemp
+      }
+    } catch {
+      // Fall through to Node's existing temporary directory.
+    }
+  }
+  return tmpdir()
+}
+
+function createShortPreparationRunRoot(environment) {
   // Add-Type uses the full temporary DLL path in generated compiler metadata.
-  // Keep only the cache-isolation fixture under a short, test-owned root.
-  const root = mkdtempSync('C:\\tmp\\wjh-')
+  // Keep only the cache-isolation fixture under a short, existing test-owned root.
+  const root = mkdtempSync(join(portableTestTempBaseDir(environment), 'wjh-'))
   const hermesHome = join(root, 'h')
   const workspace = join(root, 'w')
   mkdirSync(hermesHome)
@@ -113,6 +131,17 @@ async function runPreparation(fixture, {
   } finally {
     await preparation.cleanup()
   }
+}
+
+function boundedOutput(text) {
+  return text.slice(0, MAX_CONTROLLER_OUTPUT_BYTES)
+}
+
+function preparationFailure(status, stderr) {
+  const lockTimeout = /Windows verifier Job host bootstrap failed: verifier Job host cache lock timed out after \d+ ms/.test(stderr)
+  return lockTimeout
+    ? `status=${status}; cache-lock-timeout`
+    : `status=${status}; preparation-failed`
 }
 
 function phaseElapsed(stderr, phase) {
@@ -216,15 +245,18 @@ function cacheEntries(fixture) {
 }
 
 async function runRealController(fixture, input = '') {
-  const preparation = await runPreparation(fixture)
+  // Deep Mode 2 reconciliation for 52efb8e: prewarm is test-only and has a
+  // 45-second owned-child deadline. Runtime controller preparation remains 29s.
+  fixture.preparation ??= runPreparation(fixture)
+  const preparation = await fixture.preparation
   if (preparation.status !== 0 || preparation.stderr !== '') {
     throw new Error(
       `Windows Job host preparation failed before controller test: ` +
-      `status=${preparation.status}; stderr=${preparation.stderr}`
+      preparationFailure(preparation.status, preparation.stderr)
     )
   }
 
-  return testSpawnSync(
+  const controller = await launchDirectOwnedVerifierTestProcess(
     'powershell.exe',
     [
       '-NoLogo',
@@ -236,24 +268,58 @@ async function runRealController(fixture, input = '') {
       JOB_HOST_BOOTSTRAP
     ],
     {
-      cwd: fixture.workspace,
-      encoding: 'utf8',
-      env: {
-        ...verifierLib.stripCredentialEnvironment(process.env),
-        HERMES_HOME: fixture.hermesHome,
-        ...(fixture.localAppData ? { LOCALAPPDATA: fixture.localAppData } : {})
-      },
-      input,
-      timeout: 20_000,
-      windowsHide: true
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: {
+        cwd: fixture.workspace,
+        env: {
+          ...verifierLib.stripCredentialEnvironment(process.env),
+          HERMES_HOME: fixture.hermesHome,
+          LOCALAPPDATA: fixture.localAppData
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true
+      }
     }
   )
+  let stdout = ''
+  let stderr = ''
+  controller.child.stdout.setEncoding('utf8')
+  controller.child.stderr.setEncoding('utf8')
+  controller.child.stdout.on('data', chunk => { stdout = boundedOutput(stdout + chunk) })
+  controller.child.stderr.on('data', chunk => { stderr = boundedOutput(stderr + chunk) })
+  const stdoutEnded = once(controller.child.stdout, 'end')
+  const stderrEnded = once(controller.child.stderr, 'end')
+
+  try {
+    controller.child.stdin.end(input)
+    const status = await controller.waitForExit(CONTROLLER_DEADLINE_MS)
+    await Promise.all([stdoutEnded, stderrEnded])
+    return { status, stderr, stdout }
+  } finally {
+    await controller.cleanup()
+  }
 }
+
+test('Windows Job test fixtures use a portable existing temporary root and isolated local app data', () => {
+  assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: tmpdir() }), tmpdir())
+  assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: join(tmpdir(), 'missing-runner-temp') }), tmpdir())
+  const runnerTempFile = join(tmpdir(), `runner-temp-file-${randomUUID()}`)
+  writeFileSync(runnerTempFile, 'not-a-directory')
+  const fixture = createControllerRunRoot()
+  try {
+    assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: runnerTempFile }), tmpdir())
+    assert.equal(existsSync(fixture.localAppData), true)
+    assert.equal(fixture.localAppData.startsWith(fixture.root), true)
+    const forbiddenDriveRoot = ['C:', 'tmp'].join('\\')
+    assert.equal(readFileSync(fileURLToPath(import.meta.url), 'utf8').includes(forbiddenDriveRoot), false)
+  } finally {
+    rmSync(runnerTempFile, { force: true })
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
+})
 
 test('Windows Job host cache cold, warm, corrupt, and concurrent preparation remains bounded', WINDOWS_ONLY, async () => {
   const fixture = createControllerRunRoot()
-  fixture.localAppData = join(fixture.root, 'local-app-data')
-  mkdirSync(fixture.localAppData)
   const sentinel = await launchDirectOwnedVerifierTestProcess(
     process.execPath,
     ['-e', 'setInterval(() => {}, 1_000)'],
@@ -388,7 +454,7 @@ test('Windows Job host lock contention fails diagnostically before the productio
       executable: process.execPath,
       baseEnv: { ...process.env, LOCALAPPDATA: fixture.localAppData },
       platform: 'win32',
-      tempBaseDir: 'C:\\tmp'
+      tempBaseDir: fixture.root
     })
 
     const startedAt = Date.now()
