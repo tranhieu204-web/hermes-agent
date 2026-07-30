@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
@@ -15,6 +14,7 @@ import { EventEmitter, once } from 'node:events'
 import { test } from 'node:test'
 
 import * as verifierLib from './desktop-verifier-lib.mjs'
+import { launchDirectOwnedVerifierTestProcess } from './owned-verifier-test-process.mjs'
 import {
   assertDesktopExecutableProvenance,
   cleanupUnlaunchedDesktopSpec,
@@ -90,13 +90,27 @@ test('Windows Job preparation is bounded and terminates only its preparer', asyn
   }
 })
 
+test('owned verifier test helper rejects a missing executable without an unhandled child error', async () => {
+  await assert.rejects(
+    launchDirectOwnedVerifierTestProcess('missing-verifier-test-child.exe', [], {
+      spawnOptions: { stdio: 'ignore', windowsHide: true }
+    }),
+    /missing-verifier-test-child\.exe/i
+  )
+})
+
 test('Windows Job preparation timeout waits for its owned preparer and preserves an unrelated sentinel', async () => {
   const spec = createDesktopLaunchSpec({ executable: process.execPath })
-  const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], {
-    stdio: 'ignore',
-    windowsHide: true
-  })
-  let preparer
+  const sentinel = await launchDirectOwnedVerifierTestProcess(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1_000)'],
+    { spawnOptions: { stdio: 'ignore', windowsHide: true } }
+  )
+  const preparer = await launchDirectOwnedVerifierTestProcess(
+    process.execPath,
+    ['-e', 'setInterval(() => {}, 1_000)'],
+    { spawnOptions: { stdio: 'ignore', windowsHide: true } }
+  )
   let ownedPreparerExited = false
 
   try {
@@ -104,26 +118,19 @@ test('Windows Job preparation timeout waits for its owned preparer and preserves
       verifierLib.prepareWindowsJobHost(spec, {
         prepareTimeoutMs: 25,
         spawnImpl: () => {
-          preparer = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], {
-            stdio: 'ignore',
-            windowsHide: true
-          })
-          preparer.once('exit', () => {
+          preparer.child.once('exit', () => {
             ownedPreparerExited = true
           })
-          return preparer
+          return preparer.child
         }
       }),
       /preparation timed out after 25ms/i
     )
-    assert.ok(preparer)
     assert.equal(ownedPreparerExited, true, 'owned preparer must exit before timeout rejects')
-    assert.equal(sentinel.exitCode, null, 'unrelated sentinel must remain alive')
+    assert.equal(sentinel.child.exitCode, null, 'unrelated sentinel must remain alive')
   } finally {
-    if (sentinel.exitCode === null && sentinel.signalCode === null) {
-      sentinel.kill()
-      await waitForExit(sentinel)
-    }
+    await preparer.cleanup()
+    await sentinel.cleanup()
     cleanupUnlaunchedDesktopSpec(spec)
   }
 })

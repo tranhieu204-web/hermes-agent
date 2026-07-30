@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import {
@@ -12,6 +13,7 @@ import {
 } from './check-verifier-process-safety.mjs'
 
 const JOB_HOST_PATH = 'apps/desktop/scripts/windows-verifier-job-host.cs'
+const REPO_ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const REQUIRED_JOB_APIS = [
   'CreateJobObjectW',
   'SetInformationJobObject',
@@ -330,6 +332,18 @@ const ALLOW_CASES = [
     source: [
       'async function launchWindowsOwnedDesktop(spec, { spawnImpl }) {',
       "  return spawnImpl('powershell.exe', ['-File', 'windows-verifier-job-host.ps1'])",
+      '}'
+    ].join('\n')
+  },
+  {
+    name: 'canonical direct-child verifier test helper',
+    path: 'apps/desktop/scripts/owned-verifier-test-process.mjs',
+    source: [
+      "import { spawn as nodeSpawn } from 'node:child_process'",
+      'export async function launchDirectOwnedVerifierTestProcess(command, args) {',
+      '  const child = nodeSpawn(command, args)',
+      '  child.kill()',
+      '  return child',
       '}'
     ].join('\n')
   },
@@ -824,6 +838,29 @@ test('repository scan uses tracked plus nonignored untracked Git enumeration', (
   } finally {
     rmSync(repoRoot, { recursive: true, force: true })
   }
+})
+
+test('canonical verifier test harnesses contain no raw process API calls', () => {
+  const result = scanRepository(REPO_ROOT)
+  const rawProcessViolations = result.violations.filter(violation =>
+    violation.reason === 'verifier harness uses raw process API outside canonical owned infrastructure'
+  )
+
+  assert.deepEqual(rawProcessViolations, [], formatViolations(rawProcessViolations))
+})
+
+test('rejects raw process APIs outside the canonical direct-child verifier test helper', () => {
+  const source = [
+    "import { spawn as nodeSpawn } from 'node:child_process'",
+    'export async function launchUnownedVerifierTestProcess(command, args) {',
+    '  return nodeSpawn(command, args)',
+    '}'
+  ].join('\n')
+
+  assert.notDeepEqual(
+    scanText(source, 'apps/desktop/scripts/owned-verifier-test-process.mjs'),
+    []
+  )
 })
 
 test('source-reading policy rejects test code that opens or copies production source text', () => {

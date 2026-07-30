@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn, spawnSync as testSpawnSync } from 'node:child_process'
+import { spawnSync as testSpawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import {
@@ -18,6 +18,7 @@ import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 
 import * as verifierLib from './desktop-verifier-lib.mjs'
+import { launchDirectOwnedVerifierTestProcess } from './owned-verifier-test-process.mjs'
 
 const JOB_HOST_BOOTSTRAP = fileURLToPath(
   new URL('./windows-verifier-job-host.ps1', import.meta.url)
@@ -67,25 +68,30 @@ function runPreparation(fixture) {
   )
 }
 
-function runPreparationAsync(fixture) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'powershell.exe',
-      [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-File',
-        JOB_HOST_BOOTSTRAP,
-        '-Prepare'
-      ],
-      { ...preparationOptions(fixture), stdio: 'ignore' }
-    )
-    child.once('error', reject)
-    child.once('exit', code => resolve(code))
-  })
+async function runPreparationAsync(fixture) {
+  const preparation = await launchDirectOwnedVerifierTestProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      JOB_HOST_BOOTSTRAP,
+      '-Prepare'
+    ],
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: { ...preparationOptions(fixture), stdio: 'ignore' }
+    }
+  )
+
+  try {
+    return await preparation.waitForExit(45_000)
+  } finally {
+    await preparation.cleanup()
+  }
 }
 
 function cacheEntries(fixture) {

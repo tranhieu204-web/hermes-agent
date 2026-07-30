@@ -8,6 +8,7 @@ const REPO_ROOT = resolve(SCRIPT_DIR, '..', '..', '..')
 const SELF_PATH = 'apps/desktop/scripts/check-verifier-process-safety.mjs'
 const SELF_TEST_PATH = 'apps/desktop/scripts/check-verifier-process-safety.node-test.mjs'
 const VERIFIER_LIB_PATH = 'apps/desktop/scripts/desktop-verifier-lib.mjs'
+const OWNED_VERIFIER_TEST_PROCESS_PATH = 'apps/desktop/scripts/owned-verifier-test-process.mjs'
 const WINDOWS_JOB_HOST_PATH = 'apps/desktop/scripts/windows-verifier-job-host.cs'
 const WINDOWS_JOB_HOST_TEST_PATH = 'apps/desktop/scripts/windows-verifier-job-host.node-test.mjs'
 const FIXTURE_PREFIX = 'apps/desktop/scripts/fixtures/process-safety/'
@@ -115,6 +116,13 @@ const RAW_PROCESS_API_ALLOWLIST = {
       launchOwnedDesktop: new Set(['spawnImpl']),
       // POSIX cleanup signals only the negative PGID created for this launch.
       terminateOwnedProcessGroup: new Set(['killImpl'])
+    }
+  },
+  [OWNED_VERIFIER_TEST_PROCESS_PATH]: {
+    // Test-only direct-child lifecycle helper. It has no descendant authority.
+    imports: new Set(['child_process']),
+    functions: {
+      launchDirectOwnedVerifierTestProcess: new Set(['nodeSpawn', 'member.kill'])
     }
   },
   [WINDOWS_JOB_HOST_TEST_PATH]: {
