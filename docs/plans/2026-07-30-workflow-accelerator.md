@@ -52,6 +52,9 @@ scheduled tasks, or shared branches.
 ## Explicit deferrals
 
 - No generic terminal or gateway interception.
+- No global stale-monitor or force-finalization policy for ordinary async
+  delegation. Receipt-bound review timeboxing remains scoped to its own
+  durable receipt and is the only terminal control in this candidate.
 - No direct-shell production integration without a designated caller.
 - No provider capacity policy, secrets, live health response reuse, service
   mutation, or stale process/PID recovery.
