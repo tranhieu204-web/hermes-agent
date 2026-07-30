@@ -1130,7 +1130,14 @@ class GatewayKanbanWatchersMixin:
                 # Pre-dispatch branch completion gate: do not start new tasks if >= 3 unmerged branches exist
                 try:
                     import subprocess
-                    res = subprocess.run(["git", "branch", "--no-merged", "main"], capture_output=True, text=True, timeout=5)
+                    res = subprocess.run(
+                        ["git", "branch", "--no-merged", "main"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=5,
+                    )
                     if res.returncode == 0:
                         unmerged_count = len([line for line in res.stdout.splitlines() if line.strip() and not line.strip().startswith("*")])
                         if unmerged_count >= 3:

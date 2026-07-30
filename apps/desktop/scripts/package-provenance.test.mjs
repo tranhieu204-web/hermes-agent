@@ -78,6 +78,19 @@ test('accepts one clean matched candidate pair from the intended worktree', () =
   assert.match(result.files.appAsar.sha256, /^[a-f0-9]{64}$/)
 })
 
+test('binds the platform-specific Linux executable without weakening root validation', () => {
+  const current = fixture()
+  fs.renameSync(
+    path.join(current.candidateRoot, 'Hermes.exe'),
+    path.join(current.candidateRoot, 'Hermes')
+  )
+
+  const result = validate(current, { executableName: 'Hermes' })
+
+  assert.equal(result.files.hermesExe.path, 'Hermes')
+  assert.match(result.files.hermesExe.sha256, /^[a-f0-9]{64}$/)
+})
+
 test('binds the unpacked renderer artifact satisfying the required marker by path and SHA-256', () => {
   const current = fixture()
   const rendererBytes = `renderer:${MARKER}`

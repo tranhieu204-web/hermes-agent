@@ -165,17 +165,21 @@ export function validatePackageProvenance({
   expectedCandidateRoot,
   expectedHead,
   expectedRepoRoot,
-  requiredMarker
+  requiredMarker,
+  executableName = 'Hermes.exe'
 }) {
   requireExactPath(candidateRoot, expectedCandidateRoot, 'candidate root')
   if (!SHA40.test(String(expectedHead || '')) || /^0{40}$/.test(expectedHead)) {
     throw new Error(`expected HEAD must be one non-fallback 40-character commit: ${expectedHead}`)
   }
 
-  const hermesExe = path.join(candidateRoot, 'Hermes.exe')
+  if (typeof executableName !== 'string' || !executableName || path.basename(executableName) !== executableName) {
+    throw new Error(`executable name must be one non-empty filename: ${executableName}`)
+  }
+  const hermesExe = path.join(candidateRoot, executableName)
   const appAsar = path.join(candidateRoot, 'resources', 'app.asar')
   const stampPath = path.join(candidateRoot, 'resources', 'install-stamp.json')
-  requireNonemptyFile(hermesExe, 'Hermes.exe')
+  requireNonemptyFile(hermesExe, executableName)
   requireNonemptyFile(appAsar, 'resources/app.asar')
   requireNonemptyFile(stampPath, 'resources/install-stamp.json')
 
@@ -207,7 +211,7 @@ export function validatePackageProvenance({
     requiredMarker,
     files: {
       hermesExe: {
-        path: 'Hermes.exe',
+        path: executableName,
         sha256: sha256File(hermesExe)
       },
       appAsar: {

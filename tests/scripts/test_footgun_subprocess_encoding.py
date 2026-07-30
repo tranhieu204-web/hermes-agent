@@ -204,6 +204,12 @@ class TestHelpers:
 
 
 class TestFullRepoScan:
+    def test_gateway_branch_completion_gate_uses_explicit_utf8(self, linter):
+        """The full-repository Windows gate must not regress at this call site."""
+        fg = _find_footgun(linter, RULE_NAME)
+        gateway_path = REPO_ROOT / "gateway" / "kanban_watchers.py"
+        assert linter.scan_file(gateway_path, [fg]) == []
+
     def test_new_rule_find_only_known_violations(self, linter, monkeypatch):
         """Scan the full repo and assert the new rule's matches are exactly
         the set of call sites that PR #60741 fixes (or zero, if PR #60741

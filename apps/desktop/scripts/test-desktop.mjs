@@ -369,7 +369,8 @@ function validateBundle() {
       expectedCandidateRoot: APP.appPath,
       expectedHead: currentHead(),
       expectedRepoRoot: REPO_ROOT,
-      requiredMarker: REQUIRED_ANTIGRAVITY_MARKER
+      requiredMarker: REQUIRED_ANTIGRAVITY_MARKER,
+      executableName: path.basename(APP.binary)
     })
   } catch (error) {
     die(`Package provenance validation failed: ${error.message}`)
