@@ -159,6 +159,83 @@ async function runPreparation(fixture, {
   }
 }
 
+async function startObservedPreparation(fixture, {
+  command,
+  args,
+  diagnostics = true
+} = {}) {
+  const [defaultCommand, defaultArgs] = preparationArgs()
+  const preparation = await launchDirectOwnedVerifierTestProcess(
+    command ?? defaultCommand,
+    args ?? defaultArgs,
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: {
+        ...preparationOptions(fixture, { diagnostics }),
+        stdio: ['ignore', 'ignore', 'pipe']
+      }
+    }
+  )
+  let stderr = ''
+  preparation.child.stderr.setEncoding('utf8')
+  preparation.child.stderr.on('data', chunk => {
+    stderr += chunk
+  })
+
+  return {
+    child: preparation.child,
+    cleanup: () => preparation.cleanup(),
+    readStderr: () => stderr,
+    waitForExit: deadlineMs => preparation.waitForExit(deadlineMs)
+  }
+}
+
+function sourceBoundPhaseEvent(stderr, eventName, phase, sourceHash) {
+  const expression = new RegExp(
+    `(?:^|\\r?\\n)(HermesVerifierJobHost diagnostic event=${eventName} phase=${phase} source_sha256=${sourceHash} sequence=\\d+)(?=\\r?$|\\r?\\n)`
+  )
+  return stderr.match(expression)?.[1] ?? null
+}
+
+async function waitForSourceBoundPhaseEvent(preparation, eventName, phase, sourceHash, deadlineMs) {
+  const existing = sourceBoundPhaseEvent(preparation.readStderr(), eventName, phase, sourceHash)
+  if (existing) {
+    return existing
+  }
+  if (preparation.child.exitCode !== null || preparation.child.signalCode !== null) {
+    throw new Error(`BOOTSTRAP_READY_UNOBSERVED:${phase}`)
+  }
+
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    let timeout
+    const finish = callback => value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      preparation.child.stderr.removeListener('data', onData)
+      preparation.child.removeListener('exit', onExit)
+      callback(value)
+    }
+    const onData = () => {
+      const marker = sourceBoundPhaseEvent(preparation.readStderr(), eventName, phase, sourceHash)
+      if (marker) finish(resolve)(marker)
+    }
+    const onExit = () => finish(reject)(new Error(`BOOTSTRAP_READY_UNOBSERVED:${phase}`))
+    timeout = setTimeout(
+      () => finish(reject)(new Error(`BOOTSTRAP_READY_UNOBSERVED:${phase}`)),
+      deadlineMs
+    )
+    preparation.child.stderr.on('data', onData)
+    preparation.child.once('exit', onExit)
+    if (preparation.child.exitCode !== null || preparation.child.signalCode !== null) {
+      onExit()
+      return
+    }
+    onData()
+  })
+}
+
 function productionPreparationSpec(fixture) {
   const spec = verifierLib.createDesktopLaunchSpec({
     executable: process.execPath,
@@ -231,7 +308,7 @@ function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
 
 function controllerPreparationDiagnosticSummary(stderr, expectedSourceSha256) {
   const phaseEvents = [...stderr.matchAll(new RegExp(
-    `HermesVerifierJobHost diagnostic event=phase_(?:begin|end) phase=(?:cache_entry|cache_directory|lock_wait|validation|compile|publish) source_sha256=${expectedSourceSha256} sequence=\\d+`,
+    `HermesVerifierJobHost diagnostic event=phase_(?:begin|end) phase=(?:cache_entry|cache_directory|lock_wait|mutex_wait|publication_lock_wait|validation|compile|publish) source_sha256=${expectedSourceSha256} sequence=\\d+`,
     'g'
   ))].map(match => match[0])
   const compileEvents = [
@@ -664,16 +741,18 @@ test('Windows Job host cache lock is root-scoped, canonical, and diagnostic with
       for (const phase of ['lock_wait', 'validation']) {
         assert.ok(phaseCount(stderr, phase) >= 1, `expected ${phase} timing`)
       }
-      assert.match(
-        stderr,
-        new RegExp(`event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`),
-        'a successful preparation must enter the source-bound lock wait phase'
-      )
-      assert.match(
-        stderr,
-        new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`),
-        'a successful preparation must leave the source-bound lock wait phase'
-      )
+      for (const phase of ['lock_wait', 'mutex_wait', 'publication_lock_wait']) {
+        assert.match(
+          stderr,
+          new RegExp(`event=phase_begin phase=${phase} source_sha256=${sourceHash} sequence=\\d+`),
+          `a successful preparation must enter the source-bound ${phase} phase`
+        )
+        assert.match(
+          stderr,
+          new RegExp(`event=phase_end phase=${phase} source_sha256=${sourceHash} sequence=\\d+`),
+          `a successful preparation must leave the source-bound ${phase} phase`
+        )
+      }
       assert.equal(stderr.includes(forbiddenRoot), false, 'diagnostics must not disclose a cache root')
     }
   } finally {
@@ -683,12 +762,12 @@ test('Windows Job host cache lock is root-scoped, canonical, and diagnostic with
   }
 })
 
-test('Windows Job host reports a source-bound incomplete lock wait on an owned mutex stall', WINDOWS_ONLY, async () => {
+test('Windows Job host observes an owned mutex stall only after the bootstrap mutex marker', WINDOWS_ONLY, async () => {
   const fixture = createShortPreparationRunRoot()
   fixture.localAppData = join(fixture.root, 'owned-lock-stall-cache')
   mkdirSync(fixture.localAppData)
   let holder
-  let productionSpec
+  let preparation
 
   try {
     const warm = await runPreparation(fixture, { diagnostics: true })
@@ -696,37 +775,96 @@ test('Windows Job host reports a source-bound incomplete lock wait on an owned m
     const [entry] = cacheEntries(fixture)
     writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
     holder = await holdNamedMutex(mutexIdentity(warm.stderr))
-    productionSpec = verifierLib.createDesktopLaunchSpec({
-      executable: process.execPath,
-      baseEnv: { ...process.env, LOCALAPPDATA: fixture.localAppData },
-      platform: 'win32',
-      tempBaseDir: fixture.root
-    })
-    productionSpec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
-    productionSpec.spawnOptions.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
-
-    await assert.rejects(
-      verifierLib.prepareWindowsJobHost(productionSpec, { prepareTimeoutMs: 2_000 }),
-      error => {
-        const sourceHash = sha256File(JOB_HOST_SOURCE)
-        assert.match(
-          error.message,
-          new RegExp(`event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`)
-        )
-        assert.doesNotMatch(
-          error.message,
-          new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`)
-        )
-        assert.equal(preparationClassification(error.message), 'PHASE_BEGIN_NO_END:lock_wait')
-        assert.equal(error.message.includes(fixture.root), false, 'lock-stall evidence must not disclose the fixture root')
-        return true
-      }
+    preparation = await startObservedPreparation(fixture)
+    const sourceHash = sha256File(JOB_HOST_SOURCE)
+    await waitForSourceBoundPhaseEvent(
+      preparation,
+      'phase_begin',
+      'mutex_wait',
+      sourceHash,
+      PREPARATION_DEADLINE_MS
     )
+    await assert.rejects(preparation.waitForExit(2_000), /did not exit within 2000ms/i)
+    const evidence = preparation.readStderr()
+    assert.ok(sourceBoundPhaseEvent(evidence, 'phase_begin', 'mutex_wait', sourceHash))
+    assert.equal(sourceBoundPhaseEvent(evidence, 'phase_end', 'mutex_wait', sourceHash), null)
+    assert.equal(
+      verifierLib.classifyWindowsJobHostPreparationDiagnostics(evidence),
+      'PHASE_BEGIN_NO_END:mutex_wait'
+    )
+    assert.equal(evidence.includes(fixture.root), false, 'lock-stall evidence must not disclose the fixture root')
   } finally {
-    if (productionSpec) {
-      verifierLib.cleanupUnlaunchedDesktopSpec(productionSpec)
-    }
+    await preparation?.cleanup()
     await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
+test('Windows Job host observes a held publication lock only after bootstrap readiness', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'publication-lock-stall-cache')
+  mkdirSync(fixture.localAppData)
+  let holder
+  let preparation
+
+  try {
+    const warm = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(warm.status, 0)
+    const [entry] = cacheEntries(fixture)
+    writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    await abandonNamedMutex(mutexIdentity(warm.stderr))
+    holder = await holdPublicationLock(join(entry, 'publication.lock'))
+    preparation = await startObservedPreparation(fixture)
+    const sourceHash = sha256File(JOB_HOST_SOURCE)
+    await waitForSourceBoundPhaseEvent(
+      preparation,
+      'phase_begin',
+      'publication_lock_wait',
+      sourceHash,
+      PREPARATION_DEADLINE_MS
+    )
+    await assert.rejects(preparation.waitForExit(2_000), /did not exit within 2000ms/i)
+    const evidence = preparation.readStderr()
+    assert.ok(sourceBoundPhaseEvent(evidence, 'phase_begin', 'mutex_wait', sourceHash))
+    assert.ok(sourceBoundPhaseEvent(evidence, 'phase_end', 'mutex_wait', sourceHash))
+    assert.ok(sourceBoundPhaseEvent(evidence, 'phase_begin', 'publication_lock_wait', sourceHash))
+    assert.equal(sourceBoundPhaseEvent(evidence, 'phase_end', 'publication_lock_wait', sourceHash), null)
+    assert.equal(
+      verifierLib.classifyWindowsJobHostPreparationDiagnostics(evidence),
+      'PHASE_BEGIN_NO_END:publication_lock_wait'
+    )
+    assert.equal(evidence.includes(fixture.root), false, 'publication-lock evidence must not disclose the fixture root')
+  } finally {
+    await preparation?.cleanup()
+    await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
+test('Windows Job owned-preparer handshake classifies a missing bootstrap marker without treating it as lock evidence', async () => {
+  const fixture = createShortPreparationRunRoot()
+  let preparation
+
+  try {
+    preparation = await startObservedPreparation(fixture, {
+      command: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      diagnostics: false
+    })
+    await preparation.waitForExit(1_000)
+    await assert.rejects(
+      waitForSourceBoundPhaseEvent(
+        preparation,
+        'phase_begin',
+        'mutex_wait',
+        sha256File(JOB_HOST_SOURCE),
+        1_000
+      ),
+      /BOOTSTRAP_READY_UNOBSERVED:mutex_wait/
+    )
+    assert.equal(preparation.readStderr(), '', 'the startup classification must not require raw diagnostic output')
+  } finally {
+    await preparation?.cleanup()
     rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
   }
 })
@@ -864,6 +1002,20 @@ test('Windows Job preparation diagnostics classify direct-child, pipe, phase, an
   )
   assert.equal(
     verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} event=phase_begin phase=mutex_wait source_sha256=${sourceHash} sequence=1`
+    ),
+    'PHASE_BEGIN_NO_END:mutex_wait'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} event=phase_begin phase=mutex_wait source_sha256=${sourceHash} sequence=1\n` +
+      `${fixedPrefix} event=phase_end phase=mutex_wait source_sha256=${sourceHash} sequence=2\n` +
+      `${fixedPrefix} event=phase_begin phase=publication_lock_wait source_sha256=${sourceHash} sequence=3`
+    ),
+    'PHASE_BEGIN_NO_END:publication_lock_wait'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
       `${fixedPrefix} compile_start source_sha256=${sourceHash}\n${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
     ),
     'ADD_TYPE_COMPILE_STALL'
@@ -893,8 +1045,11 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
   const summary = controllerPreparationDiagnosticSummary(
     [
       `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=7${pathBearingSuffix}`,
-      `HermesVerifierJobHost diagnostic event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=8`,
-      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=9${pathBearingSuffix}`
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=mutex_wait source_sha256=${sourceHash} sequence=8`,
+      `HermesVerifierJobHost diagnostic event=phase_end phase=mutex_wait source_sha256=${sourceHash} sequence=9`,
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=publication_lock_wait source_sha256=${sourceHash} sequence=10`,
+      `HermesVerifierJobHost diagnostic event=phase_end phase=publication_lock_wait source_sha256=${sourceHash} sequence=11`,
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=12${pathBearingSuffix}`
     ].join('\n'),
     sourceHash
   )
@@ -905,7 +1060,19 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
   )
   assert.match(
     summary,
-    new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=8`)
+    new RegExp(`event=phase_begin phase=mutex_wait source_sha256=${sourceHash} sequence=8`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=phase_end phase=mutex_wait source_sha256=${sourceHash} sequence=9`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=phase_begin phase=publication_lock_wait source_sha256=${sourceHash} sequence=10`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=phase_end phase=publication_lock_wait source_sha256=${sourceHash} sequence=11`)
   )
   assert.equal(summary.includes(pathBearingSuffix), false, 'marker summaries must exclude path-bearing suffixes')
   assert.equal(summary.includes(forgedSourceHash), false, 'marker summaries must reject forged source identities')

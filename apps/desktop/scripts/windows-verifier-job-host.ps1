@@ -205,28 +205,43 @@ function Get-JobHostAssembly {
     $publicationLock = $null
     try {
         $lockStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        # This brackets the existing mutex/publication-lock acquisition only
+        # when diagnostic mode is explicitly enabled. If the owned preparer
+        # is terminated while waiting, the missing end event is fail-closed
+        # evidence of that exact boundary without changing lock semantics.
+        Write-JobHostDiagnosticEvent 'phase_begin' 'lock_wait'
+        Write-JobHostDiagnosticEvent 'phase_begin' 'mutex_wait'
         try {
-            # This brackets the existing mutex/publication-lock acquisition only
-            # when diagnostic mode is explicitly enabled. If the owned preparer
-            # is terminated while waiting, the missing end event is fail-closed
-            # evidence of that exact boundary without changing lock semantics.
-            Write-JobHostDiagnosticEvent 'phase_begin' 'lock_wait'
             $ownsMutex = $mutex.WaitOne($mutexAcquireTimeoutMs)
         }
         catch [System.Threading.AbandonedMutexException] {
             $ownsMutex = $true
         }
+        finally {
+            # This is strictly observational. It closes after the existing
+            # WaitOne/abandoned-mutex handling and before publication-lock
+            # acquisition, so it distinguishes the two blocking boundaries.
+            Write-JobHostDiagnosticEvent 'phase_end' 'mutex_wait'
+        }
         try {
             if (-not $ownsMutex) {
                 throw "verifier Job host cache lock timed out after $mutexAcquireTimeoutMs ms"
             }
-            $publicationLock = Open-JobHostPublicationLock $entry $lockStopwatch
+            Write-JobHostDiagnosticEvent 'phase_begin' 'publication_lock_wait'
+            try {
+                $publicationLock = Open-JobHostPublicationLock $entry $lockStopwatch
+            }
+            finally {
+                # Preserve acquisition semantics; this records only that the
+                # existing publication-lock operation returned or unwound.
+                Write-JobHostDiagnosticEvent 'phase_end' 'publication_lock_wait'
+            }
         }
         finally {
             $lockStopwatch.Stop()
             Write-JobHostDiagnostic 'lock_wait' $lockStopwatch.ElapsedMilliseconds
-            # Keep the phase-end ordering aligned with Invoke-JobHostPhase: emit
-            # it after the measured operation returns, before resource release.
+            # Keep the aggregate marker for compatibility. It brackets both
+            # sub-boundaries and remains non-authoritative for causality.
             Write-JobHostDiagnosticEvent 'phase_end' 'lock_wait'
         }
 

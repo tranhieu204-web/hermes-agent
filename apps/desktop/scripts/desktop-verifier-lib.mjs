@@ -30,6 +30,8 @@ const WINDOWS_JOB_DIAGNOSTIC_PHASES = new Set([
   'cache_directory',
   'validation',
   'lock_wait',
+  'mutex_wait',
+  'publication_lock_wait',
   'compile',
   'publish'
 ])
@@ -58,7 +60,14 @@ export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   if (compileStarted && !compileFinished) {
     return 'ADD_TYPE_COMPILE_STALL'
   }
-  const incompletePhase = [...begun].find(phase => WINDOWS_JOB_DIAGNOSTIC_PHASES.has(phase) && !ended.has(phase))
+  const incompletePhases = [...begun].filter(
+    phase => WINDOWS_JOB_DIAGNOSTIC_PHASES.has(phase) && !ended.has(phase)
+  )
+  // `lock_wait` remains an aggregate compatibility marker. Prefer a missing
+  // nested boundary when both are open so diagnostics identify the actual
+  // mutex or publication-lock operation without changing preparation logic.
+  const incompletePhase = ['publication_lock_wait', 'mutex_wait', 'lock_wait']
+    .find(phase => incompletePhases.includes(phase)) ?? incompletePhases[0]
   if (incompletePhase) {
     return `PHASE_BEGIN_NO_END:${incompletePhase}`
   }
@@ -1539,7 +1548,7 @@ export async function prepareWindowsJobHost(spec, {
           .filter(match => match[1] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
           .filter(match => match[1] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
           .filter(match => match[3] === expectedSourceSha256)
       ].map(match => match[0])
       const summary = [...new Set([...markers, ...diagnosticLifecycle])].join('; ')
