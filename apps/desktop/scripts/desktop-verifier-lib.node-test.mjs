@@ -36,6 +36,150 @@ function createNodeProcessSpec(options = {}) {
   })
 }
 
+function createIsolatedWindowsNodeProcessSpec(options = {}) {
+  const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-windows-'))
+  const localAppData = join(parent, 'local-app-data')
+  const temporaryDirectory = join(parent, 'temporary')
+  mkdirSync(localAppData)
+  mkdirSync(temporaryDirectory)
+
+  return {
+    parent,
+    spec: createNodeProcessSpec({
+      ...options,
+      baseEnv: {
+        ...process.env,
+        ...options.baseEnv,
+        LOCALAPPDATA: localAppData,
+        TEMP: temporaryDirectory,
+        TMP: temporaryDirectory
+      },
+      tempBaseDir: parent
+    })
+  }
+}
+
+let nextSyntheticWindowsTargetPid = 420_000
+
+function createSyntheticWindowsController(spec, { launchError } = {}) {
+  const controller = new EventEmitter()
+  const stdin = new PassThrough()
+  const stdout = new PassThrough()
+  const stderr = new PassThrough()
+  const targetPid = nextSyntheticWindowsTargetPid++
+  let buffered = ''
+  let exited = false
+
+  Object.assign(controller, {
+    pid: nextSyntheticWindowsTargetPid++,
+    exitCode: null,
+    signalCode: null,
+    stdin,
+    stdout,
+    stderr
+  })
+
+  const finish = code => {
+    if (exited) {
+      return
+    }
+    exited = true
+    controller.exitCode = code
+    stdin.end()
+    stdout.end()
+    stderr.end()
+    controller.emit('exit', code, null)
+  }
+
+  controller.kill = () => {
+    finish(0)
+    return true
+  }
+  stdin.setEncoding('utf8')
+  stdin.on('data', chunk => {
+    buffered += chunk
+    while (buffered.includes('\n')) {
+      const newline = buffered.indexOf('\n')
+      const record = JSON.parse(buffered.slice(0, newline))
+      buffered = buffered.slice(newline + 1)
+
+      if (record.type === 'launch') {
+        const payload = launchError
+          ? {
+              v: verifierLib.WINDOWS_JOB_PROTOCOL_VERSION,
+              type: 'error',
+              nonce: record.nonce,
+              stage: 'controller',
+              message: launchError
+            }
+          : {
+              v: verifierLib.WINDOWS_JOB_PROTOCOL_VERSION,
+              type: 'launched',
+              nonce: record.nonce,
+              target: {
+                pid: targetPid,
+                creationTime100ns: '1',
+                executable: spec.executable
+              }
+            }
+        stdout.write(`${JSON.stringify(payload)}\n`)
+      } else if (record.type === 'cleanup') {
+        stdout.write(`${JSON.stringify({
+          v: verifierLib.WINDOWS_JOB_PROTOCOL_VERSION,
+          type: 'cleaned',
+          nonce: record.nonce,
+          activeProcessesBeforeTerminate: 1,
+          activeProcesses: 0,
+          totalProcesses: 1,
+          terminationCount: 1,
+          cleanupRequestCount: 1
+        })}\n`)
+      }
+    }
+  })
+  stdin.once('finish', () => setImmediate(() => finish(0)))
+  queueMicrotask(() => controller.emit('spawn'))
+  return controller
+}
+
+function launchGenericOwnedDesktop(spec, options = {}) {
+  if (process.platform !== 'win32') {
+    return launchOwnedDesktop(spec)
+  }
+  const controller = createSyntheticWindowsController(spec, options)
+  return launchOwnedDesktop(spec, { spawnImpl: () => controller })
+}
+
+function runGenericDesktopSmoke(spec, options = {}) {
+  if (process.platform !== 'win32') {
+    return runDesktopSmoke(spec, options)
+  }
+  const controller = createSyntheticWindowsController(spec, options)
+  return runDesktopSmoke(spec, { ...options, spawnImpl: () => controller })
+}
+
+test('Windows Node process fixtures isolate cache and compiler temporary state', () => {
+  const first = createIsolatedWindowsNodeProcessSpec()
+  const second = createIsolatedWindowsNodeProcessSpec()
+
+  try {
+    for (const fixture of [first, second]) {
+      assert.equal(fixture.spec.env.LOCALAPPDATA.startsWith(fixture.parent), true)
+      assert.equal(fixture.spec.env.TEMP.startsWith(fixture.parent), true)
+      assert.equal(fixture.spec.env.TMP.startsWith(fixture.parent), true)
+      assert.equal(fixture.spec.env.HERMES_HOME.startsWith(fixture.parent), true)
+      assert.equal(fixture.spec.paths.root.startsWith(fixture.parent), true)
+    }
+    assert.notEqual(first.spec.env.LOCALAPPDATA, second.spec.env.LOCALAPPDATA)
+    assert.notEqual(first.spec.env.TEMP, second.spec.env.TEMP)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(first.spec)
+    cleanupUnlaunchedDesktopSpec(second.spec)
+    rmSync(first.parent, { recursive: true, force: true })
+    rmSync(second.parent, { recursive: true, force: true })
+  }
+})
+
 const WINDOWS_JOB_SOURCE = fileURLToPath(
   new URL('./windows-verifier-job-host.cs', import.meta.url)
 )
@@ -822,23 +966,12 @@ test('executable provenance rejects a symlink escape from a worktree build root'
 
 test('owned cleanup is idempotent and removes only its generated root', async () => {
   const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-parent-'))
+  const spec = createNodeProcessSpec({ tempBaseDir: parent })
   const sentinel = join(parent, 'unrelated-sentinel.txt')
-  const localAppData = join(parent, 'local-app-data')
   writeFileSync(sentinel, 'keep', 'utf8')
-  mkdirSync(localAppData)
-  const spec = createNodeProcessSpec({
-    baseEnv: { ...process.env, LOCALAPPDATA: localAppData },
-    tempBaseDir: parent
-  })
 
   try {
-    if (process.platform === 'win32') {
-      // This generic cleanup test is not a production controller test. Prewarm
-      // its isolated cache with the existing owned 45-second helper, then leave
-      // launchOwnedDesktop's own 29-second controller contract untouched.
-      await verifierLib.prepareWindowsJobHost(spec, { prepareTimeoutMs: 45_000 })
-    }
-    const owned = await launchOwnedDesktop(spec)
+    const owned = await launchGenericOwnedDesktop(spec)
 
     await owned.cleanup()
     await owned.cleanup()
@@ -850,23 +983,18 @@ test('owned cleanup is idempotent and removes only its generated root', async ()
   }
 })
 
-test('missing Windows target retains its generated root and reports the exact path', {
+test('synthetic Windows controller error retains its generated root and reports the exact path', {
   skip: process.platform !== 'win32'
 }, async () => {
-  const spec = createDesktopLaunchSpec({
-    executable: join(tmpdir(), `missing-hermes-${Date.now()}.exe`),
-    platform: 'win32'
+  const spec = createNodeProcessSpec({
+    executable: join(tmpdir(), `missing-hermes-${Date.now()}.exe`)
   })
 
   try {
     await assert.rejects(
-      runDesktopSmoke(spec, {
-        platform: 'win32',
-        portTimeoutMs: 50,
-        pollIntervalMs: 10
-      }),
+      launchGenericOwnedDesktop(spec, { launchError: 'synthetic missing target' }),
       error => {
-        assert.match(error.message, /launch|cleanup/i)
+        assert.match(error.message, /controller|protocol|launch|cleanup/i)
         assert.match(error.message, new RegExp(spec.paths.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
         return true
       }
@@ -896,7 +1024,7 @@ test('readiness failure cleans up the owned child and generated root', async () 
   let child
 
   await assert.rejects(
-    runDesktopSmoke(spec, {
+    runGenericDesktopSmoke(spec, {
       onOwned: owned => {
         child = owned.child
       },
@@ -917,7 +1045,7 @@ test('successful smoke reads its owned port file, observes a CDP page, prints re
   let child
   let observedReceipt = null
 
-  const receipt = await runDesktopSmoke(spec, {
+  const receipt = await runGenericDesktopSmoke(spec, {
     onOwned: owned => {
       child = owned.child
     },
@@ -950,9 +1078,9 @@ test('successful smoke reads its owned port file, observes a CDP page, prints re
 
 test('owned-PID cleanup leaves an unrelated sentinel process alive', async () => {
   const sentinelSpec = createNodeProcessSpec()
-  const sentinel = await launchOwnedDesktop(sentinelSpec)
+  const sentinel = await launchGenericOwnedDesktop(sentinelSpec)
   const spec = createNodeProcessSpec()
-  const owned = await launchOwnedDesktop(spec)
+  const owned = await launchGenericOwnedDesktop(spec)
 
   try {
     await owned.cleanup()
