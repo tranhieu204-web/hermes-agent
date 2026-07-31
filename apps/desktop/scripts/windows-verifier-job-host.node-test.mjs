@@ -240,14 +240,15 @@ async function waitForSourceBoundPhaseEvent(preparation, eventName, phase, sourc
 
 function sourceBoundLockOpenEvents(stderr, sourceHash) {
   const expression = new RegExp(
-    `HermesVerifierJobHost diagnostic event=(lock_open_enter|lock_open_outcome) attempt_seq=(\\d+)(?: outcome=(acquired|io_exception_retry|acquired_after_retry))? source_sha256=${sourceHash} sequence=(\\d+)`,
+    `HermesVerifierJobHost diagnostic event=(lock_open_enter|lock_open_outcome|lock_retry_budget) attempt_seq=(\\d+)(?: outcome=(acquired|io_exception_retry|acquired_after_retry)| state=(remaining|exhausted))? source_sha256=${sourceHash} sequence=(\\d+)`,
     'g'
   )
   return [...stderr.matchAll(expression)].map(match => ({
     attemptSequence: Number.parseInt(match[2], 10),
     event: match[1],
     outcome: match[3] ?? null,
-    sequence: Number.parseInt(match[4], 10),
+    state: match[4] ?? null,
+    sequence: Number.parseInt(match[5], 10),
     text: match[0]
   }))
 }
@@ -360,29 +361,10 @@ function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
 }
 
 function controllerPreparationDiagnosticSummary(stderr, expectedSourceSha256) {
-  const phaseEvents = [...stderr.matchAll(new RegExp(
-    `HermesVerifierJobHost diagnostic event=phase_(?:begin|end) phase=(?:cache_entry|cache_directory|lock_wait|mutex_wait|publication_lock_wait|validation|compile|publish) source_sha256=${expectedSourceSha256} sequence=\\d+`,
-    'g'
-  ))].map(match => match[0])
-  const compileEvents = [
-    ...stderr.matchAll(new RegExp(
-      `HermesVerifierJobHost diagnostic compile_(?:start|end) source_sha256=${expectedSourceSha256}(?: output_sha256=[a-f0-9]{64})?`,
-      'g'
-    ))
-  ].map(match => match[0])
-
-  const lockOpenEvents = [
-    ...stderr.matchAll(new RegExp(
-      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${expectedSourceSha256} sequence=\\d+`,
-      'g'
-    )),
-    ...stderr.matchAll(new RegExp(
-      `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${expectedSourceSha256} sequence=\\d+`,
-      'g'
-    ))
-  ].map(match => match[0])
-
-  return [...new Set([...phaseEvents, ...compileEvents, ...lockOpenEvents])].join('; ')
+  const exactMarker = new RegExp(
+    `^(?:HermesVerifierJobHost diagnostic compile_(?:start|end) source_sha256=${expectedSourceSha256}(?: output_sha256=[a-f0-9]{64})?|HermesVerifierJobHost diagnostic event=phase_(?:begin|end) phase=(?:cache_entry|cache_directory|lock_wait|mutex_wait|publication_lock_wait|validation|compile|publish) source_sha256=${expectedSourceSha256} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${expectedSourceSha256} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${expectedSourceSha256} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=\\d+ state=(?:remaining|exhausted) source_sha256=${expectedSourceSha256} sequence=\\d+)$`
+  )
+  return stderr.split(/\r?\n/).filter(line => exactMarker.test(line)).join('; ')
 }
 
 function assertBoundControllerPreparationDiagnostics(result, fixture) {
@@ -402,7 +384,7 @@ function assertBoundControllerPreparationDiagnostics(result, fixture) {
 
 function preparationClassification(evidence) {
   const match = evidence.match(
-    /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|ADD_TYPE_COMPILE_EXCEPTION|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
+    /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|LOCK_RETRY_BUDGET_EXHAUSTED|LOCK_OPEN_NONRETURNING|OUTER_DEADLINE_BEFORE_LOCK_BUDGET|ADD_TYPE_COMPILE_EXCEPTION|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
   )
   assert.ok(match, 'expected one safe diagnostic classification')
   return match[1]
@@ -999,6 +981,41 @@ test('Windows Job host records native publication-lock retries with a release-si
   }
 })
 
+test('Windows Job host proves the existing publication-lock budget before the owned harness deadline', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'publication-lock-budget-cache')
+  mkdirSync(fixture.localAppData)
+  let holder
+  let preparation
+
+  try {
+    const warm = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(warm.status, 0)
+    const [entry] = cacheEntries(fixture)
+    writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    holder = await holdReleaseSignaledPublicationLock(join(entry, 'publication.lock'))
+    preparation = await startObservedPreparation(fixture)
+    const sourceHash = sha256File(JOB_HOST_SOURCE)
+    const exhausted = await waitForSourceBoundLockOpenEvent(
+      preparation,
+      sourceHash,
+      event => event.event === 'lock_retry_budget' && event.state === 'exhausted',
+      PREPARATION_DEADLINE_MS
+    )
+    const status = await preparation.waitForExit(PREPARATION_DEADLINE_MS)
+    assert.equal(status, 1, 'existing retry exhaustion must keep its original nonzero failure')
+    const stderr = preparation.readStderr()
+    assert.match(stderr, /cache lock timed out after 20000 ms/)
+    assert.equal(stderr.includes(fixture.root), false, 'retry-budget evidence must not disclose the fixture root')
+    assert.ok(exhausted.sequence > 0)
+    assert.equal(await holder.release(), 0, 'holder release is explicit and not timer based')
+  } finally {
+    await preparation?.cleanup()
+    await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
 test('Windows Job owned-preparer handshake classifies a missing bootstrap marker without treating it as lock evidence', async () => {
   const fixture = createShortPreparationRunRoot()
   let preparation
@@ -1239,16 +1256,17 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
   const pathBearingSuffix = ' C:\\fixture\\must-not-escape'
   const summary = controllerPreparationDiagnosticSummary(
     [
-      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=7${pathBearingSuffix}`,
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=7`,
       `HermesVerifierJobHost diagnostic event=phase_begin phase=mutex_wait source_sha256=${sourceHash} sequence=8`,
       `HermesVerifierJobHost diagnostic event=phase_end phase=mutex_wait source_sha256=${sourceHash} sequence=9`,
       `HermesVerifierJobHost diagnostic event=phase_begin phase=publication_lock_wait source_sha256=${sourceHash} sequence=10`,
       `HermesVerifierJobHost diagnostic event=phase_end phase=publication_lock_wait source_sha256=${sourceHash} sequence=11`,
-      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=12${pathBearingSuffix}`,
+      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=12`,
       `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=1 outcome=io_exception_retry source_sha256=${sourceHash} sequence=13`,
       `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=2 source_sha256=${sourceHash} sequence=14`,
       `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=2 outcome=acquired_after_retry source_sha256=${sourceHash} sequence=15`,
-      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=12${pathBearingSuffix}`
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=12${pathBearingSuffix}`,
+      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=3 source_sha256=${sourceHash} sequence=16${pathBearingSuffix}`
     ].join('\n'),
     sourceHash
   )

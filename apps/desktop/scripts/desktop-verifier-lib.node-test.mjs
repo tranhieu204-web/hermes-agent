@@ -224,7 +224,7 @@ test('Windows Job preparation retains only valid source-bound native lock-open d
   try {
     queueMicrotask(() => {
       preparer.stderr.end(
-        `${validEnter}${pathBearingSuffix}\n` +
+        `${validEnter}\n` +
         `${validRetry}\n` +
         `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=2 source_sha256=${forgedSourceSha256} sequence=9${pathBearingSuffix}\n` +
         `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=2 outcome=untrusted source_sha256=${sourceSha256} sequence=10${pathBearingSuffix}\n` +
@@ -242,6 +242,35 @@ test('Windows Job preparation retains only valid source-bound native lock-open d
     assert.equal(diagnostics.includes(pathBearingSuffix), false)
     assert.equal(diagnostics.includes(forgedSourceSha256), false)
     assert.equal(diagnostics.includes('outcome=untrusted'), false)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation fails closed on malformed source-bound lock evidence', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=1 state=bogus source_sha256=${sourceSha256} sequence=7\n`
+      )
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.match(diagnostics, /lifecycle=invalid_sequence/)
+    assert.match(diagnostics, /classification=DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP/)
+    assert.equal(diagnostics.includes('state=bogus'), false)
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }
@@ -362,6 +391,50 @@ test('Windows Job preparation rejects malformed Add-Type exception markers', asy
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }
+})
+
+test('Windows Job preparation preserves ordered source-bound lock budget evidence', () => {
+  const sourceSha256 = windowsJobSourceSha256()
+  const prefix = 'HermesVerifierJobHost diagnostic'
+  const lifecycle = `${prefix} lifecycle=deadline elapsed_ms=29000; ${prefix} lifecycle=termination_request result=1 elapsed_ms=29000; ${prefix} lifecycle=stderr_end elapsed_ms=29001; ${prefix} lifecycle=exit code=-1 elapsed_ms=29020`
+  const retry = `${prefix} event=lock_open_enter attempt_seq=1 source_sha256=${sourceSha256} sequence=7; ${prefix} event=lock_open_outcome attempt_seq=1 outcome=io_exception_retry source_sha256=${sourceSha256} sequence=8`
+
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${retry}; ${prefix} event=lock_retry_budget attempt_seq=1 state=exhausted source_sha256=${sourceSha256} sequence=9; ${lifecycle}`
+    ),
+    'LOCK_RETRY_BUDGET_EXHAUSTED'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${retry}; ${prefix} event=lock_retry_budget attempt_seq=1 state=remaining source_sha256=${sourceSha256} sequence=9; ${lifecycle}`
+    ),
+    'OUTER_DEADLINE_BEFORE_LOCK_BUDGET'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${prefix} event=lock_open_enter attempt_seq=1 source_sha256=${sourceSha256} sequence=7; ${lifecycle}`
+    ),
+    'LOCK_OPEN_NONRETURNING'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${retry}; ${prefix} event=lock_retry_budget attempt_seq=1 state=remaining source_sha256=${sourceSha256} sequence=8; ${lifecycle}`
+    ),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${retry}; ${prefix} event=lock_retry_budget attempt_seq=1 state=bogus source_sha256=${sourceSha256} sequence=9; ${lifecycle}`
+    ),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${retry}; ${prefix} event=lock_open_outcome attempt_seq=1 source_sha256=${sourceSha256} sequence=9; ${lifecycle}`
+    ),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  )
 })
 
 test('Windows Job preparation exposes only the recognized cache-lock failure class', async () => {

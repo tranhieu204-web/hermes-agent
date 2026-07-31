@@ -40,11 +40,33 @@ const WINDOWS_MAX_UINT32 = 0xFFFFFFFF
 const WINDOWS_MAX_UINT64 = 18_446_744_073_709_551_615n
 const WINDOWS_JOB_ERROR_STAGES = new Set(['cleanup', 'controller', 'protocol'])
 
+function parseSourceBoundLockEvent(line) {
+  const enter = /^HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=(\d+) source_sha256=[a-f0-9]{64} sequence=(\d+)$/.exec(line)
+  if (enter) {
+    return { event: 'lock_open_enter', attempt: Number(enter[1]), sequence: Number(enter[2]) }
+  }
+  const outcome = /^HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=(\d+) outcome=(acquired|io_exception_retry|acquired_after_retry) source_sha256=[a-f0-9]{64} sequence=(\d+)$/.exec(line)
+  if (outcome) {
+    return { event: 'lock_open_outcome', attempt: Number(outcome[1]), outcome: outcome[2], sequence: Number(outcome[3]) }
+  }
+  const budget = /^HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=(\d+) state=(remaining|exhausted) source_sha256=[a-f0-9]{64} sequence=(\d+)$/.exec(line)
+  if (budget) {
+    return { event: 'lock_retry_budget', attempt: Number(budget[1]), state: budget[2], sequence: Number(budget[3]) }
+  }
+  return null
+}
+
+function resemblesSourceBoundLockEvent(line) {
+  return /^HermesVerifierJobHost diagnostic event=lock_(?:open_enter|open_outcome|retry_budget)\b/.test(line) &&
+    /\bsource_sha256=[a-f0-9]{64}(?:\s|$)/.test(line)
+}
+
 export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   if (typeof summary !== 'string') {
     return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
   }
 
+  const diagnosticEntries = summary.split(/(?:\r?\n|;\s*)/)
   const lifecycle = new Set(
     [...summary.matchAll(/HermesVerifierJobHost diagnostic lifecycle=([a-z_]+)(?: [a-z_]+=-?\d+)?(?: elapsed_ms=\d+)?/g)]
       .map(match => match[1])
@@ -56,7 +78,42 @@ export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   const ended = new Set(phases.filter(match => match[1] === 'phase_end').map(match => match[2]))
   const compileStarted = /HermesVerifierJobHost diagnostic compile_start source_sha256=[a-f0-9]{64}/.test(summary)
   const compileFinished = /HermesVerifierJobHost diagnostic compile_end source_sha256=[a-f0-9]{64} output_sha256=[a-f0-9]{64}/.test(summary)
-  const diagnosticEntries = summary.split(/(?:\r?\n|;\s*)/)
+  const lockEvents = []
+  let previousSequence = 0
+  let invalidLockSequence = false
+  for (const entry of diagnosticEntries) {
+    const event = parseSourceBoundLockEvent(entry)
+    if (!event) {
+      if (resemblesSourceBoundLockEvent(entry)) {
+        invalidLockSequence = true
+      }
+      continue
+    }
+    const { sequence, attempt } = event
+    if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(attempt) || sequence <= previousSequence) {
+      invalidLockSequence = true
+      continue
+    }
+    previousSequence = sequence
+    lockEvents.push(event)
+  }
+  const hasOwnedDeadline = lifecycle.has('deadline') && lifecycle.has('termination_request') && lifecycle.has('exit')
+  if (invalidLockSequence || lifecycle.has('invalid_sequence')) {
+    return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
+  }
+  if (hasOwnedDeadline) {
+    const exhausted = lockEvents.find(event => event.event === 'lock_retry_budget' && event.state === 'exhausted')
+    if (exhausted) {
+      return 'LOCK_RETRY_BUDGET_EXHAUSTED'
+    }
+    const lastLockEvent = lockEvents.at(-1)
+    if (lastLockEvent?.event === 'lock_open_enter') {
+      return 'LOCK_OPEN_NONRETURNING'
+    }
+    if (lastLockEvent?.event === 'lock_retry_budget' && lastLockEvent.state === 'remaining') {
+      return 'OUTER_DEADLINE_BEFORE_LOCK_BUDGET'
+    }
+  }
   const compileException = diagnosticEntries.some(entry =>
     /^HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=[a-f0-9]{64}$/.test(entry)
   )
@@ -1548,23 +1605,37 @@ export async function prepareWindowsJobHost(spec, {
         return ''
       }
 
-      const markers = [
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic precompile_failure source_sha256=([a-f0-9]{64}) class=(cache_root_unavailable)/g)]
-          .filter(match => match[1] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_start source_sha256=([a-f0-9]{64})/g)]
-          .filter(match => match[1] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/^HermesVerifierJobHost diagnostic compile_outcome outcome=(exception) source_sha256=([a-f0-9]{64})\r?$/gm)]
-          .filter(match => match[2] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
-          .filter(match => match[1] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
-          .filter(match => match[3] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=(\d+) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
-          .filter(match => match[2] === expectedSourceSha256),
-        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=(\d+) outcome=(acquired|io_exception_retry|acquired_after_retry) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
-          .filter(match => match[3] === expectedSourceSha256)
-      ].map(match => match[0])
-      const summary = [...new Set([...markers, ...diagnosticLifecycle])].join('; ')
+      const sourcePattern = '[a-f0-9]{64}'
+      const exactMarker = new RegExp(
+        `^(?:HermesVerifierJobHost diagnostic precompile_failure source_sha256=${sourcePattern} class=cache_root_unavailable|HermesVerifierJobHost diagnostic compile_start source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_end source_sha256=${sourcePattern} output_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic event=(?:phase_begin|phase_end) phase=(?:cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=\\d+ state=(?:remaining|exhausted) source_sha256=${sourcePattern} sequence=\\d+)$`
+      )
+      const markers = []
+      let previousSequence = 0
+      let invalidSequence = false
+      for (const line of preparerStderr.split(/\r?\n/)) {
+        const sourceMatch = /source_sha256=([a-f0-9]{64})/.exec(line)
+        const isExpectedLockEvent = sourceMatch?.[1] === expectedSourceSha256 && resemblesSourceBoundLockEvent(line)
+        const parsedLockEvent = isExpectedLockEvent ? parseSourceBoundLockEvent(line) : null
+        if (isExpectedLockEvent && !parsedLockEvent) {
+          invalidSequence = true
+          continue
+        }
+        if (!sourceMatch || sourceMatch[1] !== expectedSourceSha256 ||
+            (!parsedLockEvent && !exactMarker.test(line))) {
+          continue
+        }
+        const sequenceMatch = / sequence=(\d+)$/.exec(line)
+        if (sequenceMatch) {
+          const sequence = Number(sequenceMatch[1])
+          if (!Number.isSafeInteger(sequence) || sequence <= previousSequence) {
+            invalidSequence = true
+            continue
+          }
+          previousSequence = sequence
+        }
+        markers.push(line)
+      }
+      const summary = [...markers, ...diagnosticLifecycle, ...(invalidSequence ? ['HermesVerifierJobHost diagnostic lifecycle=invalid_sequence'] : [])].join('; ')
       return summary === ''
         ? ''
         : `${summary}; HermesVerifierJobHost diagnostic classification=${classifyWindowsJobHostPreparationDiagnostics(summary)}`

@@ -76,6 +76,11 @@ function Write-JobHostLockOpenDiagnostic([string]$eventName, [int]$attemptSequen
                 "HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=$attemptSequence source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
             )
         }
+        elseif ($eventName -eq 'lock_retry_budget') {
+            [Console]::Error.WriteLine(
+                "HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=$attemptSequence state=$outcome source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
+            )
+        }
         else {
             [Console]::Error.WriteLine(
                 "HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=$attemptSequence outcome=$outcome source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
@@ -180,6 +185,11 @@ function Open-JobHostPublicationLock($entry, $budgetStopwatch) {
         catch [System.IO.IOException] {
             Write-JobHostLockOpenDiagnostic 'lock_open_outcome' $attemptSequence 'io_exception_retry'
             $remainingMs = $mutexAcquireTimeoutMs - [int]$budgetStopwatch.ElapsedMilliseconds
+            # A fixed state records only the existing control-flow branch after
+            # FileStream has already returned. It deliberately omits elapsed time,
+            # paths, handles, exceptions, and process identity.
+            $budgetState = if ($remainingMs -le 0) { 'exhausted' } else { 'remaining' }
+            Write-JobHostLockOpenDiagnostic 'lock_retry_budget' $attemptSequence $budgetState
             if ($remainingMs -le 0) {
                 throw "verifier Job host cache lock timed out after $mutexAcquireTimeoutMs ms"
             }
