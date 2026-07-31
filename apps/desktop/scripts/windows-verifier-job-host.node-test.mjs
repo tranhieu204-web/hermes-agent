@@ -236,6 +236,55 @@ async function waitForSourceBoundPhaseEvent(preparation, eventName, phase, sourc
   })
 }
 
+function sourceBoundLockOpenEvents(stderr, sourceHash) {
+  const expression = new RegExp(
+    `HermesVerifierJobHost diagnostic event=(lock_open_enter|lock_open_outcome) attempt_seq=(\\d+)(?: outcome=(acquired|io_exception_retry|acquired_after_retry))? source_sha256=${sourceHash} sequence=(\\d+)`,
+    'g'
+  )
+  return [...stderr.matchAll(expression)].map(match => ({
+    attemptSequence: Number.parseInt(match[2], 10),
+    event: match[1],
+    outcome: match[3] ?? null,
+    sequence: Number.parseInt(match[4], 10),
+    text: match[0]
+  }))
+}
+
+async function waitForSourceBoundLockOpenEvent(preparation, sourceHash, predicate, deadlineMs) {
+  const find = () => sourceBoundLockOpenEvents(preparation.readStderr(), sourceHash).find(predicate)
+  const existing = find()
+  if (existing) return existing
+  if (preparation.child.exitCode !== null || preparation.child.signalCode !== null) {
+    throw new Error('LOCK_OPEN_EVENT_UNOBSERVED')
+  }
+
+  return await new Promise((resolve, reject) => {
+    let settled = false
+    let timeout
+    const finish = callback => value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      preparation.child.stderr.removeListener('data', onData)
+      preparation.child.removeListener('exit', onExit)
+      callback(value)
+    }
+    const onData = () => {
+      const event = find()
+      if (event) finish(resolve)(event)
+    }
+    const onExit = () => finish(reject)(new Error('LOCK_OPEN_EVENT_UNOBSERVED'))
+    timeout = setTimeout(() => finish(reject)(new Error('LOCK_OPEN_EVENT_UNOBSERVED')), deadlineMs)
+    preparation.child.stderr.on('data', onData)
+    preparation.child.once('exit', onExit)
+    if (preparation.child.exitCode !== null || preparation.child.signalCode !== null) {
+      onExit()
+      return
+    }
+    onData()
+  })
+}
+
 function productionPreparationSpec(fixture) {
   const spec = verifierLib.createDesktopLaunchSpec({
     executable: process.execPath,
@@ -318,7 +367,18 @@ function controllerPreparationDiagnosticSummary(stderr, expectedSourceSha256) {
     ))
   ].map(match => match[0])
 
-  return [...new Set([...phaseEvents, ...compileEvents])].join('; ')
+  const lockOpenEvents = [
+    ...stderr.matchAll(new RegExp(
+      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${expectedSourceSha256} sequence=\\d+`,
+      'g'
+    )),
+    ...stderr.matchAll(new RegExp(
+      `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${expectedSourceSha256} sequence=\\d+`,
+      'g'
+    ))
+  ].map(match => match[0])
+
+  return [...new Set([...phaseEvents, ...compileEvents, ...lockOpenEvents])].join('; ')
 }
 
 function assertBoundControllerPreparationDiagnostics(result, fixture) {
@@ -434,6 +494,35 @@ async function holdPublicationLock(lockPath) {
   const [chunk] = await once(holder.child.stdout, 'data')
   assert.match(String(chunk), /READY/)
   return holder
+}
+
+async function holdReleaseSignaledPublicationLock(lockPath) {
+  const escapedLockPath = lockPath.replaceAll("'", "''")
+  const holder = await launchDirectOwnedVerifierTestProcess(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$lock = [System.IO.File]::Open('${escapedLockPath}', [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); try { [Console]::Out.WriteLine('READY'); [Console]::Out.Flush(); [void][Console]::In.ReadLine() } finally { $lock.Dispose() }`
+    ],
+    {
+      shutdownTimeoutMs: 1_000,
+      spawnOptions: { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
+    }
+  )
+  holder.child.stdout.setEncoding('utf8')
+  const [chunk] = await once(holder.child.stdout, 'data')
+  assert.match(String(chunk), /READY/)
+  return {
+    ...holder,
+    release: async () => {
+      holder.child.stdin.write('RELEASE\n')
+      holder.child.stdin.end()
+      return await holder.waitForExit(5_000)
+    }
+  }
 }
 
 function cacheEntries(fixture) {
@@ -753,6 +842,15 @@ test('Windows Job host cache lock is root-scoped, canonical, and diagnostic with
           `a successful preparation must leave the source-bound ${phase} phase`
         )
       }
+      const lockOpenEvents = sourceBoundLockOpenEvents(stderr, sourceHash)
+      assert.ok(
+        lockOpenEvents.some(event => event.event === 'lock_open_enter' && event.attemptSequence === 1),
+        'every physical alias preparation must record its first native publication-lock open attempt'
+      )
+      assert.ok(
+        lockOpenEvents.some(event => event.event === 'lock_open_outcome' && ['acquired', 'acquired_after_retry'].includes(event.outcome)),
+        'physical aliases must retain a source-bound native publication-lock acquisition outcome'
+      )
       assert.equal(stderr.includes(forbiddenRoot), false, 'diagnostics must not disclose a cache root')
     }
   } finally {
@@ -834,6 +932,57 @@ test('Windows Job host observes a held publication lock only after bootstrap rea
       'PHASE_BEGIN_NO_END:publication_lock_wait'
     )
     assert.equal(evidence.includes(fixture.root), false, 'publication-lock evidence must not disclose the fixture root')
+  } finally {
+    await preparation?.cleanup()
+    await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
+})
+
+test('Windows Job host records native publication-lock retries with a release-signaled owned holder', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'publication-lock-release-cache')
+  mkdirSync(fixture.localAppData)
+  let holder
+  let preparation
+
+  try {
+    const warm = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(warm.status, 0)
+    const [entry] = cacheEntries(fixture)
+    writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    await abandonNamedMutex(mutexIdentity(warm.stderr))
+    holder = await holdReleaseSignaledPublicationLock(join(entry, 'publication.lock'))
+    preparation = await startObservedPreparation(fixture)
+    const sourceHash = sha256File(JOB_HOST_SOURCE)
+    const firstEnter = await waitForSourceBoundLockOpenEvent(
+      preparation,
+      sourceHash,
+      event => event.event === 'lock_open_enter' && event.attemptSequence === 1,
+      PREPARATION_DEADLINE_MS
+    )
+    const retry = await waitForSourceBoundLockOpenEvent(
+      preparation,
+      sourceHash,
+      event => event.event === 'lock_open_outcome' && event.attemptSequence === 1 && event.outcome === 'io_exception_retry',
+      PREPARATION_DEADLINE_MS
+    )
+    assert.ok(retry.sequence > firstEnter.sequence)
+    assert.equal(await holder.release(), 0)
+    const completed = await preparation.waitForExit(PREPARATION_DEADLINE_MS)
+    assert.equal(completed, 0)
+
+    const events = sourceBoundLockOpenEvents(preparation.readStderr(), sourceHash)
+    const acquiredAfterRetry = events.find(event => event.event === 'lock_open_outcome' && event.outcome === 'acquired_after_retry')
+    assert.ok(acquiredAfterRetry, 'release must allow one retried native publication-lock open to acquire')
+    assert.ok(acquiredAfterRetry.attemptSequence > retry.attemptSequence)
+    assert.ok(acquiredAfterRetry.sequence > retry.sequence)
+    assert.equal(
+      events.filter(event => event.event === 'lock_open_enter' && event.attemptSequence === acquiredAfterRetry.attemptSequence).length,
+      1,
+      'every successful retry must retain exactly one source-bound enter marker'
+    )
+    assert.equal(preparation.readStderr().includes(fixture.root), false, 'lock-open evidence must not disclose the fixture root')
   } finally {
     await preparation?.cleanup()
     await holder?.cleanup()
@@ -1049,6 +1198,10 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
       `HermesVerifierJobHost diagnostic event=phase_end phase=mutex_wait source_sha256=${sourceHash} sequence=9`,
       `HermesVerifierJobHost diagnostic event=phase_begin phase=publication_lock_wait source_sha256=${sourceHash} sequence=10`,
       `HermesVerifierJobHost diagnostic event=phase_end phase=publication_lock_wait source_sha256=${sourceHash} sequence=11`,
+      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=12${pathBearingSuffix}`,
+      `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=1 outcome=io_exception_retry source_sha256=${sourceHash} sequence=13`,
+      `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=2 source_sha256=${sourceHash} sequence=14`,
+      `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=2 outcome=acquired_after_retry source_sha256=${sourceHash} sequence=15`,
       `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=12${pathBearingSuffix}`
     ].join('\n'),
     sourceHash
@@ -1073,6 +1226,14 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
   assert.match(
     summary,
     new RegExp(`event=phase_end phase=publication_lock_wait source_sha256=${sourceHash} sequence=11`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=12`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=lock_open_outcome attempt_seq=2 outcome=acquired_after_retry source_sha256=${sourceHash} sequence=15`)
   )
   assert.equal(summary.includes(pathBearingSuffix), false, 'marker summaries must exclude path-bearing suffixes')
   assert.equal(summary.includes(forgedSourceHash), false, 'marker summaries must reject forged source identities')

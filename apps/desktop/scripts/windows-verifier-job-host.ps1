@@ -62,6 +62,29 @@ function Write-JobHostDiagnosticEvent([string]$eventName, [string]$phase) {
     }
 }
 
+function Write-JobHostLockOpenDiagnostic([string]$eventName, [int]$attemptSequence, [string]$outcome) {
+    if ($diagnosticsEnabled -and -not [string]::IsNullOrWhiteSpace($script:jobHostDiagnosticSourceHash)) {
+        # The native FileStream constructor can block without returning. Emit a
+        # fixed, source-bound enter marker immediately before it, then emit an
+        # outcome only after the constructor has actually returned or thrown.
+        # This deliberately leaves enter-without-outcome as fail-closed evidence
+        # for a mid-open termination. No path, exception text, handle, PID, or
+        # environment value is included.
+        $script:jobHostDiagnosticSequence += 1
+        if ($eventName -eq 'lock_open_enter') {
+            [Console]::Error.WriteLine(
+                "HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=$attemptSequence source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
+            )
+        }
+        else {
+            [Console]::Error.WriteLine(
+                "HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=$attemptSequence outcome=$outcome source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
+            )
+        }
+        [Console]::Error.Flush()
+    }
+}
+
 function Write-JobHostMutexIdentityDiagnostic([string]$mutexKey) {
     if ($diagnosticsEnabled) {
         # This pseudonymous fixed-length digest correlates lock behavior
@@ -125,18 +148,25 @@ function Get-JobHostCacheEntry {
 }
 
 function Open-JobHostPublicationLock($entry, $budgetStopwatch) {
+    $attemptSequence = 0
     while ($true) {
+        $attemptSequence += 1
+        Write-JobHostLockOpenDiagnostic 'lock_open_enter' $attemptSequence $null
         try {
             # File sharing follows the physical directory, including a junction
             # alias that cannot be represented reliably by lexical path cleanup.
-            return [System.IO.FileStream]::new(
+            $publicationLock = [System.IO.FileStream]::new(
                 $entry.LockPath,
                 [System.IO.FileMode]::OpenOrCreate,
                 [System.IO.FileAccess]::ReadWrite,
                 [System.IO.FileShare]::None
             )
+            $outcome = if ($attemptSequence -eq 1) { 'acquired' } else { 'acquired_after_retry' }
+            Write-JobHostLockOpenDiagnostic 'lock_open_outcome' $attemptSequence $outcome
+            return $publicationLock
         }
         catch [System.IO.IOException] {
+            Write-JobHostLockOpenDiagnostic 'lock_open_outcome' $attemptSequence 'io_exception_retry'
             $remainingMs = $mutexAcquireTimeoutMs - [int]$budgetStopwatch.ElapsedMilliseconds
             if ($remainingMs -le 0) {
                 throw "verifier Job host cache lock timed out after $mutexAcquireTimeoutMs ms"

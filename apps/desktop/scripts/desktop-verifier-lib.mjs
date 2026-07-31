@@ -1549,6 +1549,10 @@ export async function prepareWindowsJobHost(spec, {
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
           .filter(match => match[1] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
+          .filter(match => match[3] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=(\d+) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
+          .filter(match => match[2] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=(\d+) outcome=(acquired|io_exception_retry|acquired_after_retry) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]
           .filter(match => match[3] === expectedSourceSha256)
       ].map(match => match[0])
       const summary = [...new Set([...markers, ...diagnosticLifecycle])].join('; ')

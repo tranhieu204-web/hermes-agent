@@ -206,6 +206,47 @@ test('Windows Job preparation returns only source-bound compile diagnostics when
   }
 })
 
+test('Windows Job preparation retains only valid source-bound native lock-open diagnostics', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  const forgedSourceSha256 = 'd'.repeat(64)
+  const pathBearingSuffix = ' C:\\never-log-controlled-root'
+  const validEnter = `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=1 source_sha256=${sourceSha256} sequence=7`
+  const validRetry = `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=1 outcome=io_exception_retry source_sha256=${sourceSha256} sequence=8`
+  const validAcquire = `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=2 outcome=acquired_after_retry source_sha256=${sourceSha256} sequence=10`
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `${validEnter}${pathBearingSuffix}\n` +
+        `${validRetry}\n` +
+        `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=2 source_sha256=${forgedSourceSha256} sequence=9${pathBearingSuffix}\n` +
+        `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=2 outcome=untrusted source_sha256=${sourceSha256} sequence=10${pathBearingSuffix}\n` +
+        `${validAcquire}\n`
+      )
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.match(diagnostics, new RegExp(`event=lock_open_enter attempt_seq=1 source_sha256=${sourceSha256} sequence=7`))
+    assert.match(diagnostics, new RegExp(`event=lock_open_outcome attempt_seq=1 outcome=io_exception_retry source_sha256=${sourceSha256} sequence=8`))
+    assert.match(diagnostics, new RegExp(`event=lock_open_outcome attempt_seq=2 outcome=acquired_after_retry source_sha256=${sourceSha256} sequence=10`))
+    assert.equal(diagnostics.includes(pathBearingSuffix), false)
+    assert.equal(diagnostics.includes(forgedSourceSha256), false)
+    assert.equal(diagnostics.includes('outcome=untrusted'), false)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
 test('Windows Job preparation appends only a source-bound precompile failure diagnostic', async () => {
   const spec = createDesktopLaunchSpec({ executable: process.execPath })
   const preparer = new EventEmitter()
