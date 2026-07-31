@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { EventEmitter, once } from 'node:events'
 import {
   existsSync,
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -123,7 +124,8 @@ async function runPreparation(fixture, {
   command,
   args,
   deadlineMs = PREPARATION_DEADLINE_MS,
-  diagnostics = false
+  diagnostics = false,
+  expectedSourceSha256 = sha256File(JOB_HOST_SOURCE)
 } = {}) {
   const [defaultCommand, defaultArgs] = preparationArgs()
   const preparation = await launchDirectOwnedVerifierTestProcess(
@@ -148,7 +150,7 @@ async function runPreparation(fixture, {
     return { status, stderr }
   } catch (error) {
     const diagnosticSummary = diagnostics
-      ? safePreparationDiagnosticSummary(stderr, sha256File(JOB_HOST_SOURCE))
+      ? safePreparationDiagnosticSummary(stderr, expectedSourceSha256)
       : ''
     if (diagnosticSummary !== '') {
       error.message = `${error.message}; ${diagnosticSummary}`
@@ -349,6 +351,8 @@ function safePreparationDiagnosticSummary(stderr, expectedSourceSha256) {
       .filter(match => match[1] === expectedSourceSha256),
     ...[...stderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
       .filter(match => match[1] === expectedSourceSha256),
+    ...[...stderr.matchAll(/^HermesVerifierJobHost diagnostic compile_outcome outcome=(exception) source_sha256=([a-f0-9]{64})\r?$/gm)]
+      .filter(match => match[2] === expectedSourceSha256),
     ...stderr.matchAll(/HermesVerifierJobHost diagnostic phase=(lock_wait|validation|compile|publish) elapsed_ms=(\d+)/g)
   ].map(match => match[0])
 
@@ -398,7 +402,7 @@ function assertBoundControllerPreparationDiagnostics(result, fixture) {
 
 function preparationClassification(evidence) {
   const match = evidence.match(
-    /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
+    /HermesVerifierJobHost diagnostic classification=(DIRECT_CHILD_NONEXIT|PIPE_CLOSE_WAIT|PHASE_BEGIN_NO_END:[a-z_]+|ADD_TYPE_COMPILE_EXCEPTION|ADD_TYPE_COMPILE_STALL|DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP|FALSIFIED)/
   )
   assert.ok(match, 'expected one safe diagnostic classification')
   return match[1]
@@ -1170,6 +1174,13 @@ test('Windows Job preparation diagnostics classify direct-child, pipe, phase, an
   )
   assert.equal(
     verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} compile_start source_sha256=${sourceHash}\n` +
+      `${fixedPrefix} compile_outcome outcome=exception source_sha256=${sourceHash}`
+    ),
+    'ADD_TYPE_COMPILE_EXCEPTION'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
       `${fixedPrefix} compile_start source_sha256=${sourceHash}\n${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
     ),
     'ADD_TYPE_COMPILE_STALL'
@@ -1190,6 +1201,36 @@ test('Windows Job preparation diagnostics classify direct-child, pipe, phase, an
     verifierLib.classifyWindowsJobHostPreparationDiagnostics('untrusted C:\\fixture\\secret'),
     'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
   )
+})
+
+test('Windows Job Add-Type exception keeps its failure path while emitting only a source-bound outcome', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  const bootstrapDir = join(fixture.root, 'controlled-bootstrap')
+  const bootstrap = join(bootstrapDir, 'windows-verifier-job-host.ps1')
+  const invalidSource = join(bootstrapDir, 'windows-verifier-job-host.cs')
+  mkdirSync(bootstrapDir)
+  copyFileSync(JOB_HOST_BOOTSTRAP, bootstrap)
+  writeFileSync(invalidSource, 'public class HermesVerifierJobHost { this is not valid C# }\n', 'utf8')
+  const sourceHash = sha256File(invalidSource)
+
+  try {
+    const result = await runPreparation(fixture, {
+      command: 'powershell.exe',
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', bootstrap, '-Prepare'],
+      diagnostics: true,
+      expectedSourceSha256: sourceHash
+    })
+    assert.equal(result.status, 1, 'the original Add-Type failure must retain status 1')
+    assert.match(result.stderr, new RegExp(`compile_start source_sha256=${sourceHash}`))
+    assert.match(result.stderr, new RegExp(`compile_outcome outcome=exception source_sha256=${sourceHash}`))
+    assert.doesNotMatch(result.stderr, new RegExp(`compile_end source_sha256=${sourceHash}`))
+    assert.match(result.stderr, /Windows verifier Job host bootstrap failed:/)
+    const summary = safePreparationDiagnosticSummary(result.stderr, sourceHash)
+    assert.match(summary, new RegExp(`compile_outcome outcome=exception source_sha256=${sourceHash}`))
+    assert.equal(summary.includes(fixture.root), false, 'consumer summary must not disclose the controlled fixture root')
+  } finally {
+    rmSync(fixture.root, { force: true, recursive: true })
+  }
 })
 
 test('Windows Job lock-wait summaries retain only exact source-bound marker vocabulary', () => {

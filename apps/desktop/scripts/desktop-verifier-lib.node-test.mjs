@@ -287,6 +287,83 @@ test('Windows Job preparation appends only a source-bound precompile failure dia
   }
 })
 
+test('Windows Job preparation appends only a source-bound Add-Type exception outcome', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  const forgedSourceSha256 = 'e'.repeat(64)
+  const marker = `HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourceSha256}`
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('failed preparer must not be terminated after exit')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceSha256}\n` +
+        `${marker}\n` +
+        `HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${forgedSourceSha256}\n` +
+        `HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourceSha256} C:\\never-log-controlled-root\n` +
+        'synthetic compiler exception at C:\\never-log-controlled-root\n'
+      )
+      preparer.emit('exit', 1, null)
+    })
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 100,
+        spawnImpl: () => preparer
+      }),
+      error => {
+        assert.match(error.message, new RegExp(`Windows Job controller preparation failed; .*${marker}`))
+        assert.match(error.message, /classification=ADD_TYPE_COMPILE_EXCEPTION/)
+        assert.equal(error.message.includes(forgedSourceSha256), false)
+        assert.equal(error.message.includes('never-log-controlled-root'), false)
+        assert.equal(error.message.includes('synthetic compiler exception'), false)
+        return true
+      }
+    )
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation rejects malformed Add-Type exception markers', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('failed preparer must not be terminated after exit')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `HermesVerifierJobHost diagnostic compile_start source_sha256=${sourceSha256}\n` +
+        `HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourceSha256} C:\\never-log-controlled-root\n`
+      )
+      preparer.emit('exit', 1, null)
+    })
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(spec, {
+        prepareTimeoutMs: 100,
+        spawnImpl: () => preparer
+      }),
+      error => {
+        assert.match(error.message, /classification=ADD_TYPE_COMPILE_STALL/)
+        assert.equal(error.message.includes('compile_outcome'), false)
+        assert.equal(error.message.includes('never-log-controlled-root'), false)
+        return true
+      }
+    )
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
 test('Windows Job preparation exposes only the recognized cache-lock failure class', async () => {
   const spec = createDesktopLaunchSpec({ executable: process.execPath })
   const preparer = new EventEmitter()

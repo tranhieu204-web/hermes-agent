@@ -56,7 +56,14 @@ export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   const ended = new Set(phases.filter(match => match[1] === 'phase_end').map(match => match[2]))
   const compileStarted = /HermesVerifierJobHost diagnostic compile_start source_sha256=[a-f0-9]{64}/.test(summary)
   const compileFinished = /HermesVerifierJobHost diagnostic compile_end source_sha256=[a-f0-9]{64} output_sha256=[a-f0-9]{64}/.test(summary)
+  const diagnosticEntries = summary.split(/(?:\r?\n|;\s*)/)
+  const compileException = diagnosticEntries.some(entry =>
+    /^HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=[a-f0-9]{64}$/.test(entry)
+  )
 
+  if (compileStarted && compileException && !compileFinished) {
+    return 'ADD_TYPE_COMPILE_EXCEPTION'
+  }
   if (compileStarted && !compileFinished) {
     return 'ADD_TYPE_COMPILE_STALL'
   }
@@ -1546,6 +1553,8 @@ export async function prepareWindowsJobHost(spec, {
           .filter(match => match[1] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_start source_sha256=([a-f0-9]{64})/g)]
           .filter(match => match[1] === expectedSourceSha256),
+        ...[...preparerStderr.matchAll(/^HermesVerifierJobHost diagnostic compile_outcome outcome=(exception) source_sha256=([a-f0-9]{64})\r?$/gm)]
+          .filter(match => match[2] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic compile_end source_sha256=([a-f0-9]{64}) output_sha256=([a-f0-9]{64})/g)]
           .filter(match => match[1] === expectedSourceSha256),
         ...[...preparerStderr.matchAll(/HermesVerifierJobHost diagnostic event=(phase_begin|phase_end) phase=(cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=([a-f0-9]{64}) sequence=(\d+)/g)]

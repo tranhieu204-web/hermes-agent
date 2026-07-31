@@ -105,6 +105,18 @@ function Write-JobHostPrecompileFailureDiagnostic([string]$sourceHash, [string]$
     }
 }
 
+function Write-JobHostCompileOutcomeDiagnostic([string]$sourceHash, [string]$outcome) {
+    if ($diagnosticsEnabled) {
+        # This is a fixed-vocabulary terminal outcome for the exact Add-Type
+        # boundary. It deliberately carries no exception, path, process, or
+        # environment detail, and does not alter the original failure flow.
+        [Console]::Error.WriteLine(
+            "HermesVerifierJobHost diagnostic compile_outcome outcome=$outcome source_sha256=$sourceHash"
+        )
+        [Console]::Error.Flush()
+    }
+}
+
 function Invoke-JobHostPhase([string]$phase, [scriptblock]$operation) {
     Write-JobHostDiagnosticEvent 'phase_begin' $phase
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -290,7 +302,23 @@ function Get-JobHostAssembly {
                 [Console]::Error.Flush()
             }
             Invoke-JobHostPhase 'compile' {
-                Add-Type -Path $sourcePath -ReferencedAssemblies 'System.Web.Extensions.dll' -OutputAssembly $temporaryDll -ErrorAction Stop
+                try {
+                    Add-Type -Path $sourcePath -ReferencedAssemblies 'System.Web.Extensions.dll' -OutputAssembly $temporaryDll -ErrorAction Stop
+                }
+                catch {
+                    # This catch is deliberately inside the exact Add-Type boundary:
+                    # phase-finalization and later diagnostics failures must never be
+                    # reported as compiler exceptions. Diagnostic emission is best
+                    # effort so it cannot replace the original compiler failure.
+                    $compileError = $_
+                    try {
+                        Write-JobHostCompileOutcomeDiagnostic $entry.SourceHash 'exception'
+                    }
+                    catch {
+                        # Preserve the original Add-Type error and exit behavior.
+                    }
+                    throw $compileError
+                }
             } | Out-Null
             if ($diagnosticsEnabled) {
                 [Console]::Error.WriteLine(
