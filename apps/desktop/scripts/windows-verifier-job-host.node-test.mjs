@@ -601,6 +601,7 @@ test('Windows Job host cache lock is root-scoped, canonical, and diagnostic with
   const first = createShortPreparationRunRoot()
   const second = createShortPreparationRunRoot()
   const shared = createShortPreparationRunRoot()
+  const sourceHash = sha256File(JOB_HOST_SOURCE)
   first.localAppData = join(first.root, 'never-log-a')
   second.localAppData = join(second.root, 'never-log-b')
   shared.localAppData = join(shared.root, 'never-log-c')
@@ -663,12 +664,70 @@ test('Windows Job host cache lock is root-scoped, canonical, and diagnostic with
       for (const phase of ['lock_wait', 'validation']) {
         assert.ok(phaseCount(stderr, phase) >= 1, `expected ${phase} timing`)
       }
+      assert.match(
+        stderr,
+        new RegExp(`event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`),
+        'a successful preparation must enter the source-bound lock wait phase'
+      )
+      assert.match(
+        stderr,
+        new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`),
+        'a successful preparation must leave the source-bound lock wait phase'
+      )
       assert.equal(stderr.includes(forbiddenRoot), false, 'diagnostics must not disclose a cache root')
     }
   } finally {
     for (const fixture of [first, second, shared]) {
       rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
     }
+  }
+})
+
+test('Windows Job host reports a source-bound incomplete lock wait on an owned mutex stall', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'owned-lock-stall-cache')
+  mkdirSync(fixture.localAppData)
+  let holder
+  let productionSpec
+
+  try {
+    const warm = await runPreparation(fixture, { diagnostics: true })
+    assert.equal(warm.status, 0)
+    const [entry] = cacheEntries(fixture)
+    writeFileSync(join(entry, 'HermesVerifierJobHost.dll'), 'corrupt-cache')
+    holder = await holdNamedMutex(mutexIdentity(warm.stderr))
+    productionSpec = verifierLib.createDesktopLaunchSpec({
+      executable: process.execPath,
+      baseEnv: { ...process.env, LOCALAPPDATA: fixture.localAppData },
+      platform: 'win32',
+      tempBaseDir: fixture.root
+    })
+    productionSpec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+    productionSpec.spawnOptions.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+    await assert.rejects(
+      verifierLib.prepareWindowsJobHost(productionSpec, { prepareTimeoutMs: 2_000 }),
+      error => {
+        const sourceHash = sha256File(JOB_HOST_SOURCE)
+        assert.match(
+          error.message,
+          new RegExp(`event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`)
+        )
+        assert.doesNotMatch(
+          error.message,
+          new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=\\d+`)
+        )
+        assert.equal(preparationClassification(error.message), 'PHASE_BEGIN_NO_END:lock_wait')
+        assert.equal(error.message.includes(fixture.root), false, 'lock-stall evidence must not disclose the fixture root')
+        return true
+      }
+    )
+  } finally {
+    if (productionSpec) {
+      verifierLib.cleanupUnlaunchedDesktopSpec(productionSpec)
+    }
+    await holder?.cleanup()
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -825,6 +884,45 @@ test('Windows Job preparation diagnostics classify direct-child, pipe, phase, an
     verifierLib.classifyWindowsJobHostPreparationDiagnostics('untrusted C:\\fixture\\secret'),
     'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
   )
+})
+
+test('Windows Job lock-wait summaries retain only exact source-bound marker vocabulary', () => {
+  const sourceHash = sha256File(JOB_HOST_SOURCE)
+  const forgedSourceHash = 'c'.repeat(64)
+  const pathBearingSuffix = ' C:\\fixture\\must-not-escape'
+  const summary = controllerPreparationDiagnosticSummary(
+    [
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=7${pathBearingSuffix}`,
+      `HermesVerifierJobHost diagnostic event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=8`,
+      `HermesVerifierJobHost diagnostic event=phase_begin phase=lock_wait source_sha256=${forgedSourceHash} sequence=9${pathBearingSuffix}`
+    ].join('\n'),
+    sourceHash
+  )
+
+  assert.match(
+    summary,
+    new RegExp(`event=phase_begin phase=lock_wait source_sha256=${sourceHash} sequence=7`)
+  )
+  assert.match(
+    summary,
+    new RegExp(`event=phase_end phase=lock_wait source_sha256=${sourceHash} sequence=8`)
+  )
+  assert.equal(summary.includes(pathBearingSuffix), false, 'marker summaries must exclude path-bearing suffixes')
+  assert.equal(summary.includes(forgedSourceHash), false, 'marker summaries must reject forged source identities')
+})
+
+test('Windows Job diagnostics-disabled preparation remains silent', WINDOWS_ONLY, async () => {
+  const fixture = createShortPreparationRunRoot()
+  fixture.localAppData = join(fixture.root, 'diagnostics-disabled-cache')
+  mkdirSync(fixture.localAppData)
+
+  try {
+    const result = await runPreparation(fixture)
+    assert.equal(result.status, 0)
+    assert.equal(result.stderr, '', 'default preparation must not emit diagnostic output')
+  } finally {
+    rmSync(fixture.root, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 })
+  }
 })
 
 test('Windows Job diagnostics retain only a directly proven owned descendant chain', async () => {

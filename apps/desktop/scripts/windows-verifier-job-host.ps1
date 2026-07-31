@@ -206,6 +206,11 @@ function Get-JobHostAssembly {
     try {
         $lockStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         try {
+            # This brackets the existing mutex/publication-lock acquisition only
+            # when diagnostic mode is explicitly enabled. If the owned preparer
+            # is terminated while waiting, the missing end event is fail-closed
+            # evidence of that exact boundary without changing lock semantics.
+            Write-JobHostDiagnosticEvent 'phase_begin' 'lock_wait'
             $ownsMutex = $mutex.WaitOne($mutexAcquireTimeoutMs)
         }
         catch [System.Threading.AbandonedMutexException] {
@@ -220,6 +225,9 @@ function Get-JobHostAssembly {
         finally {
             $lockStopwatch.Stop()
             Write-JobHostDiagnostic 'lock_wait' $lockStopwatch.ElapsedMilliseconds
+            # Keep the phase-end ordering aligned with Invoke-JobHostPhase: emit
+            # it after the measured operation returns, before resource release.
+            Write-JobHostDiagnosticEvent 'phase_end' 'lock_wait'
         }
 
         $assembly = Invoke-JobHostPhase 'validation' { Get-ValidatedJobHostAssembly $entry }
