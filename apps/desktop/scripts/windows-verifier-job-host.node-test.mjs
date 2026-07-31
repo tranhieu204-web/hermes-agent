@@ -387,7 +387,12 @@ function assertBoundControllerPreparationDiagnostics(result, fixture) {
     sha256File(JOB_HOST_SOURCE)
   )
   assert.notEqual(diagnostics, '', 'expected source-bound controller preparation diagnostics')
-  assert.equal(result.stderr.includes(fixture.root), false, 'diagnostics must not disclose the test root')
+  // `result.stderr` is the complete test-process stream. It can legitimately
+  // contain the retained-root cleanup/authority contract, which is separately
+  // asserted below. The operator-facing preparation summary must instead stay
+  // limited to source-bound diagnostic markers.
+  assert.equal(diagnostics.includes(fixture.root), false, 'diagnostic summary must not disclose the test root')
+  assert.equal(diagnostics.includes('retained generated root:'), false, 'diagnostic summary must not include cleanup paths')
   return diagnostics
 }
 
@@ -1237,6 +1242,41 @@ test('Windows Job lock-wait summaries retain only exact source-bound marker voca
   )
   assert.equal(summary.includes(pathBearingSuffix), false, 'marker summaries must exclude path-bearing suffixes')
   assert.equal(summary.includes(forgedSourceHash), false, 'marker summaries must reject forged source identities')
+})
+
+test('Windows Job consumer preparation summary excludes a controlled raw retained-root error', async () => {
+  const spec = verifierLib.createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceHash = sha256File(JOB_HOST_SOURCE)
+  const generatedRoot = 'C:\\generated-root\\must-not-escape'
+  const validEnter = `HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=7`
+  const validAcquire = `HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=1 outcome=acquired source_sha256=${sourceHash} sequence=8`
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `Windows Job controller cleanup failed; retained generated root: ${generatedRoot}\n` +
+        `${validEnter}\n${validAcquire}\n`
+      )
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.match(diagnostics, new RegExp(`event=lock_open_enter attempt_seq=1 source_sha256=${sourceHash} sequence=7`))
+    assert.match(diagnostics, new RegExp(`event=lock_open_outcome attempt_seq=1 outcome=acquired source_sha256=${sourceHash} sequence=8`))
+    assert.match(diagnostics, /classification=FALSIFIED/)
+    assert.equal(diagnostics.includes(generatedRoot), false, 'consumer summary must exclude raw retained-root text')
+    assert.equal(diagnostics.includes('retained generated root:'), false, 'consumer summary must exclude cleanup-error wording')
+  } finally {
+    verifierLib.cleanupUnlaunchedDesktopSpec(spec)
+  }
 })
 
 test('Windows Job diagnostics-disabled preparation remains silent', WINDOWS_ONLY, async () => {
