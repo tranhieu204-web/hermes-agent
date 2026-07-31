@@ -33,11 +33,14 @@ const PREPARATION_DEADLINE_MS = 45_000
 const CONTROLLER_DEADLINE_MS = 20_000
 const MAX_CONTROLLER_OUTPUT_BYTES = 1_024
 
-function createControllerRunRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'windows-job-controller-run-'))
-  const hermesHome = join(root, 'hermes-home')
-  const localAppData = join(root, 'local-app-data')
-  const workspace = join(root, 'workspace')
+function createControllerRunRoot(environment) {
+  // Controller tests must keep every test-owned path short enough for the
+  // Windows compiler, while still isolating both Hermes state and cache state.
+  // Long-root behavior is exercised independently by the explicit paired test.
+  const root = mkdtempSync(join(portableTestTempBaseDir(environment), 'wjhc-'))
+  const hermesHome = join(root, 'h')
+  const localAppData = join(root, 'l')
+  const workspace = join(root, 'w')
   mkdirSync(hermesHome)
   mkdirSync(localAppData)
   mkdirSync(workspace)
@@ -46,17 +49,21 @@ function createControllerRunRoot() {
 }
 
 function portableTestTempBaseDir(environment = process.env) {
-  const runnerTemp = environment.RUNNER_TEMP
-  if (typeof runnerTemp === 'string' && runnerTemp.trim() !== '') {
-    try {
-      if (statSync(runnerTemp).isDirectory()) {
-        return runnerTemp
-      }
-    } catch {
-      // Fall through to Node's existing temporary directory.
-    }
+  const candidates = [tmpdir()]
+  if (typeof environment.RUNNER_TEMP === 'string' && environment.RUNNER_TEMP.trim() !== '') {
+    candidates.push(environment.RUNNER_TEMP)
   }
-  return tmpdir()
+  const usable = candidates.filter(candidate => {
+    try {
+      return statSync(candidate).isDirectory()
+    } catch {
+      return false
+    }
+  })
+  // GitHub's RUNNER_TEMP is preferred only when it is also the shortest
+  // usable root. A valid but deeply nested runner root would reintroduce the
+  // compiler path-length pressure this fixture is intended to isolate.
+  return usable.sort((left, right) => left.length - right.length)[0] ?? tmpdir()
 }
 
 function createShortPreparationRunRoot(environment) {
@@ -588,21 +595,34 @@ async function runRealController(fixture, input = '') {
   }
 }
 
-test('Windows Job test fixtures use a portable existing temporary root and isolated local app data', () => {
+test('Windows Job test fixtures use a portable short temporary root and isolated local app data', () => {
   assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: tmpdir() }), tmpdir())
   assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: join(tmpdir(), 'missing-runner-temp') }), tmpdir())
   const runnerTempFile = join(tmpdir(), `runner-temp-file-${randomUUID()}`)
+  const longRunnerBase = join(
+    tmpdir(),
+    `runner-temp-long-${randomUUID()}`
+  )
+  const longRunnerTemp = join(longRunnerBase, 'nested', 'a'.repeat(96))
   writeFileSync(runnerTempFile, 'not-a-directory')
+  mkdirSync(longRunnerTemp, { recursive: true })
   const fixture = createControllerRunRoot()
+  const longRunnerFixture = createControllerRunRoot({ RUNNER_TEMP: longRunnerTemp })
   try {
     assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: runnerTempFile }), tmpdir())
+    assert.equal(portableTestTempBaseDir({ RUNNER_TEMP: longRunnerTemp }), tmpdir())
     assert.equal(existsSync(fixture.localAppData), true)
     assert.equal(fixture.localAppData.startsWith(fixture.root), true)
+    assert.equal(fixture.root.startsWith(portableTestTempBaseDir()), true)
+    assert.match(fixture.root, /wjhc-[^\\/]+$/)
+    assert.equal(longRunnerFixture.root.startsWith(tmpdir()), true, 'a long existing RUNNER_TEMP must not control fixture roots')
     const forbiddenDriveRoot = ['C:', 'tmp'].join('\\')
     assert.equal(readFileSync(fileURLToPath(import.meta.url), 'utf8').includes(forbiddenDriveRoot), false)
   } finally {
     rmSync(runnerTempFile, { force: true })
     rmSync(fixture.root, { force: true, recursive: true })
+    rmSync(longRunnerFixture.root, { force: true, recursive: true })
+    rmSync(longRunnerBase, { force: true, recursive: true })
   }
 })
 
@@ -673,6 +693,19 @@ test('Windows Job cold preparation binds its exact source and fresh output witho
         new RegExp(`event=phase_end phase=${phase} source_sha256=${started.sourceSha256} sequence=\\d+`)
       )
     }
+    for (const [boundary, state] of [
+      ['artifact_hash', 'begin'],
+      ['artifact_hash', 'end'],
+      ['dll_publish', 'begin'],
+      ['dll_publish', 'end'],
+      ['manifest_publish', 'begin'],
+      ['manifest_publish', 'end']
+    ]) {
+      assert.match(
+        result.stderr,
+        new RegExp(`event=postcompile_boundary boundary=${boundary} state=${state} source_sha256=${started.sourceSha256} sequence=\\d+`)
+      )
+    }
 
     const [entry] = cacheEntries(fixture)
     const outputPath = join(entry, 'HermesVerifierJobHost.dll')
@@ -684,7 +717,7 @@ test('Windows Job cold preparation binds its exact source and fresh output witho
   }
 })
 
-test('Windows Job production preparation pairs only controlled LOCALAPPDATA roots', WINDOWS_ONLY, async () => {
+test('Windows Job production preparation separately covers short and explicit long controlled LOCALAPPDATA roots', WINDOWS_ONLY, async () => {
   const fixture = createPairedProductionPreparationFixture()
   const baseSpec = productionPreparationSpec(fixture)
   const shortSpec = withControlledLocalAppData(baseSpec, fixture.shortLocalAppData)
@@ -1201,6 +1234,22 @@ test('Windows Job preparation diagnostics classify direct-child, pipe, phase, an
       `${fixedPrefix} compile_start source_sha256=${sourceHash}\n${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
     ),
     'ADD_TYPE_COMPILE_STALL'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} compile_start source_sha256=${sourceHash}\n` +
+      `${fixedPrefix} event=phase_begin phase=compile source_sha256=${sourceHash} sequence=1\n` +
+      `${fixedPrefix} event=phase_end phase=compile source_sha256=${sourceHash} sequence=2\n` +
+      `${fixedPrefix} event=postcompile_boundary boundary=artifact_hash state=begin source_sha256=${sourceHash} sequence=3\n` +
+      `${fixedPrefix} lifecycle=deadline elapsed_ms=29000`
+    ),
+    'POST_COMPILE_ARTIFACT_BOUNDARY_UNKNOWN'
+  )
+  assert.equal(
+    verifierLib.classifyWindowsJobHostPreparationDiagnostics(
+      `${fixedPrefix} event=postcompile_boundary boundary=artifact_hash state=bogus source_sha256=${sourceHash} sequence=1`
+    ),
+    'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
   )
   assert.equal(
     verifierLib.classifyWindowsJobHostPreparationDiagnostics(

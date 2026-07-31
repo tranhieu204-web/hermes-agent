@@ -122,6 +122,21 @@ function Write-JobHostCompileOutcomeDiagnostic([string]$sourceHash, [string]$out
     }
 }
 
+function Write-JobHostPostcompileBoundaryDiagnostic([string]$boundary, [string]$state) {
+    if ($diagnosticsEnabled -and -not [string]::IsNullOrWhiteSpace($script:jobHostDiagnosticSourceHash)) {
+        # These fixed labels identify only the post-compiler operation that was
+        # entered or completed. They intentionally omit paths, PIDs, handles,
+        # exception text, cache keys, and environment data. An unmatched begin
+        # is fail-closed evidence that the process did not return from that
+        # existing operation; it does not alter the operation itself.
+        $script:jobHostDiagnosticSequence += 1
+        [Console]::Error.WriteLine(
+            "HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=$boundary state=$state source_sha256=$($script:jobHostDiagnosticSourceHash) sequence=$($script:jobHostDiagnosticSequence)"
+        )
+        [Console]::Error.Flush()
+    }
+}
+
 function Invoke-JobHostPhase([string]$phase, [scriptblock]$operation) {
     Write-JobHostDiagnosticEvent 'phase_begin' $phase
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -331,13 +346,18 @@ function Get-JobHostAssembly {
                 }
             } | Out-Null
             if ($diagnosticsEnabled) {
+                Write-JobHostPostcompileBoundaryDiagnostic 'artifact_hash' 'begin'
+                $temporaryDllHash = Get-FileSha256 $temporaryDll
+                Write-JobHostPostcompileBoundaryDiagnostic 'artifact_hash' 'end'
                 [Console]::Error.WriteLine(
-                    "HermesVerifierJobHost diagnostic compile_end source_sha256=$($entry.SourceHash) output_sha256=$(Get-FileSha256 $temporaryDll)"
+                    "HermesVerifierJobHost diagnostic compile_end source_sha256=$($entry.SourceHash) output_sha256=$temporaryDllHash"
                 )
                 [Console]::Error.Flush()
             }
             Invoke-JobHostPhase 'publish' {
+                Write-JobHostPostcompileBoundaryDiagnostic 'dll_publish' 'begin'
                 Move-Item -LiteralPath $temporaryDll -Destination $entry.DllPath -Force
+                Write-JobHostPostcompileBoundaryDiagnostic 'dll_publish' 'end'
             } | Out-Null
             $assembly = Invoke-JobHostPhase 'validation' { [System.Reflection.Assembly]::LoadFrom($entry.DllPath) }
             $controller = $assembly.GetType('HermesVerifierJobHost.Controller', $false)
@@ -354,8 +374,10 @@ function Get-JobHostAssembly {
             }
             $temporaryManifest = Join-Path $entry.Directory ("manifest.$PID.$([Guid]::NewGuid().ToString('N')).tmp.json")
             Invoke-JobHostPhase 'publish' {
+                Write-JobHostPostcompileBoundaryDiagnostic 'manifest_publish' 'begin'
                 [System.IO.File]::WriteAllText($temporaryManifest, ($manifest | ConvertTo-Json -Compress), [System.Text.Encoding]::UTF8)
                 Move-Item -LiteralPath $temporaryManifest -Destination $entry.ManifestPath -Force
+                Write-JobHostPostcompileBoundaryDiagnostic 'manifest_publish' 'end'
             } | Out-Null
             return $assembly
         }

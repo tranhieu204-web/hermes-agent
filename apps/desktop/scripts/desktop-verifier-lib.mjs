@@ -61,6 +61,18 @@ function resemblesSourceBoundLockEvent(line) {
     /\bsource_sha256=[a-f0-9]{64}(?:\s|$)/.test(line)
 }
 
+function parseSourceBoundPostcompileEvent(line) {
+  const match = /^HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=(artifact_hash|dll_publish|manifest_publish) state=(begin|end) source_sha256=[a-f0-9]{64} sequence=(\d+)$/.exec(line)
+  return match
+    ? { boundary: match[1], state: match[2], sequence: Number(match[3]) }
+    : null
+}
+
+function resemblesSourceBoundPostcompileEvent(line) {
+  return /^HermesVerifierJobHost diagnostic event=postcompile_boundary\b/.test(line) &&
+    /\bsource_sha256=[a-f0-9]{64}(?:\s|$)/.test(line)
+}
+
 export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   if (typeof summary !== 'string') {
     return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
@@ -80,25 +92,29 @@ export function classifyWindowsJobHostPreparationDiagnostics(summary) {
   const compileFinished = /HermesVerifierJobHost diagnostic compile_end source_sha256=[a-f0-9]{64} output_sha256=[a-f0-9]{64}/.test(summary)
   const lockEvents = []
   let previousSequence = 0
-  let invalidLockSequence = false
+  let invalidSequence = false
   for (const entry of diagnosticEntries) {
     const event = parseSourceBoundLockEvent(entry)
-    if (!event) {
-      if (resemblesSourceBoundLockEvent(entry)) {
-        invalidLockSequence = true
+    const postcompile = parseSourceBoundPostcompileEvent(entry)
+    if (!event && !postcompile) {
+      if (resemblesSourceBoundLockEvent(entry) || resemblesSourceBoundPostcompileEvent(entry)) {
+        invalidSequence = true
       }
       continue
     }
-    const { sequence, attempt } = event
-    if (!Number.isSafeInteger(sequence) || !Number.isSafeInteger(attempt) || sequence <= previousSequence) {
-      invalidLockSequence = true
+    const { sequence } = event ?? postcompile
+    if (!Number.isSafeInteger(sequence) || sequence <= previousSequence ||
+        (event && !Number.isSafeInteger(event.attempt))) {
+      invalidSequence = true
       continue
     }
     previousSequence = sequence
-    lockEvents.push(event)
+    if (event) {
+      lockEvents.push(event)
+    }
   }
   const hasOwnedDeadline = lifecycle.has('deadline') && lifecycle.has('termination_request') && lifecycle.has('exit')
-  if (invalidLockSequence || lifecycle.has('invalid_sequence')) {
+  if (invalidSequence || lifecycle.has('invalid_sequence')) {
     return 'DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP'
   }
   if (hasOwnedDeadline) {
@@ -122,6 +138,12 @@ export function classifyWindowsJobHostPreparationDiagnostics(summary) {
     return 'ADD_TYPE_COMPILE_EXCEPTION'
   }
   if (compileStarted && !compileFinished) {
+    if (ended.has('compile')) {
+      // Whether no postcompile marker was captured at all or one was left open,
+      // Add-Type itself has returned. Keep the public result deliberately broad
+      // so it remains privacy-safe and does not claim an unproven sub-boundary.
+      return 'POST_COMPILE_ARTIFACT_BOUNDARY_UNKNOWN'
+    }
     return 'ADD_TYPE_COMPILE_STALL'
   }
   const incompletePhases = [...begun].filter(
@@ -1607,21 +1629,23 @@ export async function prepareWindowsJobHost(spec, {
 
       const sourcePattern = '[a-f0-9]{64}'
       const exactMarker = new RegExp(
-        `^(?:HermesVerifierJobHost diagnostic precompile_failure source_sha256=${sourcePattern} class=cache_root_unavailable|HermesVerifierJobHost diagnostic compile_start source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_end source_sha256=${sourcePattern} output_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic event=(?:phase_begin|phase_end) phase=(?:cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=\\d+ state=(?:remaining|exhausted) source_sha256=${sourcePattern} sequence=\\d+)$`
+        `^(?:HermesVerifierJobHost diagnostic precompile_failure source_sha256=${sourcePattern} class=cache_root_unavailable|HermesVerifierJobHost diagnostic compile_start source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_outcome outcome=exception source_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic compile_end source_sha256=${sourcePattern} output_sha256=${sourcePattern}|HermesVerifierJobHost diagnostic event=(?:phase_begin|phase_end) phase=(?:cache_entry|cache_directory|validation|lock_wait|mutex_wait|publication_lock_wait|compile|publish) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_enter attempt_seq=\\d+ source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_open_outcome attempt_seq=\\d+ outcome=(?:acquired|io_exception_retry|acquired_after_retry) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=lock_retry_budget attempt_seq=\\d+ state=(?:remaining|exhausted) source_sha256=${sourcePattern} sequence=\\d+|HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=(?:artifact_hash|dll_publish|manifest_publish) state=(?:begin|end) source_sha256=${sourcePattern} sequence=\\d+)$`
       )
       const markers = []
       let previousSequence = 0
       let invalidSequence = false
       for (const line of preparerStderr.split(/\r?\n/)) {
         const sourceMatch = /source_sha256=([a-f0-9]{64})/.exec(line)
-        const isExpectedLockEvent = sourceMatch?.[1] === expectedSourceSha256 && resemblesSourceBoundLockEvent(line)
-        const parsedLockEvent = isExpectedLockEvent ? parseSourceBoundLockEvent(line) : null
-        if (isExpectedLockEvent && !parsedLockEvent) {
+        const isExpectedSequencedEvent = sourceMatch?.[1] === expectedSourceSha256 &&
+          (resemblesSourceBoundLockEvent(line) || resemblesSourceBoundPostcompileEvent(line))
+        const parsedLockEvent = isExpectedSequencedEvent ? parseSourceBoundLockEvent(line) : null
+        const parsedPostcompileEvent = isExpectedSequencedEvent ? parseSourceBoundPostcompileEvent(line) : null
+        if (isExpectedSequencedEvent && !parsedLockEvent && !parsedPostcompileEvent) {
           invalidSequence = true
           continue
         }
         if (!sourceMatch || sourceMatch[1] !== expectedSourceSha256 ||
-            (!parsedLockEvent && !exactMarker.test(line))) {
+            (!parsedLockEvent && !parsedPostcompileEvent && !exactMarker.test(line))) {
           continue
         }
         const sequenceMatch = / sequence=(\d+)$/.exec(line)

@@ -31,6 +31,7 @@ function createNodeProcessSpec(options = {}) {
   return createDesktopLaunchSpec({
     executable: process.execPath,
     executableArgs: ['-e', options.script ?? 'setInterval(() => {}, 1_000)', '--'],
+    baseEnv: options.baseEnv,
     tempBaseDir: options.tempBaseDir
   })
 }
@@ -242,6 +243,45 @@ test('Windows Job preparation retains only valid source-bound native lock-open d
     assert.equal(diagnostics.includes(pathBearingSuffix), false)
     assert.equal(diagnostics.includes(forgedSourceSha256), false)
     assert.equal(diagnostics.includes('outcome=untrusted'), false)
+  } finally {
+    cleanupUnlaunchedDesktopSpec(spec)
+  }
+})
+
+test('Windows Job preparation retains only fixed source-bound postcompile boundaries', async () => {
+  const spec = createDesktopLaunchSpec({ executable: process.execPath })
+  const preparer = new EventEmitter()
+  const sourceSha256 = windowsJobSourceSha256()
+  const forgedSourceSha256 = 'f'.repeat(64)
+  const validBegin = `HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=artifact_hash state=begin source_sha256=${sourceSha256} sequence=11`
+  const validEnd = `HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=artifact_hash state=end source_sha256=${sourceSha256} sequence=12`
+  preparer.stderr = new PassThrough()
+  preparer.kill = () => {
+    throw new Error('successful preparer must not be terminated')
+  }
+  spec.env.HERMES_VERIFIER_JOB_HOST_DIAGNOSTICS = '1'
+
+  try {
+    queueMicrotask(() => {
+      preparer.stderr.end(
+        `${validBegin}\n` +
+        `${validEnd}\n` +
+        `HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=artifact_hash state=unknown source_sha256=${sourceSha256} sequence=13 C:\\never-log-controlled-root\n` +
+        `HermesVerifierJobHost diagnostic event=postcompile_boundary boundary=dll_publish state=begin source_sha256=${forgedSourceSha256} sequence=14\n`
+      )
+      preparer.emit('exit', 0, null)
+    })
+    const diagnostics = await verifierLib.prepareWindowsJobHost(spec, {
+      prepareTimeoutMs: 100,
+      spawnImpl: () => preparer
+    })
+    assert.match(diagnostics, new RegExp(`event=postcompile_boundary boundary=artifact_hash state=begin source_sha256=${sourceSha256} sequence=11`))
+    assert.match(diagnostics, new RegExp(`event=postcompile_boundary boundary=artifact_hash state=end source_sha256=${sourceSha256} sequence=12`))
+    assert.match(diagnostics, /lifecycle=invalid_sequence/)
+    assert.match(diagnostics, /classification=DIAGNOSTIC_CAPTURE_OR_ALLOWLIST_GAP/)
+    assert.equal(diagnostics.includes('state=unknown'), false)
+    assert.equal(diagnostics.includes('C:\\never-log-controlled-root'), false)
+    assert.equal(diagnostics.includes(forgedSourceSha256), false)
   } finally {
     cleanupUnlaunchedDesktopSpec(spec)
   }
@@ -783,16 +823,31 @@ test('executable provenance rejects a symlink escape from a worktree build root'
 test('owned cleanup is idempotent and removes only its generated root', async () => {
   const parent = mkdtempSync(join(tmpdir(), 'desktop-verifier-parent-'))
   const sentinel = join(parent, 'unrelated-sentinel.txt')
+  const localAppData = join(parent, 'local-app-data')
   writeFileSync(sentinel, 'keep', 'utf8')
-  const spec = createNodeProcessSpec({ tempBaseDir: parent })
-  const owned = await launchOwnedDesktop(spec)
+  mkdirSync(localAppData)
+  const spec = createNodeProcessSpec({
+    baseEnv: { ...process.env, LOCALAPPDATA: localAppData },
+    tempBaseDir: parent
+  })
 
-  await owned.cleanup()
-  await owned.cleanup()
+  try {
+    if (process.platform === 'win32') {
+      // This generic cleanup test is not a production controller test. Prewarm
+      // its isolated cache with the existing owned 45-second helper, then leave
+      // launchOwnedDesktop's own 29-second controller contract untouched.
+      await verifierLib.prepareWindowsJobHost(spec, { prepareTimeoutMs: 45_000 })
+    }
+    const owned = await launchOwnedDesktop(spec)
 
-  assert.equal(existsSync(spec.paths.root), false)
-  assert.equal(readFileSync(sentinel, 'utf8'), 'keep')
-  rmSync(parent, { recursive: true, force: true })
+    await owned.cleanup()
+    await owned.cleanup()
+
+    assert.equal(existsSync(spec.paths.root), false)
+    assert.equal(readFileSync(sentinel, 'utf8'), 'keep')
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
 })
 
 test('missing Windows target retains its generated root and reports the exact path', {
