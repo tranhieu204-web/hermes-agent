@@ -58,11 +58,7 @@ export function ModelPill({
 
   const committedFleetRoute = Boolean(runtimeId && viewModelSource === 'fleet_auto' && modelDisplayLabel.trim())
 
-  const fleetBadge = committedFleetRoute
-    ? fleetAdapterKind === 'external_cli'
-      ? 'external CLI'
-      : 'Fleet'
-    : ''
+  const fleetBadge = committedFleetRoute ? (fleetAdapterKind === 'external_cli' ? 'external CLI' : 'Fleet') : ''
 
   // The composer pick is sticky: a manual selection is pinned and every NEW
   // chat uses it instead of the Settings → Model default — silently, which has
@@ -123,8 +119,8 @@ export function ModelPill({
     : committedFleetRoute
       ? modelDisplayLabel
       : currentProvider
-    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
-    : copy.switchModel
+        ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+        : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
 

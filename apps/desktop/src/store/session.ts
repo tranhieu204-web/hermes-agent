@@ -424,12 +424,9 @@ export const setCurrentProvider = (next: Updater<string>) => {
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
 
-export const setCurrentModelDisplayLabel = (next: Updater<string>) =>
-  updateAtom($currentModelDisplayLabel, next)
-export const setCurrentFleetAdapterKind = (next: Updater<string>) =>
-  updateAtom($currentFleetAdapterKind, next)
-export const setCurrentFleetLaneId = (next: Updater<string>) =>
-  updateAtom($currentFleetLaneId, next)
+export const setCurrentModelDisplayLabel = (next: Updater<string>) => updateAtom($currentModelDisplayLabel, next)
+export const setCurrentFleetAdapterKind = (next: Updater<string>) => updateAtom($currentFleetAdapterKind, next)
+export const setCurrentFleetLaneId = (next: Updater<string>) => updateAtom($currentFleetLaneId, next)
 
 export const getCurrentModelSource = (): ComposerModelSource => {
   const source = storedString(COMPOSER_MODEL_SOURCE_KEY)

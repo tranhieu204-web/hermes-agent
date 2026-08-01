@@ -258,13 +258,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         return false
       }
     },
-    [
-      copy.fleetPinnedModelSwitchBlocked,
-      copy.modelSwitchFailed,
-      queryClient,
-      requestGateway,
-      updateModelOptionsCache
-    ]
+    [copy.fleetPinnedModelSwitchBlocked, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

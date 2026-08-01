@@ -88,9 +88,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         const shouldSeedComposer =
           !activeSessionIdRef.current &&
           getComposerSelectionGeneration() === selectionGeneration &&
-          (force ||
-            (getCurrentModelSource() !== 'manual' &&
-              !$currentFleetLaneId.get()))
+          (force || (getCurrentModelSource() !== 'manual' && !$currentFleetLaneId.get()))
 
         if (shouldSeedComposer) {
           setFleetAutoComposerEnabled(config.fleet?.parent_desktop_enabled === true)

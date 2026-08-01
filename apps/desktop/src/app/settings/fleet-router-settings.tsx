@@ -5,23 +5,14 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
-import {
-  getFleetStatus,
-  getHermesConfigRecordForProfile,
-  saveHermesConfigForProfile
-} from '@/hermes'
+import { getFleetStatus, getHermesConfigRecordForProfile, saveHermesConfigForProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Activity, GitBranch, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { setFleetAutoComposerEnabled } from '@/store/session'
-import type {
-  FleetLaneEvaluation,
-  FleetRoutePurpose,
-  FleetStatusResponse,
-  HermesConfigRecord
-} from '@/types/hermes'
+import type { FleetLaneEvaluation, FleetRoutePurpose, FleetStatusResponse, HermesConfigRecord } from '@/types/hermes'
 
 import { Pill, SettingsContent, SettingsSection, ToggleRow } from './primitives'
 
@@ -73,13 +64,7 @@ function Detail({ label, mono = false, value }: { label: string; mono?: boolean;
   )
 }
 
-function LaneRow({
-  evaluation,
-  purpose
-}: {
-  evaluation: FleetLaneEvaluation
-  purpose: FleetRoutePurpose
-}) {
+function LaneRow({ evaluation, purpose }: { evaluation: FleetLaneEvaluation; purpose: FleetRoutePurpose }) {
   const { t } = useI18n()
   const copy = t.settings.providers.fleet
   const state = laneState(evaluation)
@@ -251,9 +236,7 @@ export function FleetRouterSettings() {
       const current = await getHermesConfigRecordForProfile(profile)
 
       const currentFleet =
-        current.fleet && typeof current.fleet === 'object'
-          ? (current.fleet as Record<string, unknown>)
-          : {}
+        current.fleet && typeof current.fleet === 'object' ? (current.fleet as Record<string, unknown>) : {}
 
       const next: HermesConfigRecord = {
         ...current,

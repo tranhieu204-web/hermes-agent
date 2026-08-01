@@ -281,8 +281,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => {
-                    const existingSessionBlocked =
-                      !!activeSessionId && group.provider.selection_kind === 'fleet_parent'
+                    const existingSessionBlocked = !!activeSessionId && group.provider.selection_kind === 'fleet_parent'
 
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.

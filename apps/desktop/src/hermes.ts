@@ -732,10 +732,7 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   })
 }
 
-export function saveHermesConfigForProfile(
-  config: HermesConfigRecord,
-  profile: string
-): Promise<{ ok: boolean }> {
+export function saveHermesConfigForProfile(config: HermesConfigRecord, profile: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(profile),
     path: '/api/config',

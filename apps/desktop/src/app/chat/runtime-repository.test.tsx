@@ -114,10 +114,7 @@ describe('runtime message repository', () => {
       ])
     )
 
-    const restoredDuplicate = [
-      ...initialSource.map(item => ({ ...item })),
-      { ...withoutDuplicate[1] }
-    ]
+    const restoredDuplicate = [...initialSource.map(item => ({ ...item })), { ...withoutDuplicate[1] }]
 
     rerender(<RuntimeHarness messages={restoredDuplicate} />)
 
@@ -165,10 +162,7 @@ describe('runtime message repository', () => {
       ])
     )
 
-    const sameLineageRestored = [
-      ...transcriptA.map(item => ({ ...item })),
-      { ...sameLineageWithoutDuplicate[1] }
-    ]
+    const sameLineageRestored = [...transcriptA.map(item => ({ ...item })), { ...sameLineageWithoutDuplicate[1] }]
 
     rerender(<RuntimeHarness messages={sameLineageRestored} scopeKey="lineage-a" />)
 
@@ -187,9 +181,7 @@ describe('runtime message repository', () => {
     rerender(<RuntimeHarness messages={transcriptB} scopeKey="lineage-b" />)
 
     await waitFor(() =>
-      expect(renderedMessages()).toEqual([
-        { id: 'a:renderer-duplicate:2', text: 'unrelated lineage source id' }
-      ])
+      expect(renderedMessages()).toEqual([{ id: 'a:renderer-duplicate:2', text: 'unrelated lineage source id' }])
     )
     expect(transcriptB[0]?.id).toBe('a:renderer-duplicate:2')
   })

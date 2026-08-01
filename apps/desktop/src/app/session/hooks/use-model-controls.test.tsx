@@ -257,10 +257,7 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalled()
     expect($currentModel.get()).toBe('grok-4.5')
     expect(getCurrentModelSource()).toBe('fleet_auto')
-    expect(notifyError).toHaveBeenCalledWith(
-      expect.any(Error),
-      'Start a new session to change a Fleet-pinned model'
-    )
+    expect(notifyError).toHaveBeenCalledWith(expect.any(Error), 'Start a new session to change a Fleet-pinned model')
   })
 
   it('updates only the active profile new-chat cache', async () => {
