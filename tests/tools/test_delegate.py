@@ -4081,3 +4081,211 @@ class TestMaterialDiscriminatorFailOpen(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertTrue(_is_material_review_task({"goal": "g", field: ""}))
                 self.assertTrue(_is_material_review_task({"goal": "g", field: None}))
+
+
+# ----------------------------------------------------------------------
+# Fence 10 / sequence 24: schema-reserved OPTIONAL material field `cwd`.
+#
+# Sequence 22 keyed classification off `_MATERIAL_REVIEW_REQUIRED_FIELDS` and
+# then wrote guards that iterated the same tuple. Implementation and guards
+# therefore shared one blind spot: a schema-exposed, material-only field that is
+# OPTIONAL. `cwd` is exactly that - the registered schema documents it as the
+# material review's working directory, production tracing finds zero generic
+# task-level consumers and one material consumer, and it defaults to
+# os.getcwd(), so it must NOT become a required field.
+#
+# Contract now under test:
+#   * fields are partitioned once, in source, into generic / required-material /
+#     optional-material;
+#   * classification keys off the MARKER set (required + optional) by KEY
+#     PRESENCE, including empty and null;
+#   * a marker-bearing task without complete required evidence fails closed;
+#   * generic-only tasks stay generic.
+#
+# The partition invariant below binds the registered schema to that source of
+# truth, so a future optional field added to the schema without being classified
+# fails the suite. It reads the registered schema object, never source text.
+# ----------------------------------------------------------------------
+
+from tools.delegate_tool import (  # noqa: E402
+    _GENERIC_TASK_FIELDS,
+    _MATERIAL_REVIEW_MARKER_FIELDS,
+    _MATERIAL_REVIEW_OPTIONAL_FIELDS,
+)
+
+
+class TestOptionalMaterialMarkerCwd(unittest.TestCase):
+
+    @staticmethod
+    def _full_material_task():
+        return {
+            "goal": "Review the release candidate",
+            "candidate_hash": "b" * 64,
+            "review_lens": "runtime",
+            "scope": "release tests",
+            "lane": "claude_code",
+            "prompt": "review exact candidate",
+            "attempt_id": "attempt-1",
+            "fence_token": 7,
+            "environment_fingerprint": "env-b",
+            "evidence_fingerprint": "evidence-b",
+            "preflight": {"health": {"status": "verified", "evidence": "test"}},
+            "deadline_seconds": 60,
+            "output_path": "out.json",
+        }
+
+    def _run_through_registered_handler(self, tasks):
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        generic_reached = False
+        error = None
+        with patch(
+            "tools.delegate_tool._build_child_agent",
+            side_effect=_GenericChildConstructionReached(),
+        ), patch("tools.delegate_tool._run_single_child") as run_child, \
+                patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            try:
+                raw = entry.handler({"tasks": tasks}, parent_agent=parent)
+                try:
+                    error = json.loads(raw).get("error")
+                except Exception:
+                    error = None
+            except _GenericChildConstructionReached:
+                generic_reached = True
+            if run_child.called:
+                generic_reached = True
+        return generic_reached, dispatch, error
+
+    # -- the exact case the coordinator reproduced ----------------------
+
+    def test_cwd_alone_never_reaches_generic_child_construction(self):
+        """RED: cwd-only reached generic `_build_child_agent`."""
+        for label, value in (
+            ("existing value", os.getcwd()),
+            ("empty string", ""),
+            ("null", None),
+        ):
+            with self.subTest(cwd=label):
+                generic, dispatch, error = self._run_through_registered_handler(
+                    [{"goal": "looks generic", "cwd": value}]
+                )
+                self.assertFalse(
+                    generic, f"cwd={label} reached generic child construction"
+                )
+                dispatch.assert_not_called()
+                # It is material, and it is missing every required field.
+                self.assertTrue(error)
+                self.assertIn("candidate_hash", error)
+
+    def test_cwd_with_partial_material_evidence_still_fails_closed(self):
+        task = self._full_material_task()
+        task.pop("attempt_id")
+        task["cwd"] = os.getcwd()
+        generic, dispatch, error = self._run_through_registered_handler([task])
+        self.assertFalse(generic)
+        dispatch.assert_not_called()
+        self.assertIn("attempt_id", error)
+
+    # -- the two sides that must NOT change -----------------------------
+
+    def test_complete_material_with_cwd_still_reaches_the_adapter(self):
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        seen = {}
+
+        def _fake_dispatch(**kwargs):
+            seen.update(kwargs)
+            return {"status": "launched", "receipt_id": "r-1"}
+
+        task = self._full_material_task()
+        task["cwd"] = os.getcwd()
+        with patch("tools.fleet_delegation.dispatch_material_review", _fake_dispatch), \
+                patch("tools.delegate_tool._build_child_agent",
+                      side_effect=_GenericChildConstructionReached()):
+            result = json.loads(entry.handler({"tasks": [task]}, parent_agent=parent))
+        self.assertEqual(result["status"], "launched")
+        self.assertEqual(seen["cwd"], os.getcwd())
+
+    def test_complete_material_without_cwd_still_reaches_the_adapter(self):
+        """cwd is OPTIONAL: omitting it must not fail closed."""
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        seen = {}
+
+        def _fake_dispatch(**kwargs):
+            seen.update(kwargs)
+            return {"status": "launched", "receipt_id": "r-1"}
+
+        task = self._full_material_task()
+        self.assertNotIn("cwd", task)
+        with patch("tools.fleet_delegation.dispatch_material_review", _fake_dispatch), \
+                patch("tools.delegate_tool._build_child_agent",
+                      side_effect=_GenericChildConstructionReached()):
+            result = json.loads(entry.handler({"tasks": [task]}, parent_agent=parent))
+        self.assertEqual(result["status"], "launched")
+        # It defaulted rather than erroring.
+        self.assertEqual(seen["cwd"], os.getcwd())
+
+    def test_cwd_is_optional_not_required(self):
+        """The repair must not smuggle cwd into the required-evidence set."""
+        self.assertIn("cwd", _MATERIAL_REVIEW_OPTIONAL_FIELDS)
+        self.assertIn("cwd", _MATERIAL_REVIEW_MARKER_FIELDS)
+        self.assertNotIn("cwd", _MATERIAL_REVIEW_REQUIRED_FIELDS)
+
+    def test_generic_only_task_remains_generic(self):
+        for task in (
+            {"goal": "ordinary work"},
+            {"goal": "ordinary work", "context": "c"},
+            {"goal": "ordinary work", "context": "c", "role": "leaf"},
+        ):
+            with self.subTest(task=sorted(task)):
+                generic, dispatch, _err = self._run_through_registered_handler([task])
+                self.assertTrue(generic, "a genuinely generic task must stay generic")
+                dispatch.assert_not_called()
+
+    # -- drift invariant: schema <-> marker set -------------------------
+
+    def test_every_schema_material_property_is_a_classification_marker(self):
+        """Binds the REGISTERED schema to the source-of-truth partition.
+
+        Any future task property added to the model schema must be declared
+        either generic or material (required or optional). A new material field
+        that is not a marker would reopen exactly this fail-open, and a new
+        generic field that is silently treated as material would break ordinary
+        delegation - this fails on either, without reading source text.
+        """
+        item = _registered_task_item_schema()
+        schema_properties = set(item["properties"])
+        generic = set(_GENERIC_TASK_FIELDS)
+        markers = set(_MATERIAL_REVIEW_MARKER_FIELDS)
+
+        self.assertEqual(
+            generic & markers, set(),
+            "a field cannot be both generic and a material marker",
+        )
+        self.assertEqual(
+            schema_properties, generic | markers,
+            "registered schema properties drifted from the declared partition: "
+            f"unclassified={sorted(schema_properties - (generic | markers))}, "
+            f"declared-but-absent={sorted((generic | markers) - schema_properties)}",
+        )
+        self.assertEqual(
+            markers,
+            set(_MATERIAL_REVIEW_REQUIRED_FIELDS) | set(_MATERIAL_REVIEW_OPTIONAL_FIELDS),
+            "the marker set must be exactly required + optional",
+        )
+
+    def test_every_schema_material_property_alone_fails_closed(self):
+        """Derived from the schema, so a new optional field is covered on arrival."""
+        item = _registered_task_item_schema()
+        material_properties = set(item["properties"]) - set(_GENERIC_TASK_FIELDS)
+        self.assertIn("cwd", material_properties)
+        for field in sorted(material_properties):
+            with self.subTest(field=field):
+                generic, dispatch, _err = self._run_through_registered_handler(
+                    [{"goal": "looks generic", field: ""}]
+                )
+                self.assertFalse(
+                    generic, f"{field} alone reached generic child construction"
+                )
+                dispatch.assert_not_called()

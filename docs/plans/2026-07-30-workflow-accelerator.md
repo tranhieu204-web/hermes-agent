@@ -872,3 +872,79 @@ result remains an environment precondition on repository path length.
 `execute_material_route` still has no production caller. Deep-mode provider metrics
 remain HOLD. Release remains HOLD pending a coordinator forward commit and a fresh
 non-Claude Final Inspection.
+
+#### Fence-10 repair record (2026-08-01, rejected commit `caa7784f6`)
+
+Three blind Final Inspectors examined `caa7784f6b3c269b22095b4039174ae7a6a48890`:
+Codex returned **FAIL**, Grok returned **PASS**, and AGY returned a prose **PASS** while
+its native envelope status was **ERROR** (credit INCONCLUSIVE). The reconciled outcome is
+**FAIL / RELEASE HOLD**, decided on evidence rather than count: registered-handler
+behaviour and production tracing defeat an untested assertion. Grok's own receipt claims
+all reserved fields were covered, but it iterated the 12-entry required tuple and never
+probed `cwd`; AGY rests on the same incomplete premise and did not complete natively.
+Full reconciliation, every contradiction and all four least-certain items are preserved in
+the external builder meta-audit.
+
+**The defect.** `cwd` is exposed by the shipped task schema specifically as the material
+review's working directory. Direct production tracing finds **zero** generic task-level
+consumers and exactly one material consumer (`tools/delegate_tool.py:2670`, inside the
+material dispatcher). It was nonetheless absent from material classification, so a task
+carrying only `cwd` — with a real value, an empty string, or `null` — was classified
+generic and reached generic child construction. The coordinator reproduced this through
+the registered handler (`schema_accepted True`, `generic_child_called True`,
+`material_dispatch_called False`), and this builder reproduced all three forms
+independently before accepting the finding.
+
+**Why `cwd` is not simply added to the required set.** It is optional: a complete material
+review may omit it, and the dispatcher defaults it to `os.getcwd()`. Making it required
+would break legitimate complete payloads. The distinction the previous repair collapsed is
+that the set used to **classify** a task as material is not the set of evidence a material
+review must **supply**.
+
+**The repair — one source of truth.** Task fields are now partitioned once, in source,
+into three sets: `_GENERIC_TASK_FIELDS`, `_MATERIAL_REVIEW_REQUIRED_FIELDS` and
+`_MATERIAL_REVIEW_OPTIONAL_FIELDS`. The classification marker set is derived, never
+hand-maintained:
+`_MATERIAL_REVIEW_MARKER_FIELDS = required + optional`. Classification keys off that
+marker set by **key presence**, including empty and null values; a marker-bearing task
+then fails closed on every missing or empty required field. `cwd` is a marker and stays
+optional.
+
+**Drift prevention.** A behavioural invariant binds the **registered** schema to that
+partition without reading source text: the schema's task-item properties must equal
+generic ∪ markers exactly, with an empty intersection, and the marker set must equal
+required ∪ optional. A future schema property that is added without being classified —
+material or generic — fails the suite immediately. A second control derives the
+material-only property list from the schema and asserts each one alone fails closed, so a
+newly added optional field is covered the moment it appears.
+
+**Correction to this builder's own prior work.** Sequence 22 reported that classification
+covered "any key reserved to `_MATERIAL_REVIEW_REQUIRED_FIELDS`" and presented that as
+closing the fail-open class. The claim was too strong: the implementation keyed off the
+required tuple and the guards iterated that same tuple, so implementation and tests shared
+one blind spot and no amount of green could reveal it. This is the same failure mode as
+the earlier C10 correction, one level up — a derived set used as if it were the defining
+set. The remedy is structural rather than an added entry, because adding `cwd` alone would
+leave the next optional field equally invisible.
+
+**Fence-10 evidence.** Canonical material suite (ReviewBatchAdmission +
+RegisteredMaterialSchema + MaterialDiscriminator + OptionalMaterialMarkerCwd): **38
+passed, 0 failed**. Full `test_delegate.py`: 198 passed with 94 subtests, only the three
+documented inherited baselines failing. `test_process_registry.py`: 124 passed, 0 failed,
+protected file byte-identical. Canonical 28-file suite from a 69-character root: **626
+passed, 0 failed, zero FLAKY lines, zero retries**. Mutation controls: **10/10 killed**,
+every mutated file restored to its exact pre-mutation SHA-256 — including a mutant that
+removes `cwd` from the marker set and one that restores the sequence-22 classifier. All
+changed Python compiles; `git diff --check` clean; 2 changed paths, both inside the 3
+leased writes; nothing staged; quarantine untouched.
+
+**Preserved unchanged.** B1 owner-death containment, the sequence-23 bounded process
+cleanup, B4 truthful model evidence, schema transport with `additionalProperties: false`
+and per-field bounds, and ordinary generic delegation behaviour.
+
+**Carried, not closed.** Codex's least-certain item on whether `cwd` was intended
+generic-compatible is carried open, though the repair is fail-closed either way. Grok's
+Linux live PDEATHSIG limitation on a Windows host and AGY's Windows handle-latency item
+remain open. `execute_material_route` still has no production caller. Deep-mode provider
+metrics remain HOLD. Release remains HOLD pending a coordinator forward commit and a fresh
+non-Claude Final Inspection.

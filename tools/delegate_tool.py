@@ -2582,11 +2582,15 @@ def _is_material_review_task(task: Dict[str, Any]) -> bool:
       * emptying both discriminators did the same, because empty strings read
         as absence.
 
-    Both are now material. Every field reserved to
-    `_MATERIAL_REVIEW_REQUIRED_FIELDS` is a discriminator, and an empty or null
-    value is still a presence — so such a task enters fail-closed material
-    validation instead of ever being routed as generic work. Tasks carrying
-    only generic keys (`goal`, `context`, `role`, ...) stay generic.
+    Both are now material. Every field in `_MATERIAL_REVIEW_MARKER_FIELDS` is a
+    discriminator, and an empty or null value is still a presence — so such a
+    task enters fail-closed material validation instead of ever being routed as
+    generic work. Tasks carrying only `_GENERIC_TASK_FIELDS` stay generic.
+
+    The marker set is required PLUS optional material fields. Keying this off
+    the required tuple alone was itself a fail-open: `cwd` is schema-reserved,
+    material-only evidence that is optional because it defaults, so a
+    `cwd`-only task was classified generic and reached child construction.
 
     Fail-closed direction matters here: misclassifying generic work as material
     produces a clear error, while misclassifying material work as generic spends
@@ -2594,13 +2598,34 @@ def _is_material_review_task(task: Dict[str, Any]) -> bool:
     """
     if not isinstance(task, dict):
         return False
-    return any(field in task for field in _MATERIAL_REVIEW_REQUIRED_FIELDS)
+    return any(field in task for field in _MATERIAL_REVIEW_MARKER_FIELDS)
 
 
 # Every field the receipt-bound material adapter needs before a candidate-bound
 # provider process may exist.  There is no default for any of them: a material
 # review without complete receipt/fence/route evidence must fail closed rather
 # than be dispatched on partial identity.
+# ---------------------------------------------------------------------------
+# Task-field partition — the single source of truth for classification.
+#
+# Every property the model-visible task schema exposes belongs to exactly one of
+# these three sets, and the suite asserts that partition against the REGISTERED
+# schema so a future field cannot drift in unclassified.
+#
+# The distinction that matters, and that a previous repair got wrong: the set
+# used to CLASSIFY a task as material is not the same as the set of evidence a
+# material review must SUPPLY. Keying classification off the required tuple made
+# every optional material field invisible to both the code and its tests.
+# ---------------------------------------------------------------------------
+
+# Ordinary delegation fields. Presence of only these keeps a task generic.
+_GENERIC_TASK_FIELDS = (
+    "goal",
+    "context",
+    "role",
+)
+
+# Material evidence that must be present AND non-empty for a review to dispatch.
 _MATERIAL_REVIEW_REQUIRED_FIELDS = (
     "candidate_hash",
     "review_lens",
@@ -2614,6 +2639,22 @@ _MATERIAL_REVIEW_REQUIRED_FIELDS = (
     "preflight",
     "deadline_seconds",
     "output_path",
+)
+
+# Material-only evidence that is OPTIONAL because it has a safe default.
+# `cwd` is the material review's working directory: the schema documents it as
+# such, it has zero generic task-level consumers, its only consumer is the
+# material dispatcher, and it defaults to os.getcwd(). It is therefore a
+# classification marker but must never be a required field - a complete material
+# review may legitimately omit it.
+_MATERIAL_REVIEW_OPTIONAL_FIELDS = (
+    "cwd",
+)
+
+# Classification marker set: presence of ANY of these makes a task material.
+# Derived, never hand-maintained, so required/optional cannot fall out of step.
+_MATERIAL_REVIEW_MARKER_FIELDS = (
+    _MATERIAL_REVIEW_REQUIRED_FIELDS + _MATERIAL_REVIEW_OPTIONAL_FIELDS
 )
 
 
