@@ -748,3 +748,127 @@ dependency-injected entrypoints. Grok's NEW-F3 (clean root has no git object sto
 commit-SHA binding is freeze/manifest/content rather than `git cat-file`) is carried and
 coordinator-owned. Deep-mode provider metrics remain HOLD. Release remains HOLD pending
 a coordinator forward commit and a fresh non-Claude Final Inspection.
+
+#### Fence-9 repair record (2026-08-01, rejected commit `101150ba5`)
+
+Three blind Final Inspectors examined `101150ba56df76cd982003f8187c9eeea83d6445`:
+Codex returned **FAIL / HOLD**, Grok and AGY both returned **PASS / CLEARED**. The
+reconciled outcome is **FAIL / HOLD**, and the reason is not arithmetic: a concrete
+reproduction against the actual registered handler outweighs two broader reviews that
+never exercised the disputed input. Before accepting the finding this builder attempted
+to falsify it and could not — the reproduction succeeded and the defect is **wider** than
+reported.
+
+**B2 — dual-discriminator fail-open.** Material detection asked only whether
+`candidate_hash` or `review_lens` was non-empty. Anything else was routed as generic
+work. Probing `registry.get_entry("delegate_task").handler` with `_build_child_agent`
+instrumented showed generic child construction reached for: both discriminators omitted
+while the other ten material fields were present; both discriminators emptied; and — not
+previously reported — **each material-only field on its own**. Sequence 21 had made this
+model-reachable by widening the schema to accept all twelve fields, so the pre-existing
+detector weakness stopped being masked.
+
+Detection is now: presence of **any** key reserved to `_MATERIAL_REVIEW_REQUIRED_FIELDS`
+classifies the task as material, *before* any generic route planning or child
+construction. Presence of the key is the signal — an empty string or `None` is still a
+presence — after which the material path fails closed on every missing or empty required
+field. Tasks carrying only generic keys (`goal`, `context`, `role`) stay generic. The
+fail-closed direction is deliberate: misclassifying generic work as material yields a
+clear error, whereas misclassifying material work as generic spends provider capacity on
+an unreceipted child.
+
+Nothing else was relaxed to achieve this: `additionalProperties: false`, the strict
+per-field types and bounds, route ownership, B1 and B4 are all unchanged.
+
+**Correction to this builder's own prior work.** The sequence-21 missing-field test
+skipped both discriminators with the comment *"removing these makes it a non-material
+task entirely"* — which states the fail-open as if it were the specification. That test
+shared the premise of the defect it was meant to guard, so no amount of green could have
+caught it. The skip is removed; every required field is now covered, and the mutation
+suite restores the exact `101150ba5` detector to prove the new controls kill it.
+
+**Fence-9 evidence.** ReviewBatchAdmission canonical: 13 passed, 0 failed. Broad 28-file
+canonical suite from a 69-character root: **620 passed, 0 failed, zero FLAKY lines, zero
+retries**. `tests/tools/test_delegate.py`: 190 passed plus 75 subtests, with only the
+three documented inherited baselines failing. All changed Python compiles; `git diff
+--check` clean; 2 changed paths, both inside the 3 leased writes; nothing staged;
+quarantine untouched. Mutation guards: **9/9 killed**, every mutated file restored to its
+exact pre-mutation SHA-256 — builder evidence only, not independent inspection evidence.
+
+**`test_process_registry.py` retry-only report — SCOPE_EXPANSION_REQUIRED, not edited.**
+Codex reported a first-attempt failure where the test killed its child without waiting
+for the marker-file handle to close. The brief's premise that the new Fence-8 tests do
+not use marker files is **incorrect**: exactly one does. Source inspection confirms the
+race is real — `child.kill()` is not awaited before `tempfile.TemporaryDirectory` runs
+`rmtree`, and Windows termination is asynchronous, so the child can still hold the marker
+open. It did **not** reproduce here in 40 executions (10 canonical file runs plus 30
+targeted repetitions, all from a 69-character root), but absence of reproduction does not
+disprove a handle-close race, so it is dispositioned **OPEN-WITH-KNOWN-CAUSE** rather than
+green. The fix — a bounded `child.wait()` after `kill()` — requires
+`tests/tools/test_process_registry.py`, which is outside this lease's allowed writes, so
+this builder stopped and did not edit it. No retry-only pass is counted as green anywhere
+in this sequence.
+
+**Carried, not closed.** Codex's Integrity NOT MET (assigned root has no `.git`, so tree
+and parent cannot be independently recomputed) is coordinator-owned. The short-root
+619/620 result is an environment precondition on repository path length, agreed by all
+sources. `execute_material_route` still has no production caller. Deep-mode provider
+metrics remain HOLD. Release remains HOLD pending a coordinator forward commit and a fresh
+non-Claude Final Inspection.
+
+#### Fence-9 sequence-23 record — deterministic test teardown (2026-08-01)
+
+Sequence 22 dispositioned the Codex-observed retry-only `test_process_registry.py`
+result as OPEN-WITH-KNOWN-CAUSE and stopped, because the fix needed a path outside
+that lease. This sequence carries out that scoped follow-up. It is **test
+stabilization only**: `tools/process_registry.py` production bytes are unchanged, and
+the sequence-22 B2 repair is protected by hash and left byte-identical.
+
+**The defect.** The Fence-8 marker-file test tore down with `child.kill()` followed
+immediately by `containment.close()`, inside a `tempfile.TemporaryDirectory`. Windows
+`TerminateProcess` is asynchronous: `kill()` returns before the process has exited and
+released its handles, so `rmtree` could delete a directory in which the dying child
+still held `child-ran.marker` open, raising `PermissionError`. That is exactly the
+first-attempt failure the inspector reported, and why the file passed only on retry.
+
+**The repair.** Teardown is now a single helper with a fixed, observable ordering:
+terminate → **bounded wait** → containment close, after which the temporary directory
+may be removed. The wait carries an explicit finite bound so a wedged child cannot hang
+the suite, and a timeout is **not** treated as success — containment is still released,
+then the timeout is raised as a failure.
+
+**Directly testable, with fakes, not source text.** The helper takes an optional
+ordering record and its dependencies are injected, so five behavioural controls assert
+the contract without inspecting any source text or regex: ordering is exactly
+`kill → wait → close`; the wait receives a finite bound; a non-exiting child raises and
+still closes containment exactly once with `wait` never recorded; a kill that raises
+still waits and still closes; containment closes exactly once.
+
+**Call-site binding.** The first negative-control run showed that restoring the old
+inline teardown at the real marker-file call site **survived** the helper's unit tests,
+because those target the helper rather than the call site. Rather than record that as a
+known limit, a behavioural binding test was added: the real marker-file test is executed
+with the helper wrapped in a recording delegate that still performs the real teardown,
+and the wrapper must be invoked exactly once. The negative control is now killed.
+
+**Evidence.** Negative controls: **6/6 killed**, every mutated file restored to its
+exact pre-mutation SHA-256 — including a mutant that removes the bounded wait, i.e. the
+verbatim pre-repair teardown. Marker-file test: **50 repetitions, 0 failures**.
+`test_process_registry.py` under the canonical wrapper: **10 repetitions, 0 non-zero
+exits, 0 flaky runs**, 124 passed each time. Protected sequence-22 repair re-verified:
+ReviewBatchAdmission 13/13 and the B2 discriminator/schema suites 17 passed with 65
+subtests, with `tests/tools/test_delegate.py` and `tools/delegate_tool.py` byte-identical
+to their protected hashes. All runs used a 68-character root.
+
+**Broad-suite count, stated plainly.** The canonical 28-file suite is **626 passed, 0
+failed, zero FLAKY lines**. It is 626 rather than 620 because this sequence adds six
+tests (five teardown controls plus the call-site binding); 620 + 6 = 626. The invariant
+that matters — full 28 files, zero failures, no flaky summary, no retry counted as green
+— is met.
+
+**Carried, unchanged.** Codex's Integrity NOT MET on independent tree/parent
+recomputation from a `.git`-less root remains coordinator-owned. The short-root 619/620
+result remains an environment precondition on repository path length.
+`execute_material_route` still has no production caller. Deep-mode provider metrics
+remain HOLD. Release remains HOLD pending a coordinator forward commit and a fresh
+non-Claude Final Inspection.

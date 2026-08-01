@@ -3832,9 +3832,12 @@ class TestRegisteredMaterialSchema(unittest.TestCase):
 
         entry = _registered_delegate_entry()
         parent = _make_mock_parent()
+        # C10 (fence 9): this loop used to skip candidate_hash/review_lens with the
+        # comment "removing these makes it a non-material task entirely" - which
+        # stated the fail-open as if it were the specification. Removing a
+        # discriminator does NOT make a task non-material when other reserved
+        # fields are present, so every required field is now covered here.
         for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
-            if field in ("candidate_hash", "review_lens"):
-                continue  # removing these makes it a non-material task entirely
             with self.subTest(field=field):
                 task = self._complete_material_task()
                 task.pop(field)
@@ -3882,3 +3885,199 @@ class TestRegisteredMaterialSchema(unittest.TestCase):
             except Exception:
                 pass
         dispatch.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# B2 (fence 9): the DUAL-DISCRIMINATOR FAIL-OPEN.
+#
+# Detection previously asked only "is candidate_hash or review_lens set?".
+# Any payload that carried the other ten material-only fields but omitted (or
+# emptied) both discriminators was therefore classified GENERIC, and an
+# instrumented call through the actual registered handler reached generic
+# `_build_child_agent` construction instead of failing closed. Sequence 21 made
+# that reachable from the model boundary by widening the schema to accept all
+# twelve fields.
+#
+# The sequence-21 missing-field test skipped `candidate_hash`/`review_lens`
+# with the comment "removing these makes it a non-material task entirely" -
+# which states the bug as if it were the specification. That skip is removed
+# below and replaced with the real contract:
+#
+#   ANY presence of ANY field reserved to _MATERIAL_REVIEW_REQUIRED_FIELDS -
+#   including empty and null values - classifies the task as material BEFORE
+#   any generic route planning or child construction. The material path then
+#   fails closed on every missing/empty required field. A task carrying only
+#   generic fields stays generic.
+#
+# Every control here runs through the ACTUAL REGISTERED handler and asserts on
+# whether generic child construction was reached, not merely on return values.
+# ----------------------------------------------------------------------
+
+
+class _GenericChildConstructionReached(Exception):
+    """Raised in place of building a generic child, to prove the path was hit."""
+
+
+from tools.delegate_tool import _MATERIAL_REVIEW_REQUIRED_FIELDS  # noqa: E402
+
+
+class TestMaterialDiscriminatorFailOpen(unittest.TestCase):
+
+    @staticmethod
+    def _full_material_task():
+        return {
+            "goal": "Review the release candidate",
+            "candidate_hash": "b" * 64,
+            "review_lens": "runtime",
+            "scope": "release tests",
+            "lane": "claude_code",
+            "prompt": "review exact candidate",
+            "attempt_id": "attempt-1",
+            "fence_token": 7,
+            "environment_fingerprint": "env-b",
+            "evidence_fingerprint": "evidence-b",
+            "preflight": {"health": {"status": "verified", "evidence": "test"}},
+            "deadline_seconds": 60,
+            "output_path": "out.json",
+        }
+
+    def _run_through_registered_handler(self, tasks):
+        """Invoke the REGISTERED handler; report whether generic child was built."""
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        generic_reached = False
+        error = None
+        with patch(
+            "tools.delegate_tool._build_child_agent",
+            side_effect=_GenericChildConstructionReached(),
+        ), patch("tools.delegate_tool._run_single_child") as run_child, \
+                patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            try:
+                raw = entry.handler({"tasks": tasks}, parent_agent=parent)
+                try:
+                    error = json.loads(raw).get("error")
+                except Exception:
+                    error = None
+            except _GenericChildConstructionReached:
+                generic_reached = True
+            if run_child.called:
+                generic_reached = True
+        return generic_reached, dispatch, error
+
+    # -- the exact case Codex reproduced --------------------------------
+
+    def test_both_discriminators_omitted_never_reaches_generic_construction(self):
+        """RED: this reached generic `_build_child_agent` (GENERIC_CHILD_CONSTRUCTION_REACHED)."""
+        task = {
+            k: v for k, v in self._full_material_task().items()
+            if k not in ("candidate_hash", "review_lens")
+        }
+        generic, dispatch, error = self._run_through_registered_handler([task])
+        self.assertFalse(generic, "material-only fields reached generic child construction")
+        dispatch.assert_not_called()
+        self.assertIn("candidate_hash", error)
+        self.assertIn("review_lens", error)
+
+    def test_both_discriminators_empty_never_reaches_generic_construction(self):
+        """Empty strings are presence, not absence: still material, still fail closed."""
+        task = {**self._full_material_task(), "candidate_hash": "", "review_lens": ""}
+        generic, dispatch, error = self._run_through_registered_handler([task])
+        self.assertFalse(generic)
+        dispatch.assert_not_called()
+        self.assertIn("candidate_hash", error)
+
+    def test_null_material_markers_never_reach_generic_construction(self):
+        """All material markers null must be material-and-failing, not generic."""
+        task = {"goal": "g"}
+        for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
+            task[field] = None
+        generic, dispatch, error = self._run_through_registered_handler([task])
+        self.assertFalse(generic)
+        dispatch.assert_not_called()
+        self.assertTrue(error)
+
+    def test_either_discriminator_omitted_or_empty_never_reaches_generic(self):
+        for label, mutate in (
+            ("candidate_hash omitted", lambda t: t.pop("candidate_hash")),
+            ("review_lens omitted", lambda t: t.pop("review_lens")),
+            ("candidate_hash empty", lambda t: t.__setitem__("candidate_hash", "")),
+            ("review_lens empty", lambda t: t.__setitem__("review_lens", "")),
+        ):
+            with self.subTest(case=label):
+                task = self._full_material_task()
+                mutate(task)
+                generic, dispatch, _err = self._run_through_registered_handler([task])
+                self.assertFalse(generic, f"{label} reached generic child construction")
+                dispatch.assert_not_called()
+
+    def test_each_material_only_field_alone_never_reaches_generic(self):
+        """A single reserved field is enough to make a task material."""
+        for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
+            with self.subTest(field=field):
+                sample = self._full_material_task()[field]
+                task = {"goal": "looks generic", "context": "c", field: sample}
+                generic, dispatch, error = self._run_through_registered_handler([task])
+                self.assertFalse(
+                    generic, f"{field} alone reached generic child construction"
+                )
+                dispatch.assert_not_called()
+                self.assertTrue(error)
+
+    def test_each_material_only_field_alone_and_empty_never_reaches_generic(self):
+        """Presence of the KEY is the signal, even when the value is empty."""
+        empties = {"fence_token": None, "deadline_seconds": None, "preflight": {}}
+        for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
+            with self.subTest(field=field):
+                task = {"goal": "looks generic", field: empties.get(field, "")}
+                generic, dispatch, _err = self._run_through_registered_handler([task])
+                self.assertFalse(
+                    generic, f"empty {field} alone reached generic child construction"
+                )
+                dispatch.assert_not_called()
+
+    # -- the two sides that must NOT change -----------------------------
+
+    def test_complete_material_payload_still_reaches_the_adapter(self):
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        seen = {}
+
+        def _fake_dispatch(**kwargs):
+            seen.update(kwargs)
+            return {"status": "launched", "receipt_id": "r-1"}
+
+        task = self._full_material_task()
+        task["cwd"] = os.getcwd()
+        with patch("tools.fleet_delegation.dispatch_material_review", _fake_dispatch), \
+                patch("tools.delegate_tool._build_child_agent",
+                      side_effect=_GenericChildConstructionReached()):
+            result = json.loads(entry.handler({"tasks": [task]}, parent_agent=parent))
+        self.assertEqual(result["status"], "launched")
+        self.assertEqual(seen["candidate_hash"], "b" * 64)
+        self.assertEqual(seen["fence_token"], 7)
+
+    def test_genuine_generic_delegation_is_still_generic(self):
+        """Only generic fields present -> the generic path must still be taken."""
+        for task in (
+            {"goal": "ordinary work"},
+            {"goal": "ordinary work", "context": "some context"},
+            {"goal": "ordinary work", "context": "c", "role": "leaf"},
+        ):
+            with self.subTest(task=sorted(task)):
+                generic, dispatch, _err = self._run_through_registered_handler([task])
+                self.assertTrue(
+                    generic,
+                    "a genuinely generic task must still reach generic construction",
+                )
+                dispatch.assert_not_called()
+
+    def test_detector_treats_any_reserved_field_presence_as_material(self):
+        """Unit-level statement of the same contract, for a precise failure message."""
+        from tools.delegate_tool import _is_material_review_task
+
+        self.assertFalse(_is_material_review_task({"goal": "g"}))
+        self.assertFalse(_is_material_review_task({"goal": "g", "context": "c", "role": "leaf"}))
+        for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
+            with self.subTest(field=field):
+                self.assertTrue(_is_material_review_task({"goal": "g", field: ""}))
+                self.assertTrue(_is_material_review_task({"goal": "g", field: None}))

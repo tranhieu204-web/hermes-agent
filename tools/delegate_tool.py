@@ -2569,7 +2569,32 @@ def _review_batch_conflict(
 
 
 def _is_material_review_task(task: Dict[str, Any]) -> bool:
-    return bool(str(task.get("candidate_hash", "")).strip()) or bool(str(task.get("review_lens", "")).strip())
+    """Classify a task as material if ANY reserved material field is present.
+
+    Presence of the KEY is the signal, not the truthiness of its value. The
+    previous rule asked only whether `candidate_hash` or `review_lens` was
+    non-empty, which failed OPEN in two ways an inspector reproduced through
+    the registered handler:
+
+      * a payload keeping the other ten material-only fields but omitting both
+        discriminators was classified generic and reached generic child
+        construction;
+      * emptying both discriminators did the same, because empty strings read
+        as absence.
+
+    Both are now material. Every field reserved to
+    `_MATERIAL_REVIEW_REQUIRED_FIELDS` is a discriminator, and an empty or null
+    value is still a presence — so such a task enters fail-closed material
+    validation instead of ever being routed as generic work. Tasks carrying
+    only generic keys (`goal`, `context`, `role`, ...) stay generic.
+
+    Fail-closed direction matters here: misclassifying generic work as material
+    produces a clear error, while misclassifying material work as generic spends
+    provider capacity on an unreceipted child.
+    """
+    if not isinstance(task, dict):
+        return False
+    return any(field in task for field in _MATERIAL_REVIEW_REQUIRED_FIELDS)
 
 
 # Every field the receipt-bound material adapter needs before a candidate-bound

@@ -2789,11 +2789,11 @@ def test_contained_child_cannot_execute_before_it_is_adopted():
                 time.sleep(0.02)
             assert os.path.exists(marker), "child never resumed after adoption"
         finally:
-            try:
-                child.kill()
-            except Exception:
-                pass
-            containment.close()
+            # Terminate -> bounded wait -> containment close, so the child has
+            # released its handle on `child-ran.marker` before the enclosing
+            # TemporaryDirectory rmtree's it. Without the wait this teardown
+            # races the dying process and fails only intermittently.
+            _bounded_contained_child_teardown(child, containment)
 
 
 # ---------------------------------------------------------------------------
@@ -2925,3 +2925,210 @@ def test_windows_containment_behaviour_is_unchanged_by_the_linux_guard():
         assert facts["owner_death_containment_available"] is True
     finally:
         containment.close()
+
+
+# ---------------------------------------------------------------------------
+# Fence 9 / sequence 23: deterministic bounded teardown for contained children.
+#
+# A blind Final Inspector observed this file passing only on RETRY. Cause, from
+# its receipt: the test "killed the child without waiting for its marker-file
+# handle to close". Windows `TerminateProcess` is ASYNCHRONOUS - `Popen.kill()`
+# returns before the process has exited and released its open handles - so the
+# enclosing `tempfile.TemporaryDirectory` could `rmtree` a directory in which
+# the dying child still held `child-ran.marker` open, raising PermissionError.
+#
+# The required ordering is therefore: terminate -> BOUNDED WAIT -> containment
+# close (and only then may the temporary directory be removed). That ordering is
+# implemented once in `_bounded_contained_child_teardown` and asserted directly
+# with fakes below - behaviourally, never by reading source text.
+#
+# This is TEST stabilization only. `tools/process_registry.py` production bytes
+# are unchanged by this sequence.
+# ---------------------------------------------------------------------------
+
+
+_TEARDOWN_WAIT_SECONDS = 30.0
+
+
+def _bounded_contained_child_teardown(
+    child, containment, *, timeout=_TEARDOWN_WAIT_SECONDS, record=None
+):
+    """Terminate a contained child, WAIT for it, then release containment.
+
+    Ordering is the whole point. `Popen.kill()` on Windows issues
+    `TerminateProcess`, which is asynchronous: it returns before the process has
+    exited and released its open handles. Closing containment and removing the
+    enclosing temporary directory at that moment races the dying child, and
+    `rmtree` raises PermissionError if the child still holds a file inside it.
+
+    So: terminate -> bounded wait -> containment close. The wait is bounded so a
+    wedged child cannot hang the suite, and a timeout is **not** treated as
+    success - containment is still released, then the timeout is raised as a
+    failure. `record` exists so the ordering itself is directly assertable with
+    fakes rather than by reading this source.
+    """
+
+    def _note(event):
+        if record is not None:
+            record.append(event)
+
+    timed_out = False
+    try:
+        try:
+            child.kill()
+            _note("kill")
+        except Exception:
+            # An already-dead child is fine; we still owe it a bounded wait so
+            # the handle-release is observed before cleanup.
+            _note("kill_failed")
+        try:
+            child.wait(timeout=timeout)
+            _note("wait")
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _note("wait_timeout")
+    finally:
+        containment.close()
+        _note("close")
+
+    if timed_out:
+        raise AssertionError(
+            f"contained child did not exit within {timeout}s of kill(); "
+            "temporary-directory cleanup would race its still-open handles"
+        )
+
+
+class _FakeChild:
+    """Stand-in child; optionally refuses to exit within the bound.
+
+    It deliberately does NOT append to the ordering record: the teardown helper
+    is the single observer, so the recorded sequence reflects what the helper
+    actually did rather than what the fake believes happened.
+    """
+
+    def __init__(self, *, exits=True, kill_raises=False):
+        self._exits = exits
+        self._kill_raises = kill_raises
+        self.kill_calls = 0
+        self.wait_timeouts = []
+
+    def kill(self):
+        self.kill_calls += 1
+        if self._kill_raises:
+            raise OSError("kill failed")
+
+    def wait(self, timeout=None):
+        self.wait_timeouts.append(timeout)
+        if not self._exits:
+            raise subprocess.TimeoutExpired(cmd="fake-child", timeout=timeout)
+        return 0
+
+
+class _FakeContainment:
+    """Stand-in containment; counts releases without touching the record."""
+
+    def __init__(self):
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
+
+
+def test_teardown_waits_for_child_exit_before_closing_containment():
+    """RED: teardown was kill -> close, with no wait between them."""
+    record = []
+    child = _FakeChild()
+    containment = _FakeContainment()
+
+    _bounded_contained_child_teardown(child, containment, timeout=5.0, record=record)
+
+    assert record == ["kill", "wait", "close"], record
+    assert containment.closed == 1
+
+
+def test_teardown_wait_is_bounded_not_indefinite():
+    """The wait must carry an explicit finite bound, never block forever."""
+    record = []
+    child = _FakeChild()
+    containment = _FakeContainment()
+
+    _bounded_contained_child_teardown(child, containment, timeout=7.5, record=record)
+
+    assert child.wait_timeouts == [7.5]
+    assert all(t is not None and t > 0 for t in child.wait_timeouts)
+
+
+def test_teardown_timeout_is_not_swallowed_as_success():
+    """A child that never exits must FAIL the test, not pass quietly."""
+    record = []
+    child = _FakeChild(exits=False)
+    containment = _FakeContainment()
+
+    with pytest.raises(AssertionError) as excinfo:
+        _bounded_contained_child_teardown(child, containment, timeout=0.5, record=record)
+
+    assert "did not exit" in str(excinfo.value)
+    # The containment handle is still released before the failure propagates,
+    # so a timeout cannot also leak the job handle.
+    assert containment.closed == 1
+    assert record[-1] == "close"
+    assert "wait" not in record
+
+
+def test_teardown_still_waits_and_closes_when_kill_raises():
+    """A kill that fails must not skip the wait or leak the containment."""
+    record = []
+    child = _FakeChild(kill_raises=True)
+    containment = _FakeContainment()
+
+    _bounded_contained_child_teardown(child, containment, timeout=5.0, record=record)
+
+    assert record == ["kill_failed", "wait", "close"], record
+    assert containment.closed == 1
+
+
+def test_marker_file_test_tears_down_through_the_bounded_helper():
+    """Bind the CALL SITE, not just the helper.
+
+    The negative control that restores the old inline teardown survives the
+    helper's unit tests, because those target the helper. This closes that gap
+    behaviourally: the real marker-file test is executed with the helper wrapped
+    in a recording delegate (which still performs the real teardown), and the
+    wrapper must be invoked exactly once. No source text or regex is inspected.
+    """
+    import tests.tools.test_process_registry as module
+
+    from tools.process_registry import create_owner_death_containment
+
+    containment = create_owner_death_containment()
+    kind, available = containment.kind, containment.available
+    containment.close()
+    if not available or kind != "windows_job_object":
+        pytest.skip("suspended-create arming is the Windows job-object path")
+
+    calls = []
+    real = module._bounded_contained_child_teardown
+
+    def _recording(child, cont, **kwargs):
+        calls.append((child, cont))
+        return real(child, cont, **kwargs)
+
+    module._bounded_contained_child_teardown = _recording
+    try:
+        module.test_contained_child_cannot_execute_before_it_is_adopted()
+    finally:
+        module._bounded_contained_child_teardown = real
+
+    assert len(calls) == 1, (
+        "the marker-file test did not tear down through the bounded helper; "
+        "an inline kill/close would race TemporaryDirectory cleanup"
+    )
+
+
+def test_teardown_closes_containment_exactly_once():
+    record = []
+    child = _FakeChild()
+    containment = _FakeContainment()
+    _bounded_contained_child_teardown(child, containment, timeout=5.0, record=record)
+    assert containment.closed == 1
+    assert record.count("close") == 1
