@@ -276,10 +276,11 @@ class FleetQualificationDoctor:
             return None, (), "cached live served-model receipt unavailable"
         cached_catalog = cached.get("qualified_models")
         if isinstance(cached_catalog, list):
+            # Validate cached models against requested/served identity
             models = tuple(
                 model
                 for model in profile.ordered_models
-                if model in cached_catalog
+                if model in cached_catalog and model == model_id
             )
             if models:
                 return version, models, None
@@ -512,7 +513,6 @@ class FleetQualificationDoctor:
         version: str,
         model_id: str,
         display_label: str,
-        catalog_models: tuple[str, ...] = (),
     ) -> tuple[Mapping[str, object] | None, str | None]:
         """Run one bounded print-mode probe; return sanitized proof or error."""
 
@@ -626,7 +626,7 @@ class FleetQualificationDoctor:
                     "log_sha256": receipt.get("log_sha256"),
                     "log_bytes": receipt.get("log_bytes"),
                     "receipt_count": receipt.get("receipt_count"),
-                    "qualified_models": list(catalog_models or (model_id,)),
+                    "qualified_models": [model_id],
                 }
             )
         self._write_proof_cache(proof)
@@ -678,11 +678,7 @@ class FleetQualificationDoctor:
         if profile.lane_id != "antigravity":
             return version, qualified_models, None
 
-        # Static catalog listing is never sufficient for Antigravity admission:
-        # the LEAD model still needs the bounded live consumer-subscription
-        # receipt. Once that route is proven, the full catalog∩profile list is
-        # exposed — every execution re-verifies its own served-model label via
-        # the per-turn log receipt, so trailing models ride the lead proof.
+        # live consumer-subscription receipt.
         model_id = qualified_models[0]
         display_label = _AGY_MODEL_LABELS.get(model_id)
         if display_label is None:
@@ -693,7 +689,6 @@ class FleetQualificationDoctor:
             version=version,
             model_id=model_id,
             display_label=display_label,
-            catalog_models=qualified_models,
         )
         if error:
             return None, (), error

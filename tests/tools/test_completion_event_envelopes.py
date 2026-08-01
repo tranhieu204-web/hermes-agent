@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.async_delegation import _push_completion_event
-from tools.process_registry import ProcessRegistry, ProcessSession
+from tools.process_registry import ProcessRegistry, ProcessSession, _format_async_delegation
 
 
 def _completed_process_event(registry: ProcessRegistry, process_id: str) -> dict:
@@ -97,3 +97,28 @@ def test_async_completion_never_enqueues_before_durable_acknowledgement():
         _push_completion_event(record, {"status": "completed"}, "completed")
 
     assert target.completion_queue.empty()
+
+
+def test_material_completion_uses_allowlisted_public_envelope_only():
+    target = SimpleNamespace(completion_queue=queue.Queue())
+    persisted = []
+    record = {
+        "delegation_id": "deleg_material_public", "session_key": "gateway:owner",
+        "review_receipt_id": "review_public_1", "review_ledger_path": "C:/secret/ledger.db",
+        "effective_execution_identity": "provider=openai|model=gpt",
+        "goal": "secret prompt", "context": "C:/private/context", "dispatched_at": 100.0,
+        "completed_at": 101.0,
+    }
+    result = {"status": "completed", "summary": "raw output C:/private/output", "error": "token=secret", "finding_count": 2}
+    with (
+        patch("tools.process_registry.process_registry", target),
+        patch("tools.async_delegation._persist_completion", side_effect=lambda event, value: persisted.append((dict(event), dict(value))) or True),
+    ):
+        _push_completion_event(record, result, "completed")
+    event = target.completion_queue.get_nowait()
+    rendered = _format_async_delegation(event)
+    assert event["material_review_public"] is True
+    assert "goal" not in event and "context" not in event and "review_ledger_path" not in event
+    assert "summary" not in event and "error" not in event
+    assert "C:/private" not in rendered and "secret" not in rendered
+    assert persisted[0][1] == {"status": "completed", "finding_count": 2, "duration_seconds": 1.0}

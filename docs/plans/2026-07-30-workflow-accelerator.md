@@ -430,3 +430,104 @@ approved a bounded retry for only SQLite's expected schema-bootstrap lock;
 malformed and unrelated database errors still raise. The two-process durable
 capacity admission regression passes. These are current candidate repairs,
 not changes to baseline exclusions or live runtime behavior.
+
+### Fleet-bridge runtime integration decision — current Accelerator candidate
+
+**Scope:** wire the verified six-file AGY/Grok bridge only through the
+Accelerator's durable material-review path. The bridge must use the ledger's
+canonical backing-route identity, a receipt-bound private ingress, durable
+route-plan/degraded-capacity evidence, and owned external cancellation before
+Claude or Antigravity work can be considered submitted. **Rationale:** the
+frozen bridge has validated route planning but no safe material ingress; its
+standalone `FleetService.run` path cannot prove candidate/scope/lens/fence
+uniqueness or stop external CLI work. **Owner:** Codex is the single mutation
+writer; Hermes and Claude are bounded design reviewers; the ledger/outbox owns
+admission and terminal state. **Safety and quality boundary:** generic
+`delegate_task` remains fail-closed for material work. No route, endpoint,
+executable, PID, raw provider output, or credentials enter public receipts.
+No main, runtime, configuration, restart, install, or deployment change is
+allowed until this candidate has local and exact-CI evidence.
+
+**Acceptance criterion:** one immutable identity binds provider/account/
+endpoint/model/adapter evidence across route plan, receipt, outbox, and
+fence; a candidate/environment/scope/lens/route/fence has only one durable
+submission; cancellation before or after owned external handle binding cannot
+leave an orphan or publish a late result; an unavailable/degraded roster is
+candidate-bound and cannot satisfy an independence gate; ordinary delegation
+is unchanged. **Placement:** current Accelerator candidate after its
+foundation Windows gate; not a current Hermes runtime mutation.
+
+#### Design consultation reconciliation (2026-07-31)
+
+Claude returned **CONDITIONAL** for the bridge design. Its adopted conditions
+are: exact identity enforcement at the private adapter boundary; retry attempt
+and fence pinning; an idempotency key linking persisted route plan to outbox;
+automatic termination of a spawned handle if binding fails; atomic
+current-fence terminal publication; and a deny-by-default public receipt
+schema. Hermes was launched through the first-party wrapper on the same
+changed scope and remains pending at this record's creation; it will be
+recorded once or as one bounded unavailable result, never duplicated.
+
+Hermes subsequently returned **HOLD** on the same bounded design. The HOLD is
+substantive and supersedes the provisional implementation scope: a
+caller-supplied async `runner` could satisfy a route receipt without executing
+the persisted assignment; external adapters have no durable owned process
+handle; the Fleet store, review ledger, and async outbox are separate
+databases without a reconciled saga; executable location must not define
+backing-route independence; and the public completion path still carries raw
+execution objects. The next implementation slice is therefore a sealed
+material state machine, not a partial bridge launch: `PLANNED → OUTBOX_READY
+→ STARTING → OWNED → RUNNING → FINALIZING → terminal`, keyed by material plan,
+candidate/environment/scope/lens/route, attempt, and fence. It must persist a
+recoverable plan/outbox saga, construct the runner internally, bind owned
+external process identity before `RUNNING`, heartbeat the Fleet lease, and
+construct public receipts from a recursive allowlist only. The bridge remains
+isolated and cannot be published until those tests clear.
+
+#### Owned external-material execution decision (2026-07-31)
+
+**Scope:** material-only Claude Code and Antigravity execution after sealed
+route-plan admission. **Rationale:** both live adapters currently use blocking
+`subprocess.run`, which has neither a durable process identity nor a safe
+current-fence cancellation path. **Owner:** one Codex writer implements a
+restricted Fleet-service owned-execution seam; the durable outbox and ledger
+remain the authority for admission and terminal publication. **Safety and
+quality boundary:** ordinary adapter `execute()` and generic delegation remain
+unchanged. Material execution uses direct `argv` only (`shell=False`), a
+sanitized environment, opaque non-secret handle facts, PID-plus-start-time
+verification, and the existing exact-owner process termination mechanism. It
+never persistently records argv, prompts, executable paths, environment, raw
+stdout/stderr, or credentials. **Acceptance:** a handle is durably bound in
+both rails before `RUNNING`; stale fence or PID-start mismatch cannot cancel or
+terminalize; cancellation versus completion releases exactly one lease and
+publishes exactly one terminal state; crash recovery never relaunches an
+ambiguous external process. **Placement:** current isolated Accelerator
+candidate; no main or live Hermes mutation.
+
+#### Sealed owned-external ingress implementation record (2026-08-01)
+
+**Scope:** implement the approved material-only ingress from route plan to
+owned external process and terminal receipt. **Rationale:** a durable route
+plan alone was insufficient: a host crash before a child-handle bind could
+otherwise leave an accepted retry or turn a late completion into a false pass.
+**Owner:** one Codex writer. **Safety/quality boundary:** `FleetService.run`,
+generic `delegate_task`, public material launcher calls, provider secrets, and
+live Hermes remain unchanged. The only executable paths are Claude Code and
+Antigravity argv invocations through the module-private ingress.
+
+The implementation now creates one internal runner only after a receipt and
+delegation id are durable; starts the external child with `shell=False` and a
+sanitized environment; registers its opaque handle/PID/start identity; binds
+the ledger and async outbox fence before consuming output; and releases the
+Fleet lease after adapter completion. A handle-free crash terminalizes the
+sealed saga as `UNKNOWN/INTERRUPTED` (or `CANCELLED`) rather than accepting
+synthetic completion. The public async envelope is rebuilt from allowlisted
+facts and excludes raw provider I/O.
+
+**Measured acceptance so far:** a temporary-HERMES_HOME integration test
+proves admission → dual bind → external completion → receipt/plan/retry
+terminalization; raw stderr is absent from durable async state. The current
+focused material/async/ledger/process test matrix passed 226 tests (16
+skipped), compilation and diff checks passed. Remaining acceptance: explicit
+cancel/owner-death race coverage for this ingress, recursive completion-value
+validation, full Accelerator suite, changed-scope reviews, and exact CI.

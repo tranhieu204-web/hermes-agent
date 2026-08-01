@@ -2542,3 +2542,39 @@ class TestReaderLoopOrphanedPipe:
         for i in range(1, 6):
             assert f"line-{i}" in s.output_buffer
         assert "tail-after-sleep" in s.output_buffer
+
+
+def test_owned_argv_handle_cancels_only_the_exact_registered_process(registry):
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        session = registry.register_owned_argv_process(process, handle_id="material-handle-a")
+        assert session.command == "[material-external-owned]"
+        assert "python" not in session.command.lower()
+        assert not registry.cancel_owned_argv_process(
+            "material-handle-a", pid=process.pid, host_start_time=(session.host_start_time or 0) + 1,
+        )
+        assert registry.cancel_owned_argv_process(
+            "material-handle-a", pid=process.pid, host_start_time=session.host_start_time,
+        )
+        process.wait(timeout=10)
+        assert session.exited is True
+        assert session.termination_source == "material-review.cancel"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_owned_argv_handle_releases_after_adapter_consumes_its_result(registry):
+    process = subprocess.Popen([sys.executable, "-c", "raise SystemExit(0)"])
+    try:
+        session = registry.register_owned_argv_process(process, handle_id="material-handle-b")
+        assert process.wait(timeout=10) == 0
+        assert registry.complete_owned_argv_process(
+            "material-handle-b", pid=process.pid, host_start_time=session.host_start_time, returncode=0,
+        )
+        assert registry.get(session.id).exited is True
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)

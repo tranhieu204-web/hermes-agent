@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import subprocess
 import sys
@@ -8,7 +9,18 @@ from pathlib import Path
 import pytest
 
 from tools.release_review_ledger import ReleaseReviewLedger, canonical_effective_route_identity
-from tools.release_review_launch import launch_async_review, launch_material_async_review, launch_shell_review
+from tools.release_review_launch import (
+    _MATERIAL_LAUNCH_CAPABILITY,
+    launch_async_review,
+    launch_material_async_review as _public_material_launch,
+    launch_shell_review,
+)
+
+
+def launch_material_async_review(*args, **kwargs):
+    """Trusted test-only helper for the otherwise sealed ingress API."""
+    kwargs["_capability"] = _MATERIAL_LAUNCH_CAPABILITY
+    return _public_material_launch(*args, **kwargs)
 
 
 def _preflight():
@@ -33,6 +45,8 @@ def _request(**overrides):
         "output_path": "out.json",
         "environment_fingerprint": "test-environment",
         "evidence_fingerprint": "test-evidence",
+        "effective_route_identity": "route-a",
+        "review_lens": "runtime",
     }
     request.update(overrides)
     return request
@@ -257,6 +271,179 @@ def test_material_review_requires_current_fence_and_rejects_generic_batch(tmp_pa
         ad._reset_for_tests()
 
 
+def test_fleet_material_plan_is_atomically_bound_before_async_submission(tmp_path, monkeypatch):
+    """A material route plan, claim, and outbox share one candidate/fence boundary."""
+    from tools import async_delegation as ad
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ad._reset_for_tests()
+    try:
+        ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+        packet = ledger.record_recovery_packet(_recovery_packet())
+        attempt = _admit_recovery(ledger, packet["packet_hash"])
+        route_plan = {
+            "requested": 2,
+            "degraded_route_capacity": True,
+            "selected": {
+                "lane_id": "codex", "effective_execution_identity": "route-a",
+                "review_lens": "runtime", "provider_id": "openai", "model_id": "gpt",
+            },
+            "unavailable": [{"lane_id": "alias", "reason": "duplicate_route"}],
+        }
+        result = ledger.admit_fleet_material_launch(
+            attempt_id=attempt["attempt_id"],
+            fence_token=attempt["fence_token"],
+            route_plan=route_plan,
+            **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+        )
+        assert result["status"] == "admitted"
+        with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+            row = conn.execute(
+                "SELECT attempt_id, fence_token, route_identity, review_lens, plan_json FROM workflow_material_route_plans"
+            ).fetchone()
+        assert row[:4] == (attempt["attempt_id"], attempt["fence_token"], "route-a", "runtime")
+        assert json.loads(row[4])["unavailable"][0]["reason"] == "duplicate_route"
+    finally:
+        ad._reset_for_tests()
+
+
+def test_material_terminal_saga_commits_receipt_plan_and_recovery_attempt_together(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    route_plan = {
+        "requested": 1,
+        "degraded_route_capacity": False,
+        "selected": {
+            "lane_id": "codex", "effective_execution_identity": "route-a",
+            "review_lens": "runtime", "provider_id": "openai", "model_id": "gpt",
+        },
+        "unavailable": [],
+    }
+    receipt = ledger.admit_fleet_material_launch(
+        attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"], route_plan=route_plan,
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        conn.execute("UPDATE release_review_receipts SET state='running' WHERE receipt_id=?", (receipt["receipt_id"],))
+    assert ledger.bind_material_owned_handle(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        handle_id="owned-handle", pid=123, host_start_time=456,
+    )
+    assert ledger.bind_material_owned_handle(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        handle_id="owned-handle", pid=123, host_start_time=456,
+    )
+    assert ledger.finalize_material_saga(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        status="completed", evidence={"delegation_id": "deleg_1", "result": {"status": "completed"}},
+    ) is True
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        receipt_state = conn.execute(
+            "SELECT state FROM release_review_receipts WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0]
+        plan_state = conn.execute(
+            "SELECT saga_state FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0]
+        attempt_state = conn.execute(
+            "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+        ).fetchone()[0]
+    assert (receipt_state, plan_state, attempt_state) == ("completed", "TERMINAL", "COMMITTED")
+    assert ledger.finalize_material_saga(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        status="completed", evidence={"delegation_id": "deleg_1"},
+    ) is False
+
+
+def test_material_terminal_saga_rejects_stale_fence_without_partial_terminal_state(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    receipt = ledger.admit_fleet_material_launch(
+        attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        route_plan={"requested": 1, "degraded_route_capacity": False,
+                    "selected": {"lane_id": "codex", "effective_execution_identity": "route-a", "review_lens": "runtime"},
+                    "unavailable": []},
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    with pytest.raises(RuntimeError, match="route-plan fence"):
+        ledger.finalize_material_saga(
+            receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"] + 1,
+            status="completed", evidence={},
+        )
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM release_review_receipts WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0] == "launching"
+        assert conn.execute(
+            "SELECT saga_state FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0] == "SEALED"
+
+
+def test_unowned_material_saga_becomes_interrupted_without_accepting_a_late_result(tmp_path):
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    receipt = ledger.admit_fleet_material_launch(
+        attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        route_plan={"requested": 1, "degraded_route_capacity": False,
+                    "selected": {"lane_id": "codex", "effective_execution_identity": "route-a", "review_lens": "runtime"},
+                    "unavailable": []},
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        conn.execute("UPDATE release_review_receipts SET state='running' WHERE receipt_id=?", (receipt["receipt_id"],))
+    assert ledger.interrupt_unowned_material_saga(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        evidence={"reason": "owner_died_before_external_handle"},
+    )
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        receipt_state, terminal_json = conn.execute(
+            "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()
+        plan_state = conn.execute(
+            "SELECT saga_state FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0]
+        attempt_state = conn.execute(
+            "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+        ).fetchone()[0]
+    assert (receipt_state, plan_state, attempt_state) == ("unknown", "TERMINAL", "INTERRUPTED")
+    assert json.loads(terminal_json)["evidence"]["external_handle_bound"] is False
+    assert not ledger.interrupt_unowned_material_saga(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        evidence={"reason": "late_replay"},
+    )
+
+
+def test_fleet_material_plan_rejects_a_caller_supplied_runner(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    result = launch_material_async_review(
+        ledger,
+        attempt_id=attempt["attempt_id"],
+        fence_token=attempt["fence_token"],
+        fleet_route_plan={
+            "selected": {
+                "lane_id": "codex", "effective_execution_identity": "route-a",
+                "review_lens": "runtime",
+            },
+            "unavailable": [], "requested": 1,
+        },
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+        dispatch_kwargs={"runner": lambda: {"status": "completed"}, "interrupt_fn": lambda: None},
+    )
+    assert result["status"] == "rejected"
+    assert "construct their runner internally" in result["error"]
+    with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM workflow_material_route_plans").fetchone()[0] == 0
+
+
 def test_generic_async_launcher_rejects_a_material_recovery_attempt(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -267,6 +454,20 @@ def test_generic_async_launcher_rejects_a_material_recovery_attempt(tmp_path, mo
     )
     assert result["status"] == "rejected"
     assert "material adapter" in result["error"]
+
+
+def test_public_material_launcher_rejects_callers_without_sealed_ingress(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    result = _public_material_launch(
+        ledger, attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        dispatch_kwargs={}, **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    assert result["status"] == "rejected"
+    assert "sealed fleet material ingress" in result["error"]
 
 
 def test_unaccepted_material_launch_keeps_retry_prepared(tmp_path, monkeypatch):
@@ -430,6 +631,31 @@ def test_effective_route_identity_collapses_endpoint_account_model_aliases(tmp_p
     first = ledger.admit(**_request(lane="lane-one", effective_route_identity=first_route))
     alias = ledger.admit(**_request(lane="lane-two", effective_route_identity=alias_route))
     assert first["status"] == alias["status"] == "admitted"
+
+
+def test_effective_route_identity_preserves_case_sensitive_endpoint_paths():
+    lower = canonical_effective_route_identity(
+        provider="openai", base_url="https://api.example.test/v1", account_secret="private", model="gpt-5.6-sol",
+    )
+    upper = canonical_effective_route_identity(
+        provider="openai", base_url="https://api.example.test/V1", account_secret="private", model="gpt-5.6-sol",
+    )
+    assert lower != upper
+
+
+def test_effective_route_identity_ignores_executable_location():
+    first = canonical_effective_route_identity(
+        provider="claude", base_url="", account_secret=None, model="opus",
+        adapter_kind="external_cli", auth_kind="oauth", auth_source="official-subscription",
+        executable="C:/one/claude.exe",
+    )
+    alias = canonical_effective_route_identity(
+        provider="CLAUDE", base_url="", account_secret=None, model="OPUS",
+        adapter_kind="external_cli", auth_kind="oauth", auth_source="official-subscription",
+        executable="D:/another/claude.exe",
+    )
+    assert first == alias
+    assert "claude.exe" not in first
 
 
 def test_conflicting_requested_id_is_rejected(tmp_path):

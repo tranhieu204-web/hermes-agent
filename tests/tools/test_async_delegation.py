@@ -1190,3 +1190,114 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
+
+
+def test_material_outbox_reconciles_terminal_async_row_into_one_ledger_saga(tmp_path, monkeypatch):
+    """A crash after async persistence cannot strand the material retry fence."""
+    from tools.release_review_ledger import ReleaseReviewLedger
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    packet = ledger.record_recovery_packet({
+        "schema_version": 1, "candidate_hash": "a" * 64, "environment_fingerprint": "env-a",
+        "normalized_scope": "release tests", "failure_fingerprint": "failed:test_one",
+        "normalized_task": "reproduce test one", "failed_set": ["test_one"],
+        "reproducer": ["pytest", "test_one"], "versions": {"python": "3.12"},
+        "attempted_remedy_hash": "none", "verified_facts": ["reproduced"],
+        "unresolved_questions": ["why"], "quarantined": [], "redaction_attestation": True,
+    })
+    attempt = ledger.admit_recovery_attempt(
+        packet_hash=packet["packet_hash"], candidate_hash="a" * 64, environment_fingerprint="env-a",
+        normalized_scope="release tests", failure_fingerprint="failed:test_one", normalized_task="reproduce test one",
+        mode="STANDARD", ordinal=1, owner="codex", effective_route_identity="route-a", lens="runtime",
+    )
+    receipt = ledger.admit_fleet_material_launch(
+        attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        route_plan={"requested": 1, "degraded_route_capacity": False,
+                    "selected": {"lane_id": "codex", "effective_execution_identity": "route-a", "review_lens": "runtime"},
+                    "unavailable": []},
+        candidate_hash="a" * 64, scope="release tests", lane="codex", model="m", prompt="p",
+        deadline_seconds=60, output_path="out.json", environment_fingerprint="env-a",
+        evidence_fingerprint="evidence-a", effective_route_identity="route-a", review_lens="runtime",
+        preflight={
+            "target": {"status": "verified", "evidence": "x"}, "install": {"status": "verified", "evidence": "x"},
+            "restart": {"status": "verified", "evidence": "x"}, "rollback": {"status": "verified", "evidence": "x"},
+            "health": {"status": "verified", "evidence": "x", "authenticated": True, "method": "proof", "endpoint": "/health"},
+        },
+    )
+    ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+    ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="RUNNING")
+    with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+        conn.execute("UPDATE release_review_receipts SET state='running' WHERE receipt_id=?", (receipt["receipt_id"],))
+    record = {
+        "delegation_id": "deleg_reconcile", "session_key": "test", "origin_ui_session_id": "", "origin_session_id": "",
+        "parent_session_id": None, "dispatched_at": time.time(), "goal": "material", "context": None,
+        "toolsets": None, "role": "reviewer", "model": "m", "is_batch": False,
+        "review_receipt_id": receipt["receipt_id"], "review_ledger_path": str(hermes_home / "release-review-ledger.db"),
+        "event_stream_id": "stream", "event_sequence": 0, "review_fence_token": attempt["fence_token"],
+        "candidate_hash": "a" * 64, "effective_execution_identity": "route-a", "recovery_attempt_id": attempt["attempt_id"],
+    }
+    assert ad._persist_dispatch(record)
+    with sqlite3.connect(hermes_home / "state.db") as conn:
+        conn.execute("UPDATE async_delegations SET state='completed', submission_state='completed' WHERE delegation_id='deleg_reconcile'")
+    assert ad.reconcile_material_outbox() == 1
+    with sqlite3.connect(hermes_home / "release-review-ledger.db") as conn:
+        assert conn.execute("SELECT state FROM release_review_receipts WHERE receipt_id=?", (receipt["receipt_id"],)).fetchone()[0] == "completed"
+        assert conn.execute("SELECT saga_state FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)).fetchone()[0] == "TERMINAL"
+        assert conn.execute("SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)).fetchone()[0] == "COMMITTED"
+
+
+def test_material_external_handle_is_fenced_and_immutable_in_async_outbox(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    record = {
+        "delegation_id": "deleg_owned_handle", "session_key": "test", "origin_ui_session_id": "", "origin_session_id": "",
+        "parent_session_id": None, "dispatched_at": time.time(), "goal": "material", "context": None,
+        "toolsets": None, "role": "reviewer", "model": "m", "is_batch": False,
+        "review_receipt_id": "review_owned", "review_ledger_path": str(hermes_home / "release-review-ledger.db"),
+        "event_stream_id": "stream", "event_sequence": 0, "review_fence_token": 7,
+        "candidate_hash": "a" * 64, "effective_execution_identity": "route-a", "recovery_attempt_id": "retry_owned",
+    }
+    assert ad._persist_dispatch(record)
+    assert ad._activate_durable_dispatch(record["delegation_id"])
+    assert ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=7, handle_id="owned-handle", pid=123, host_start_time=456,
+    )
+    assert ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=7, handle_id="owned-handle", pid=123, host_start_time=456,
+    )
+    assert not ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=8, handle_id="replacement", pid=123, host_start_time=456,
+    )
+    with sqlite3.connect(hermes_home / "state.db") as conn:
+        assert conn.execute(
+            "SELECT external_handle_id, external_pid, external_host_start_time FROM async_delegations"
+        ).fetchone() == ("owned-handle", 123, 456)
+
+
+def test_fenced_cancel_uses_durable_owned_handle_after_controller_loss(tmp_path, monkeypatch):
+    from tools import process_registry as process_module
+
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    record = {
+        "delegation_id": "deleg_durable_cancel", "session_key": "test", "origin_ui_session_id": "", "origin_session_id": "",
+        "parent_session_id": None, "dispatched_at": time.time(), "goal": "material", "context": None,
+        "toolsets": None, "role": "reviewer", "model": "m", "is_batch": False,
+        "review_receipt_id": "", "review_ledger_path": "", "event_stream_id": "stream", "event_sequence": 0,
+        "review_fence_token": 7, "candidate_hash": "a" * 64, "effective_execution_identity": "route-a",
+        "recovery_attempt_id": "",
+    }
+    assert ad._persist_dispatch(record)
+    assert ad._activate_durable_dispatch(record["delegation_id"])
+    assert ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=7, handle_id="durable-handle", pid=321, host_start_time=654,
+    )
+    called = []
+    monkeypatch.setattr(
+        process_module.process_registry, "cancel_owned_argv_process",
+        lambda handle_id, *, pid, host_start_time, source: called.append((handle_id, pid, host_start_time, source)) or True,
+    )
+    assert ad.cancel_async_delegation(record["delegation_id"], fence_token=7)
+    assert called == [("durable-handle", 321, 654, "material-review.cancel.durable")]

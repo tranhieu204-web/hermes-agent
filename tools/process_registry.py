@@ -848,6 +848,105 @@ class ProcessRegistry:
 
         return session
 
+    def register_owned_argv_process(
+        self,
+        process: subprocess.Popen,
+        *,
+        handle_id: str,
+        task_id: str = "material-review",
+        session_key: str = "",
+        cwd: str | None = None,
+    ) -> ProcessSession:
+        """Register a prevalidated argv-only material child without reading it.
+
+        Material adapters must parse their own provider protocol, so this
+        registry deliberately never starts an output-reader for the supplied
+        process.  It retains only an opaque handle plus PID/start identity for
+        exact-owner cancellation; argv, prompts, environment, and raw output
+        are intentionally absent from the session/checkpoint.
+        """
+        opaque_handle = str(handle_id or "").strip()
+        if not opaque_handle or any(char.isspace() for char in opaque_handle):
+            raise ValueError("owned process handle_id must be a non-empty opaque token")
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or pid <= 0:
+            raise ValueError("owned argv process must expose a positive PID")
+        session = ProcessSession(
+            id=f"owned_{opaque_handle}",
+            command="[material-external-owned]",
+            task_id=task_id,
+            session_key=session_key,
+            pid=pid,
+            process=process,
+            cwd=_resolve_safe_cwd(cwd or os.getcwd()),
+            started_at=time.time(),
+            host_start_time=self._safe_host_start_time(pid),
+            notify_on_complete=False,
+        )
+        with self._lock:
+            existing = self._running.get(session.id)
+            if existing is not None:
+                if existing.pid == session.pid and existing.host_start_time == session.host_start_time:
+                    return existing
+                raise RuntimeError("owned process handle is already bound to a different process")
+            self._prune_if_needed()
+            self._running[session.id] = session
+        self._write_checkpoint()
+        return session
+
+    def cancel_owned_argv_process(
+        self,
+        handle_id: str,
+        *,
+        pid: int,
+        host_start_time: int | None,
+        source: str = "material-review.cancel",
+    ) -> bool:
+        """Cancel exactly one registered or recovered argv-owned process.
+
+        PID plus start-time verification is mandatory before tree termination,
+        so a stale material receipt can never signal a recycled unrelated PID.
+        """
+        opaque_handle = str(handle_id or "").strip()
+        if not opaque_handle or not isinstance(pid, int) or pid <= 0:
+            return False
+        session_id = f"owned_{opaque_handle}"
+        session = self.get(session_id)
+        if session is not None and (
+            session.pid != pid or session.host_start_time != host_start_time
+        ):
+            return False
+        if not self._host_pid_is_ours(pid, host_start_time):
+            return False
+        self._terminate_host_pid(pid, host_start_time)
+        if session is not None:
+            with session._lock:
+                session.exited = True
+                session.exit_code = -15
+                session.completion_reason = "killed"
+                session.termination_source = source
+            self._move_to_finished(session)
+        return True
+
+    def complete_owned_argv_process(
+        self,
+        handle_id: str,
+        *,
+        pid: int,
+        host_start_time: int | None,
+        returncode: int | None,
+    ) -> bool:
+        """Release an owned material handle after its adapter consumed output."""
+        session = self.get(f"owned_{str(handle_id or '').strip()}")
+        if session is None or session.pid != pid or session.host_start_time != host_start_time:
+            return False
+        with session._lock:
+            session.exited = True
+            session.exit_code = returncode
+            session.completion_reason = "exited"
+        self._move_to_finished(session)
+        return True
+
     def spawn_via_env(
         self,
         env: Any,
@@ -2154,6 +2253,19 @@ def _format_async_delegation(evt: dict) -> str:
     use the result OR re-dispatch if the world has moved on.
     """
     import time as _time
+
+    if evt.get("material_review_public") is True:
+        receipt = str(evt.get("review_receipt_id") or "")[:96]
+        lane = str(evt.get("lane") or "unknown route")[:256]
+        verdict = str(evt.get("verdict") or evt.get("status") or "unknown")
+        findings = evt.get("finding_count", 0)
+        duration = evt.get("duration_seconds", "?")
+        return (
+            f"[MATERIAL REVIEW COMPLETE — receipt={receipt}]\n"
+            f"Route: {lane}\nVerdict: {verdict}\n"
+            f"Findings: {findings}   Duration: {duration}s\n"
+            "Detailed evidence remains in the receipt-bound review store.]"
+        )
 
     deleg_id = evt.get("delegation_id", "unknown")
     goal = evt.get("goal", "") or ""

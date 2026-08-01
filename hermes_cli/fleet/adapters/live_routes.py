@@ -9,6 +9,7 @@ import subprocess
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,30 @@ _AGY_RECEIPT_RE = re.compile(
 _AGY_SUBSCRIPTION_ENDPOINT = (
     "daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent"
 )
+
+
+@dataclass
+class OwnedExternalMaterialRun:
+    """In-memory handle for a material child whose identity is persisted elsewhere.
+
+    The object deliberately contains the executable command, prompt and raw
+    stdio only in process memory.  Callers persist just their separately
+    minted opaque handle, PID and host start identity before calling
+    :meth:`finish`.
+    """
+
+    adapter: "_SubscriptionCliAdapter"
+    process: Any
+    request: AdapterRequest
+    qualification: Qualification
+    executable: Path
+    stdin_payload: str | None
+    agy_run_id: str | None = None
+    agy_log_path: Path | None = None
+    agy_display_label: str | None = None
+
+    def finish(self, *, timeout_seconds: int | float | None = None) -> AdapterResult:
+        return self.adapter._finish_owned_material_run(self, timeout_seconds=timeout_seconds)
 
 
 def _agy_log_path(run_id: str) -> Path:
@@ -354,10 +379,174 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
         *,
         lane: str,
         run_process: Callable[..., Any] = subprocess.run,
+        popen: Callable[..., Any] = subprocess.Popen,
     ) -> None:
         super().__init__(executable)
         self.lane = lane
         self._run_process = run_process
+        self._popen = popen
+
+    def start_owned_material(
+        self, request: AdapterRequest, qualification: Qualification,
+    ) -> OwnedExternalMaterialRun:
+        """Start an argv-only external material child without executing it yet.
+
+        This restricted seam is intentionally unavailable to generic fleet
+        work.  The material dispatcher binds the returned PID/start identity
+        on both durable rails before it invokes ``finish``.
+        """
+        failure = validate_execution(request, qualification)
+        if failure is not None:
+            raise RuntimeError(f"external material route is not qualified: {failure.value}")
+        executable = self._resolved_executable()
+        if (
+            executable is None
+            or qualification.executable is None
+            or executable != Path(qualification.executable).resolve()
+        ):
+            raise RuntimeError("external material executable no longer matches qualification")
+        if self.lane == "antigravity":
+            display_label = _AGY_MODEL_LABELS.get(request.model)
+            if display_label is None:
+                raise RuntimeError("external material model is unsupported by Antigravity")
+            run_id = uuid.uuid4().hex
+            log_path = _agy_log_path(run_id)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            argv = self._agy_argv(
+                executable, request, display_label=display_label, log_path=log_path,
+            )
+            stdin_payload: str | None = None
+        elif self.lane == "claude_code":
+            run_id = None
+            log_path = None
+            display_label = None
+            argv = self._argv(executable, request)
+            stdin_payload = request.prompt
+        else:
+            raise RuntimeError("only owned Claude Code and Antigravity material routes are supported")
+        process = self._popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=request.cwd,
+            env=safe_child_environment(),
+            shell=False,
+            creationflags=no_console_creationflags(),
+        )
+        return OwnedExternalMaterialRun(
+            adapter=self,
+            process=process,
+            request=request,
+            qualification=qualification,
+            executable=executable,
+            stdin_payload=stdin_payload,
+            agy_run_id=run_id,
+            agy_log_path=log_path,
+            agy_display_label=display_label,
+        )
+
+    def _finish_owned_material_run(
+        self, run: OwnedExternalMaterialRun, *, timeout_seconds: int | float | None,
+    ) -> AdapterResult:
+        timeout = run.request.timeout_seconds if timeout_seconds is None else timeout_seconds
+        try:
+            stdout, stderr = run.process.communicate(run.stdin_payload, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            run.process.kill()
+            run.process.communicate()
+            if self.lane == "antigravity" and run.agy_log_path is not None and run.agy_display_label is not None and run.agy_run_id is not None:
+                receipt_check = _inspect_agy_receipt(
+                    run.agy_log_path, canonical_model_id=run.request.model,
+                    expected_display_label=run.agy_display_label,
+                )
+                receipt_check["receipt_status"] = receipt_check["status"]
+                receipt_check["status"] = "process_timeout"
+                return self._finish_agy_failure(
+                    run.request, run.qualification, ReasonCode.EXECUTION_TIMEOUT,
+                    run_id=run.agy_run_id, log_path=run.agy_log_path, receipt_check=receipt_check,
+                )
+            return self._failure(run.request, run.qualification, ReasonCode.EXECUTION_TIMEOUT)
+        except OSError:
+            return self._failure(run.request, run.qualification, ReasonCode.EXECUTION_FAILED)
+
+        if self.lane == "antigravity":
+            return self._finish_owned_agy(run, stdout=stdout, stderr=stderr)
+        return self._finish_owned_claude(run, stdout=stdout)
+
+    def _finish_owned_claude(self, run: OwnedExternalMaterialRun, *, stdout: Any) -> AdapterResult:
+        if run.process.returncode != 0:
+            return self._failure(run.request, run.qualification, ReasonCode.EXECUTION_FAILED)
+        try:
+            payload = json.loads(stdout)
+        except (TypeError, json.JSONDecodeError):
+            return self._failure(run.request, run.qualification, ReasonCode.MALFORMED_OUTPUT)
+        check = inspect_claude_cli_payload(payload, canonical_model_id=run.request.model)
+        if check.get("status") != "matched":
+            reason = ReasonCode.MODEL_MISMATCH if check.get("status") == "served_model_mismatch" else ReasonCode.MALFORMED_OUTPUT
+            return AdapterResult(
+                ok=False, reason=reason, provider_id=run.request.profile.provider_id,
+                model_id=run.request.model, auth_kind=run.qualification.auth_kind or "unknown",
+                adapter_kind=AdapterKind.EXTERNAL_CLI, metadata={"cli_receipt": check},
+            )
+        return AdapterResult(
+            ok=True, reason=ReasonCode.MET, provider_id=run.request.profile.provider_id,
+            model_id=run.request.model, auth_kind=run.qualification.auth_kind or "unknown",
+            adapter_kind=AdapterKind.EXTERNAL_CLI, output=payload["result"],
+            metadata={
+                "cli_receipt": check,
+                "route_proof": {
+                    "executable": str(run.executable), "version": run.qualification.version,
+                    "requested_model_id": run.request.model, "effort": run.request.effort,
+                    "auth_kind": run.qualification.auth_kind, "fast_mode": False,
+                    "fallback_enabled": False,
+                },
+            },
+        )
+
+    def _finish_owned_agy(self, run: OwnedExternalMaterialRun, *, stdout: Any, stderr: Any) -> AdapterResult:
+        if run.agy_log_path is None or run.agy_display_label is None or run.agy_run_id is None:
+            return self._failure(run.request, run.qualification, ReasonCode.EXECUTION_FAILED)
+        receipt_check = inspect_agy_subscription_receipt(
+            run.agy_log_path, canonical_model_id=run.request.model,
+            expected_display_label=run.agy_display_label,
+        )
+        if run.process.returncode != 0:
+            receipt_check["receipt_status"] = receipt_check["status"]
+            receipt_check["status"] = "process_exit_nonzero"
+            return self._finish_agy_failure(
+                run.request, run.qualification, ReasonCode.EXECUTION_FAILED,
+                run_id=run.agy_run_id, log_path=run.agy_log_path, receipt_check=receipt_check,
+            )
+        if receipt_check["status"] != "matched" or not isinstance(stdout, str) or not stdout.strip():
+            reason = ReasonCode.MODEL_MISMATCH if receipt_check["status"] in {
+                "display_label_mismatch", "expected_label_mismatch", "served_model_mismatch", "unsupported_served_model",
+            } else ReasonCode.MALFORMED_OUTPUT
+            receipt_check["receipt_status"] = receipt_check["status"]
+            receipt_check["status"] = "malformed_output" if not stdout else receipt_check["status"]
+            return self._finish_agy_failure(
+                run.request, run.qualification, reason,
+                run_id=run.agy_run_id, log_path=run.agy_log_path, receipt_check=receipt_check,
+            )
+        receipt_check["log_cleanup"] = _finalize_agy_log(run.agy_log_path, receipt_check, retain_evidence=False)
+        if receipt_check["log_cleanup"] == "not_persisted":
+            return self._finish_agy_failure(
+                run.request, run.qualification, ReasonCode.EXECUTION_FAILED,
+                run_id=run.agy_run_id, log_path=run.agy_log_path, receipt_check=receipt_check,
+            )
+        return AdapterResult(
+            ok=True, reason=ReasonCode.MET, provider_id=run.request.profile.provider_id,
+            model_id=run.request.model, auth_kind=run.qualification.auth_kind or "unknown",
+            adapter_kind=AdapterKind.EXTERNAL_CLI, output=stdout,
+            metadata={"receipt_check": receipt_check, "route_proof": {
+                "executable": str(run.executable), "version": run.qualification.version,
+                "requested_model_id": run.request.model, "served_model_id": receipt_check["served_model_id"],
+                "served_model_label": receipt_check["served_model_label"], "effort": run.request.effort,
+                "auth_kind": run.qualification.auth_kind, "fast_mode": False, "fallback_enabled": False,
+                "model_qualification": "agy live backend receipt",
+            }},
+        )
 
     def _argv(self, executable: Path, request: AdapterRequest) -> list[str]:
         return [

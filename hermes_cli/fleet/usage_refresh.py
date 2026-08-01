@@ -408,6 +408,21 @@ def _validate_document(document: object) -> dict[str, Any]:
     return document
 
 
+def _mark_usage_unknown(row: dict[str, Any], *, observed_at: str) -> None:
+    """Retain historical quota evidence without presenting it as current.
+
+    Console health and quota usage have independent clocks.  A stale quota
+    percentage is useful as historical evidence, but it must not remain
+    labelled measured/comparable after a fresh health-only probe.
+    """
+
+    row["measurement_kind"] = "unknown"
+    row["usage_status"] = "STALE_UNKNOWN"
+    row["usage_status_checked_at"] = observed_at
+    row.pop("comparability_group", None)
+    row.pop("quota_window_id", None)
+
+
 def _read_document(path: Path) -> dict[str, Any] | None:
     try:
         raw = path.read_text(encoding="utf-8")
@@ -564,7 +579,9 @@ def refresh_usage_document(
             # Check for stale attestation (>24h old) — grok/antigravity only,
             # never use stale evidence for capacity routing.
             if _is_attestation_stale(attested_checked_at, max_age_hours=24, now=now or _utc_now()):
-                # Attestation is stale; keep prior values but mark as stale
+                # Keep the historical percentage and timestamp for audit, but
+                # explicitly remove any current/measured semantics.
+                _mark_usage_unknown(row, observed_at=stamp)
                 prior_checked = row.get("checked_at")
                 health_state, health_detail = _probe_console_lane_health(lane_id)
                 health_observed = health_state is not None
@@ -597,6 +614,8 @@ def refresh_usage_document(
             row["measurement_kind"] = "measured"
             row["comparability_group"] = "subscription-weekly"
             row["quota_window_id"] = "subscription-weekly"
+            row.pop("usage_status", None)
+            row.pop("usage_status_checked_at", None)
             row.setdefault("overage_disabled", True)
             row.setdefault("resets", "weekly")
             prior_pct = attested_pct
@@ -609,6 +628,16 @@ def refresh_usage_document(
             row["health_checked_at"] = stamp
 
         prior_checked = row.get("checked_at")
+        if (
+            not attested_fresh
+            and isinstance(prior_checked, str)
+            and _is_attestation_stale(
+                prior_checked,
+                max_age_hours=24,
+                now=now or _utc_now(),
+            )
+        ):
+            _mark_usage_unknown(row, observed_at=stamp)
         if health_state is True:
             health_summary = f"console health probe ok; {health_detail}"
         elif health_state is False:

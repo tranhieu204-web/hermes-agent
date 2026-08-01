@@ -11,6 +11,12 @@ from hermes_constants import get_hermes_home
 from tools.release_review_ledger import ReleaseReviewLedger
 
 
+# This capability is module-private by construction.  Only the sealed fleet
+# material ingress may pass it to the launcher; public/generic callers cannot
+# select a runner after the route-plan receipt is admitted.
+_MATERIAL_LAUNCH_CAPABILITY = object()
+
+
 def _admit_capture_claim(ledger: ReleaseReviewLedger, receipt_id: Optional[str], **request: Any) -> Dict[str, Any]:
     preflight = request.pop("preflight")
     decision_id = request.pop("decision_id", "")
@@ -105,14 +111,20 @@ def launch_shell_review(
 
 def _launch_async_review(
     ledger: ReleaseReviewLedger, *, dispatch: Callable[..., Dict[str, Any]],
-    dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
+    dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None,
+    already_claimed: bool = False, **request: Any,
 ) -> Dict[str, Any]:
     """Claim before forwarding to the existing async-delegation dispatcher."""
     if ledger.path.resolve() != (get_hermes_home() / "release-review-ledger.db").resolve():
         return {"status": "rejected", "error": "async reviews require the canonical Hermes ledger path"}
-    receipt = _admit_capture_claim(ledger, receipt_id, **request)
-    if receipt["status"] != "admitted" or receipt["claim"]["status"] != "claimed":
-        return receipt
+    if already_claimed:
+        if not receipt_id or ledger.receipt_state(receipt_id) != "launching":
+            return {"status": "rejected", "error": "material route receipt is not an active launch claim"}
+        receipt = {"status": "admitted", "receipt_id": receipt_id, "claim": {"status": "claimed", "receipt_id": receipt_id}}
+    else:
+        receipt = _admit_capture_claim(ledger, receipt_id, **request)
+        if receipt["status"] != "admitted" or receipt["claim"]["status"] != "claimed":
+            return receipt
     if not callable(dispatch_kwargs.get("interrupt_fn")):
         ledger.mark_launch_failed(receipt["receipt_id"], "launch_rejected")
         return {**receipt, "status": "rejected", "dispatch": {"error": "receipt-bound async reviews require interrupt_fn"}}
@@ -124,6 +136,15 @@ def _launch_async_review(
         delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
         ledger.bind_async_dispatch(receipt["receipt_id"], delegation_id, os.getpid())
         dispatch_input = dict(dispatch_kwargs)
+        runner_factory = dispatch_input.pop("_sealed_material_runner_factory", None)
+        if runner_factory is not None:
+            if not callable(runner_factory):
+                raise ValueError("sealed material runner factory must be callable")
+            # The runner is constructed only after the durable receipt and
+            # delegation id exist, but before executor submission.  This
+            # avoids the old closure race where a child could start before it
+            # knew which receipt/fence it was required to bind.
+            dispatch_input["runner"] = runner_factory(delegation_id, receipt["receipt_id"])
         dispatch_input["delegation_id"] = delegation_id
         dispatch_input["review_receipt_id"] = receipt["receipt_id"]
         dispatch_input["review_ledger_path"] = str(ledger.path)
@@ -162,14 +183,14 @@ def launch_async_review(
     dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
 ) -> Dict[str, Any]:
     """Public generic launcher; recovery-bound reviews have no public bypass."""
-    if dispatch_kwargs.get("recovery_attempt_id"):
+    if dispatch_kwargs.get("recovery_attempt_id") or "_sealed_material_runner_factory" in dispatch_kwargs:
         return {"status": "rejected", "error": "material reviews require the receipt-bound material adapter"}
     return _launch_async_review(
         ledger, dispatch=dispatch, dispatch_kwargs=dispatch_kwargs, receipt_id=receipt_id, **request,
     )
 
 
-def launch_material_async_review(
+def _launch_material_async_review(
     ledger: ReleaseReviewLedger, *, attempt_id: str, fence_token: int,
     dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None, **request: Any,
 ) -> Dict[str, Any]:
@@ -184,21 +205,48 @@ def launch_material_async_review(
     forbidden = {"goals", "is_batch", "dispatch_async_delegation_batch"}
     if forbidden.intersection(dispatch_kwargs):
         return {"status": "rejected", "error": "material reviews cannot use generic batch dispatch"}
-    ledger.assert_current_recovery_attempt(
-        attempt_id,
-        fence_token=int(fence_token),
-        candidate_hash=request["candidate_hash"],
-        environment_fingerprint=request["environment_fingerprint"],
-        normalized_scope=request["scope"],
-    )
+    review_lens = str(request.get("review_lens") or "").strip().lower()
+    effective_route_identity = str(request.get("effective_route_identity") or "").strip()
+    if not review_lens or not effective_route_identity:
+        return {"status": "rejected", "error": "material reviews require a review_lens and canonical effective_route_identity"}
+    route_plan = request.pop("fleet_route_plan", None)
+    if route_plan is not None and "runner" in dispatch_kwargs:
+        # A material route receipt is meaningless if an arbitrary closure can
+        # be substituted after admission.  The future private fleet ingress
+        # owns construction of this runner from its persisted assignment.
+        return {"status": "rejected", "error": "fleet material reviews construct their runner internally"}
+    if route_plan is not None and not callable(dispatch_kwargs.get("_sealed_material_runner_factory")):
+        return {"status": "rejected", "error": "fleet material reviews require the sealed owned-runner factory"}
+    if route_plan is None:
+        ledger.assert_current_recovery_attempt(
+            attempt_id,
+            fence_token=int(fence_token),
+            candidate_hash=request["candidate_hash"],
+            environment_fingerprint=request["environment_fingerprint"],
+            normalized_scope=request["scope"],
+            effective_route_identity=effective_route_identity,
+            review_lens=review_lens,
+        )
     bound = dict(dispatch_kwargs)
     bound["review_fence_token"] = int(fence_token)
     bound["recovery_attempt_id"] = attempt_id
     try:
-        result = _launch_async_review(
-            ledger, dispatch=dispatch_async_delegation, dispatch_kwargs=bound,
-            receipt_id=receipt_id, **request,
-        )
+        if route_plan is not None:
+            receipt = ledger.admit_fleet_material_launch(
+                attempt_id=attempt_id, fence_token=int(fence_token), route_plan=route_plan,
+                receipt_id=receipt_id, **request,
+            )
+            if receipt["status"] != "admitted":
+                return receipt
+            result = _launch_async_review(
+                ledger, dispatch=dispatch_async_delegation, dispatch_kwargs=bound,
+                receipt_id=receipt["receipt_id"], already_claimed=True, **request,
+            )
+        else:
+            result = _launch_async_review(
+                ledger, dispatch=dispatch_async_delegation, dispatch_kwargs=bound,
+                receipt_id=receipt_id, **request,
+            )
     except Exception:
         # Before executor submission the retry stays PREPARED and is not
         # consumed; after durable acceptance async_delegation owns the fenced
@@ -206,3 +254,80 @@ def launch_material_async_review(
         # state from this wrapper.
         raise
     return result
+
+
+def launch_material_async_review(
+    ledger: ReleaseReviewLedger, *, attempt_id: str, fence_token: int,
+    dispatch_kwargs: Mapping[str, Any], receipt_id: Optional[str] = None,
+    _capability: object | None = None, **request: Any,
+) -> Dict[str, Any]:
+    """Reject public material-launch calls that lack the sealed ingress token."""
+    if _capability is not _MATERIAL_LAUNCH_CAPABILITY:
+        return {"status": "rejected", "error": "material reviews require the sealed fleet material ingress"}
+    return _launch_material_async_review(
+        ledger, attempt_id=attempt_id, fence_token=fence_token,
+        dispatch_kwargs=dispatch_kwargs, receipt_id=receipt_id, **request,
+    )
+
+
+def launch_fleet_owned_material_review(
+    ledger: ReleaseReviewLedger,
+    *,
+    fleet_service: Any,
+    cwd: str,
+    attempt_id: str,
+    fence_token: int,
+    dispatch_kwargs: Mapping[str, Any],
+    receipt_id: Optional[str] = None,
+    **request: Any,
+) -> Dict[str, Any]:
+    """Private ingress for one receipt-bound owned Claude/AGY material run.
+
+    This is intentionally not a generic ``delegate_task`` option.  It plans a
+    single canonical fleet route and installs the runner factory that binds
+    the route-plan receipt, async outbox, and owned PID before provider I/O.
+    """
+    if _MATERIAL_LAUNCH_CAPABILITY is None:  # pragma: no cover - keeps capability private to this module
+        raise RuntimeError("sealed material launch capability is unavailable")
+    if "runner" in dispatch_kwargs or "_sealed_material_runner_factory" in dispatch_kwargs:
+        return {"status": "rejected", "error": "sealed fleet material ingress owns its runner"}
+    from pathlib import Path
+    from tools.fleet_delegation import OwnedMaterialRunner, plan_material_routes
+
+    resolved_cwd = Path(cwd).resolve()
+    prompt = str(request.get("prompt") or "")
+    review_lens = str(request.get("review_lens") or "").strip().lower()
+    candidate_hash = str(request.get("candidate_hash") or "").strip().lower()
+    if not prompt or not review_lens or not candidate_hash or not resolved_cwd.is_dir():
+        return {"status": "rejected", "error": "sealed fleet material ingress is missing candidate, lens, prompt, or cwd"}
+    plan = plan_material_routes(
+        fleet_service, task_count=1, cwd=resolved_cwd,
+        prompt_fingerprint=f"sha256:{__import__('hashlib').sha256(prompt.encode('utf-8')).hexdigest()}",
+        preferred_lane_ids=(str(request.get("lane") or "").strip(),),
+        exclude_effective_identities=(),
+    )
+    if not plan.assignments:
+        return {"status": "rejected", "error": "no qualified distinct fleet material route", "unavailable": [item.public_receipt() for item in plan.unavailable]}
+    route = plan.assignments[0]
+    if route.effective_execution_identity != str(request.get("effective_route_identity") or ""):
+        return {"status": "rejected", "error": "planned fleet route identity does not match sealed receipt identity"}
+    fleet_route_plan = {
+        "requested": 1,
+        "degraded_route_capacity": plan.degraded_route_capacity,
+        "selected": {**route.public_receipt(), "review_lens": review_lens},
+        "unavailable": [item.public_receipt() for item in plan.unavailable],
+    }
+    controller = OwnedMaterialRunner(
+        service=fleet_service, route=route, cwd=resolved_cwd, prompt=prompt,
+        candidate_hash=candidate_hash, review_lens=review_lens, ledger_path=ledger.path,
+        attempt_id=attempt_id, fence_token=int(fence_token),
+    )
+    bound = dict(dispatch_kwargs)
+    bound["interrupt_fn"] = controller.interrupt
+    bound["_sealed_material_runner_factory"] = controller.factory
+    request = dict(request)
+    request["fleet_route_plan"] = fleet_route_plan
+    return launch_material_async_review(
+        ledger, attempt_id=attempt_id, fence_token=fence_token, dispatch_kwargs=bound,
+        receipt_id=receipt_id, _capability=_MATERIAL_LAUNCH_CAPABILITY, **request,
+    )

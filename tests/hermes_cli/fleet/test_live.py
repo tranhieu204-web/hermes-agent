@@ -755,6 +755,56 @@ def test_live_proof_cache_requires_consumer_cloud_code_route(
     assert qualification.subscription_only_proven is False
 
 
+def test_live_proof_cache_ignores_extra_models(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    evidence = home / "fleet" / "evidence" / "agy"
+    executable = str(Path("C:/tools/agy.exe").resolve())
+    evidence.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    payload = {
+        "schema_version": _PROOF_CACHE_SCHEMA,
+        "lane_id": "antigravity",
+        "executable": executable,
+        "version": "agy 1.1.6",
+        "canonical_model_id": CANONICAL_MODEL_ID,
+        "served_model_id": CANONICAL_MODEL_ID,
+        "served_model_label": DISPLAY_MODEL_LABEL,
+        "auth_method": "consumer",
+        "endpoint_kind": "antigravity_cloud_code",
+        "status": "matched",
+        "qualified_models": [CANONICAL_MODEL_ID, "gemini-3.6-flash-high"],
+        "captured_at": NOW.isoformat(),
+        "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
+    }
+    (evidence / "doctor-live-proof.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    def unexpected_command(argv):
+        raise AssertionError(f"cache-only ran command: {argv}")
+
+    def unexpected_process(argv, **_kwargs):
+        raise AssertionError(f"cache-only ran provider: {argv}")
+
+    doctor = FleetQualificationDoctor(
+        which=lambda _: executable,
+        command=unexpected_command,
+        run_process=unexpected_process,
+        environment={},
+        now=lambda: NOW,
+        proof_cache_dir=evidence,
+    )
+
+    profile = replace(
+        profile_map()["antigravity"],
+        ordered_models=(CANONICAL_MODEL_ID, "gemini-3.6-flash-high"),
+    )
+    qualification = doctor.qualify((profile,), allow_live_probe=False)["antigravity"]
+
+    assert qualification.qualified is True
+    assert qualification.models == (CANONICAL_MODEL_ID,)
+
+
 def test_live_doctor_qualifies_only_the_model_proven_by_live_receipt(
     tmp_path, monkeypatch
 ):
@@ -778,11 +828,12 @@ def test_live_doctor_qualifies_only_the_model_proven_by_live_receipt(
     qualification = doctor.qualify((profile,))["antigravity"]
 
     assert qualification.qualified is True
-    # Lead-model live receipt proves the consumer route; the full
-    # catalog∩profile list then qualifies (per-turn receipts re-verify each
-    # served model on every execution). Models absent from `agy models`
-    # never qualify — see the catalog-intersection assertions elsewhere.
-    assert qualification.models == (CANONICAL_MODEL_ID, "gemini-3.6-flash-high")
+    assert qualification.models == (CANONICAL_MODEL_ID,)
+
+    # Warm-cache probe should match cold-cache behavior
+    warm_qualification = doctor.qualify((profile,), allow_live_probe=False)["antigravity"]
+    assert warm_qualification.qualified is True
+    assert warm_qualification.models == (CANONICAL_MODEL_ID,)
 
 
 @pytest.mark.parametrize(

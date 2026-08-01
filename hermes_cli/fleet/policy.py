@@ -190,13 +190,11 @@ def evaluate_lane(
             or not snapshot.quota_window_id
         ):
             usage_reasons.append(ReasonCode.USAGE_NOT_COMPARABLE)
-    if (
-        inputs.require_verified_health
-        and purpose is RoutePurpose.TASK_WORKER
-        and usage_reasons
-    ):
-        reasons.extend(usage_reasons)
-        usage_reasons = []
+    # Verified transport health remains a hard worker gate above. Capacity
+    # freshness is deliberately separate: stale or absent percentages are
+    # advisory and force deterministic rotation, never a false "provider
+    # unavailable" result. Only fresh measured evidence may prove exhaustion
+    # or a reserve-floor breach.
 
     # 8. Cooldown.
     if inputs.cooldown_until is not None and inputs.cooldown_until > at:

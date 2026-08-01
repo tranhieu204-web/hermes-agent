@@ -42,7 +42,15 @@ def _canonical_token(value: Any) -> str:
 
 
 def canonical_effective_route_identity(
-    *, provider: str, base_url: str | None, account_secret: str | None, model: str,
+    *,
+    provider: str,
+    base_url: str | None,
+    account_secret: str | None,
+    model: str,
+    adapter_kind: str | None = None,
+    auth_kind: str | None = None,
+    auth_source: str | None = None,
+    executable: str | None = None,
 ) -> str:
     """Secret-free identity for the resolved provider endpoint/account/model.
 
@@ -53,14 +61,28 @@ def canonical_effective_route_identity(
     raw_endpoint = str(base_url or "").strip()
     parsed = urlsplit(raw_endpoint) if raw_endpoint else None
     endpoint = (
-        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/").lower())
+        # URL scheme and host are case-insensitive, but endpoint path case is
+        # not: lowercasing it could falsely collapse two distinct backing
+        # provider routes into one independence lane.
+        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"))
         if parsed else ()
     )
+    # ``account_secret`` is available on the direct provider path.  Fleet
+    # adapters deliberately never receive it, so a stable non-secret
+    # qualification source is the only permissible substitute there.  Both
+    # values are hashed before the identity is returned.
+    account_material = str(account_secret or auth_source or "")
+    # Installation location is qualification evidence, not backing-route
+    # identity.  Counting it would let two copies of one official CLI satisfy
+    # a multi-model independence gate.
+    _ = executable
     return "|".join((
         f"provider={_canonical_token(provider) or 'inherited'}",
         f"endpoint={_fingerprint({'endpoint': endpoint})[:24]}",
-        f"account={_fingerprint({'account': str(account_secret or '')})[:24]}",
+        f"account={_fingerprint({'account': account_material})[:24]}",
         f"model={_canonical_token(model) or 'inherited-model'}",
+        f"adapter={_canonical_token(adapter_kind) or 'inherited-adapter'}",
+        f"auth={_canonical_token(auth_kind) or 'unknown-auth'}",
     ))
 
 
@@ -75,6 +97,7 @@ def review_identity(
     environment_fingerprint: str = "",
     evidence_fingerprint: str = "",
     effective_route_identity: str = "",
+    review_lens: str = "",
 ) -> Dict[str, Any]:
     """Immutable request identity, including output target and timebox."""
     identity: Dict[str, Any] = {
@@ -87,6 +110,7 @@ def review_identity(
         "environment_fingerprint": _normalized(environment_fingerprint),
         "evidence_fingerprint": _normalized(evidence_fingerprint),
         "effective_route_identity": _normalized(effective_route_identity),
+        "review_lens": _normalized(review_lens).lower(),
     }
     if deadline_seconds is not None:
         identity["deadline_seconds"] = float(deadline_seconds)
@@ -101,6 +125,7 @@ def _logical_identity(identity: Mapping[str, Any]) -> Dict[str, Any]:
             "candidate_hash", "normalized_scope", "lane", "model", "prompt_hash",
             "environment_fingerprint", "evidence_fingerprint",
             "effective_route_identity",
+            "review_lens",
         )
     }
 
@@ -119,7 +144,7 @@ class ReleaseReviewLedger:
                         candidate_hash TEXT NOT NULL, normalized_scope TEXT NOT NULL,
                         lane TEXT NOT NULL, model TEXT NOT NULL, prompt_hash TEXT NOT NULL,
                         environment_fingerprint TEXT NOT NULL DEFAULT '', evidence_fingerprint TEXT NOT NULL DEFAULT '',
-                        effective_route_identity TEXT NOT NULL DEFAULT '',
+                        effective_route_identity TEXT NOT NULL DEFAULT '', review_lens TEXT NOT NULL DEFAULT '',
                         output_path TEXT NOT NULL, deadline_seconds REAL NOT NULL,
                         deadline_at REAL NOT NULL, state TEXT NOT NULL,
                         root_pid INTEGER, leaf_pid INTEGER, launch_handle TEXT,
@@ -138,6 +163,7 @@ class ReleaseReviewLedger:
                     ("environment_fingerprint", "TEXT", "''"),
                     ("evidence_fingerprint", "TEXT", "''"),
                     ("effective_route_identity", "TEXT", "''"),
+                    ("review_lens", "TEXT", "''"),
                 ):
                     if name not in columns:
                         nullability = "" if name == "launch_handle" else " NOT NULL"
@@ -220,6 +246,32 @@ class ReleaseReviewLedger:
                     )"""
                 )
                 conn.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_material_route_plans (
+                        receipt_id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL,
+                        fence_token INTEGER NOT NULL, route_identity TEXT NOT NULL,
+                        review_lens TEXT NOT NULL, route_json TEXT NOT NULL,
+                        plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL UNIQUE,
+                        saga_state TEXT NOT NULL DEFAULT 'SEALED',
+                        terminal_json TEXT NOT NULL DEFAULT '{}',
+                        external_handle_id TEXT NOT NULL DEFAULT '',
+                        external_pid INTEGER, external_host_start_time INTEGER,
+                        created_at REAL NOT NULL, updated_at REAL NOT NULL DEFAULT 0
+                    )"""
+                )
+                material_columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_material_route_plans)")}
+                for name, sql_type, default in (
+                    ("saga_state", "TEXT", "'SEALED'"),
+                    ("terminal_json", "TEXT", "'{}'"),
+                    ("external_handle_id", "TEXT", "''"),
+                    ("external_pid", "INTEGER", "0"),
+                    ("external_host_start_time", "INTEGER", "0"),
+                    ("updated_at", "REAL", "0"),
+                ):
+                    if name not in material_columns:
+                        conn.execute(
+                            f"ALTER TABLE workflow_material_route_plans ADD COLUMN {name} {sql_type} NOT NULL DEFAULT {default}"
+                        )
+                conn.execute(
                     """CREATE TABLE IF NOT EXISTS workflow_recovery_stops (
                         stop_fingerprint TEXT PRIMARY KEY, candidate_hash TEXT NOT NULL,
                         environment_fingerprint TEXT NOT NULL, scope_hash TEXT NOT NULL,
@@ -277,11 +329,12 @@ class ReleaseReviewLedger:
         environment_fingerprint: str = "",
         evidence_fingerprint: str = "",
         effective_route_identity: str = "",
+        review_lens: str = "",
     ) -> Dict[str, Any]:
         deadline_seconds = self._validate_deadline(deadline_seconds)
         identity = review_identity(
             candidate_hash, scope, lane, model, prompt, output_path, deadline_seconds,
-            environment_fingerprint, evidence_fingerprint, effective_route_identity,
+            environment_fingerprint, evidence_fingerprint, effective_route_identity, review_lens,
         )
         if not all(identity[key] for key in (
             "candidate_hash", "normalized_scope", "lane", "model", "normalized_output_path",
@@ -323,19 +376,135 @@ class ReleaseReviewLedger:
                 conn.execute(
                     """INSERT INTO release_review_receipts
                        (receipt_id, fingerprint, logical_fingerprint, candidate_hash, normalized_scope, lane, model,
-                        prompt_hash, environment_fingerprint, evidence_fingerprint, effective_route_identity, output_path, deadline_seconds,
+                        prompt_hash, environment_fingerprint, evidence_fingerprint, effective_route_identity, review_lens, output_path, deadline_seconds,
                         deadline_at, state, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted', ?, ?)""",
                     (
                         requested_id, fingerprint, logical_fingerprint, identity["candidate_hash"],
                         identity["normalized_scope"], identity["lane"], identity["model"], identity["prompt_hash"],
-                        identity["environment_fingerprint"], identity["evidence_fingerprint"], identity["effective_route_identity"],
+                        identity["environment_fingerprint"], identity["evidence_fingerprint"], identity["effective_route_identity"], identity["review_lens"],
                         identity["normalized_output_path"], deadline_seconds, now + deadline_seconds, now, now,
                     ),
                 )
         finally:
             conn.close()
         return {"status": "admitted", "receipt_id": requested_id, "identity": identity}
+
+    def admit_fleet_material_launch(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        route_plan: Mapping[str, Any],
+        preflight: Mapping[str, Any],
+        candidate_hash: str,
+        scope: str,
+        lane: str,
+        model: str,
+        prompt: str,
+        deadline_seconds: float,
+        output_path: str,
+        environment_fingerprint: str,
+        evidence_fingerprint: str,
+        effective_route_identity: str,
+        review_lens: str,
+        receipt_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Atomically admit, preflight, claim, and bind a fleet route plan.
+
+        This is intentionally separate from generic review admission: material
+        work must never have a durable outbox without its candidate-bound route
+        plan, nor a route plan without an exact claimed review receipt.
+        """
+        deadline_seconds = self._validate_deadline(deadline_seconds)
+        verified_preflight = self._validate_preflight(preflight)
+        route_identity = self._required_text(effective_route_identity, "effective_route_identity")
+        lens = self._required_text(review_lens, "review_lens").lower()
+        if not isinstance(route_plan, Mapping):
+            raise ValueError("material route plan is required")
+        selected = route_plan.get("selected")
+        if not isinstance(selected, Mapping):
+            raise ValueError("material route plan requires selected route")
+        if self._required_text(selected.get("effective_execution_identity"), "selected route identity") != route_identity:
+            raise ValueError("selected route identity does not match material receipt")
+        if self._required_text(selected.get("review_lens"), "selected route lens").lower() != lens:
+            raise ValueError("selected route lens does not match material receipt")
+        identity = review_identity(
+            candidate_hash, scope, lane, model, prompt, output_path, deadline_seconds,
+            environment_fingerprint, evidence_fingerprint, route_identity, lens,
+        )
+        if not all(identity[key] for key in (
+            "candidate_hash", "normalized_scope", "lane", "model", "normalized_output_path",
+            "environment_fingerprint", "evidence_fingerprint", "effective_route_identity", "review_lens",
+        )):
+            raise ValueError("material review identity is incomplete")
+        fingerprint = _fingerprint(identity)
+        logical_fingerprint = _fingerprint(_logical_identity(identity))
+        normalized_plan = json.dumps(dict(route_plan), sort_keys=True, separators=(",", ":"))
+        plan_hash = _fingerprint({"receipt": fingerprint, "route_plan": json.loads(normalized_plan)})
+        requested_id = receipt_id or f"review_{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                attempt = conn.execute(
+                    "SELECT candidate_hash, environment_fingerprint, scope_hash, fence_token, state, effective_route_identity, lens "
+                    "FROM workflow_recovery_attempts WHERE attempt_id=?",
+                    (self._required_text(attempt_id, "attempt_id"),),
+                ).fetchone()
+                expected_scope = _fingerprint({"scope": identity["normalized_scope"]})
+                if (
+                    attempt is None or attempt[0] != identity["candidate_hash"]
+                    or attempt[1] != identity["environment_fingerprint"]
+                    or attempt[2] != expected_scope or int(attempt[3]) != int(fence_token)
+                    or attempt[4] != "PREPARED" or attempt[5] != route_identity or attempt[6] != lens
+                ):
+                    raise RuntimeError("material route plan is not bound to the current recovery fence")
+                exact = conn.execute(
+                    "SELECT receipt_id, state FROM release_review_receipts WHERE fingerprint=?", (fingerprint,)
+                ).fetchone()
+                if exact:
+                    plan = conn.execute(
+                        "SELECT plan_hash FROM workflow_material_route_plans WHERE receipt_id=?", (exact[0],)
+                    ).fetchone()
+                    if plan is None or plan[0] != plan_hash:
+                        return {"status": "conflict", "receipt_id": exact[0], "reason": "material_route_plan_differs", "identity": identity}
+                    return {"status": "existing", "receipt_id": exact[0], "state": exact[1], "identity": identity}
+                if conn.execute(
+                    "SELECT 1 FROM release_review_receipts WHERE logical_fingerprint=?", (logical_fingerprint,)
+                ).fetchone():
+                    return {"status": "conflict", "reason": "material_logical_identity_exists", "identity": identity}
+                if conn.execute(
+                    "SELECT 1 FROM release_review_receipts WHERE receipt_id=?", (requested_id,)
+                ).fetchone():
+                    return {"status": "conflict", "receipt_id": requested_id, "reason": "receipt_id_reused", "identity": identity}
+                conn.execute(
+                    """INSERT INTO release_review_receipts
+                       (receipt_id, fingerprint, logical_fingerprint, candidate_hash, normalized_scope, lane, model,
+                        prompt_hash, environment_fingerprint, evidence_fingerprint, effective_route_identity, review_lens,
+                        output_path, deadline_seconds, deadline_at, state, preflight_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'launching', ?, ?, ?)""",
+                    (
+                        requested_id, fingerprint, logical_fingerprint, identity["candidate_hash"],
+                        identity["normalized_scope"], identity["lane"], identity["model"], identity["prompt_hash"],
+                        identity["environment_fingerprint"], identity["evidence_fingerprint"], route_identity, lens,
+                        identity["normalized_output_path"], deadline_seconds, now + deadline_seconds,
+                        json.dumps(verified_preflight, sort_keys=True), now, now,
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO workflow_material_route_plans
+                       (receipt_id, attempt_id, fence_token, route_identity, review_lens, route_json, plan_json, plan_hash, saga_state, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SEALED', ?, ?)""",
+                    (
+                        requested_id, attempt_id, int(fence_token), route_identity, lens,
+                        json.dumps(dict(selected), sort_keys=True), normalized_plan, plan_hash, now, now,
+                    ),
+                )
+        finally:
+            conn.close()
+        return {"status": "admitted", "receipt_id": requested_id, "identity": identity, "claim": {"status": "claimed", "receipt_id": requested_id, "state": "launching"}, "plan_hash": plan_hash}
 
     @staticmethod
     def assess_independent_review_gate(
@@ -917,12 +1086,13 @@ class ReleaseReviewLedger:
     def assert_current_recovery_attempt(
         self, attempt_id: str, *, fence_token: int, candidate_hash: str,
         environment_fingerprint: str, normalized_scope: str,
+        effective_route_identity: str, review_lens: str,
     ) -> None:
         """Prove that a material-review outbox row belongs to its live retry lease."""
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT candidate_hash, environment_fingerprint, scope_hash, fence_token, state "
+            "SELECT candidate_hash, environment_fingerprint, scope_hash, fence_token, state, effective_route_identity, lens "
                 "FROM workflow_recovery_attempts WHERE attempt_id=?",
                 (self._required_text(attempt_id, "attempt_id"),),
             ).fetchone()
@@ -935,6 +1105,8 @@ class ReleaseReviewLedger:
                 or row[2] != expected_scope
                 or int(row[3]) != int(fence_token)
                 or row[4] not in {"PREPARED", "ACCEPTED", "RUNNING"}
+                or row[5] != self._required_text(effective_route_identity, "effective_route_identity")
+                or row[6] != self._required_text(review_lens, "review_lens")
             ):
                 raise RuntimeError("recovery attempt is not the current candidate-bound fence")
         finally:
@@ -1123,6 +1295,221 @@ class ReleaseReviewLedger:
                     (state, json.dumps(terminal, sort_keys=True), time.time(), receipt_id),
                 )
                 return True
+        finally:
+            conn.close()
+
+    def finalize_material_saga(
+        self,
+        receipt_id: str,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        status: str,
+        evidence: Mapping[str, Any],
+    ) -> bool:
+        """Terminalize one material receipt, route plan, and retry fence together.
+
+        The material route plan and recovery attempt live in this ledger, so
+        their terminal state must never be published as separate writes.  The
+        async state database may still need reconciliation after a host crash,
+        but this transaction makes the material authority itself all-or-nothing.
+        """
+        status_normalized = _normalized(status)
+        receipt_state = (
+            "completed" if status_normalized == "completed"
+            else "failed" if status_normalized in {"error", "failed", "stalled"}
+            else "cancelled" if status_normalized == "cancelled"
+            else "timebox_expired" if status_normalized == "timebox_expired"
+            else "unknown"
+        )
+        attempt_state = {
+            "completed": "COMMITTED",
+            "cancelled": "CANCELLED",
+            "unknown": "INTERRUPTED",
+            "timebox_expired": "INTERRUPTED",
+        }.get(receipt_state, "FAILED")
+        terminal = {"status": status_normalized, "evidence": dict(evidence)}
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                plan = conn.execute(
+                    "SELECT attempt_id, fence_token, saga_state, terminal_json FROM workflow_material_route_plans WHERE receipt_id=?",
+                    (self._required_text(receipt_id, "receipt_id"),),
+                ).fetchone()
+                if plan is None:
+                    raise RuntimeError("material route plan is absent for receipt")
+                if plan[0] != self._required_text(attempt_id, "attempt_id") or int(plan[1]) != int(fence_token):
+                    raise RuntimeError("material terminal publication rejected by route-plan fence")
+                if plan[2] == "TERMINAL":
+                    return False
+                receipt = self._require_receipt(conn, receipt_id)
+                if receipt[1] not in {"running", "timebox_expired"}:
+                    raise RuntimeError(f"material receipt {receipt_id} cannot terminalize from state {receipt[1]}")
+                attempt = conn.execute(
+                    "SELECT state, fence_token FROM workflow_recovery_attempts WHERE attempt_id=?",
+                    (attempt_id,),
+                ).fetchone()
+                if attempt is None or int(attempt[1]) != int(fence_token) or attempt[0] != "RUNNING":
+                    raise RuntimeError("material terminal publication rejected by recovery fence")
+                if receipt[1] == "timebox_expired" and receipt_state != "timebox_expired":
+                    return False
+                conn.execute(
+                    "UPDATE release_review_receipts SET state=?, terminal_json=?, updated_at=? WHERE receipt_id=?",
+                    (receipt_state, json.dumps(terminal, sort_keys=True), now, receipt_id),
+                )
+                conn.execute(
+                    "UPDATE workflow_material_route_plans SET saga_state='TERMINAL', terminal_json=?, updated_at=? WHERE receipt_id=? AND saga_state!='TERMINAL'",
+                    (json.dumps(terminal, sort_keys=True), now, receipt_id),
+                )
+                updated = conn.execute(
+                    "UPDATE workflow_recovery_attempts SET state=?, outcome=?, updated_at=? "
+                    "WHERE attempt_id=? AND fence_token=? AND state='RUNNING'",
+                    (attempt_state, status_normalized, now, attempt_id, int(fence_token)),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("material recovery terminal publication lost its current fence")
+                return True
+        finally:
+            conn.close()
+
+    def bind_material_owned_handle(
+        self,
+        receipt_id: str,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        handle_id: str,
+        pid: int,
+        host_start_time: int | None,
+    ) -> bool:
+        """Bind the exact external child before material execution may run."""
+        handle = self._required_text(handle_id, "external handle_id")
+        if not isinstance(pid, int) or pid <= 0:
+            raise ValueError("external PID must be positive")
+        if host_start_time is not None and (not isinstance(host_start_time, int) or host_start_time < 0):
+            raise ValueError("external process start time is invalid")
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                plan = conn.execute(
+                    "SELECT attempt_id, fence_token, saga_state, external_handle_id FROM workflow_material_route_plans WHERE receipt_id=?",
+                    (self._required_text(receipt_id, "receipt_id"),),
+                ).fetchone()
+                if plan is None or plan[0] != self._required_text(attempt_id, "attempt_id") or int(plan[1]) != int(fence_token):
+                    raise RuntimeError("material external handle rejected by route-plan fence")
+                if plan[2] == "OWNED":
+                    return plan[3] == handle
+                if plan[2] != "SEALED" or plan[3]:
+                    raise RuntimeError("material external handle cannot replace an existing saga state")
+                receipt = self._require_receipt(conn, receipt_id)
+                attempt = conn.execute(
+                    "SELECT state, fence_token FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt_id,)
+                ).fetchone()
+                if receipt[1] != "running" or attempt is None or int(attempt[1]) != int(fence_token) or attempt[0] != "ACCEPTED":
+                    raise RuntimeError("material external handle is not bound to the current accepted execution")
+                updated = conn.execute(
+                    "UPDATE workflow_material_route_plans SET saga_state='OWNED', external_handle_id=?, external_pid=?, external_host_start_time=?, updated_at=? "
+                    "WHERE receipt_id=? AND saga_state='SEALED' AND external_handle_id=''",
+                    (handle, pid, host_start_time, now, receipt_id),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("material external handle binding lost its current fence")
+                updated = conn.execute(
+                    "UPDATE workflow_recovery_attempts SET state='RUNNING', outcome='owned external material process bound', updated_at=? "
+                    "WHERE attempt_id=? AND fence_token=? AND state='ACCEPTED'",
+                    (now, attempt_id, int(fence_token)),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("material external handle binding lost recovery ownership")
+                return True
+        finally:
+            conn.close()
+
+    def interrupt_unowned_material_saga(
+        self,
+        receipt_id: str,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        status: str = "unknown",
+        evidence: Mapping[str, Any],
+    ) -> bool:
+        """Terminalize a sealed material saga that never bound a child handle.
+
+        A material recovery attempt becomes ``RUNNING`` only after the exact
+        external process handle is persisted.  If the async owner disappears
+        before that boundary, a late or synthetic completion must not be
+        accepted as a real review result.  This transaction records a fenced
+        interrupted/cancelled terminal outcome without claiming that a child
+        ever ran.
+        """
+        status_normalized = _normalized(status)
+        if status_normalized not in {"unknown", "cancelled"}:
+            raise ValueError("unowned material saga may only be unknown or cancelled")
+        receipt_state = "cancelled" if status_normalized == "cancelled" else "unknown"
+        attempt_state = "CANCELLED" if receipt_state == "cancelled" else "INTERRUPTED"
+        terminal = {
+            "status": status_normalized,
+            "evidence": {**dict(evidence), "external_handle_bound": False},
+        }
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                plan = conn.execute(
+                    "SELECT attempt_id, fence_token, saga_state, external_handle_id FROM workflow_material_route_plans WHERE receipt_id=?",
+                    (self._required_text(receipt_id, "receipt_id"),),
+                ).fetchone()
+                if plan is None:
+                    raise RuntimeError("material route plan is absent for receipt")
+                if plan[0] != self._required_text(attempt_id, "attempt_id") or int(plan[1]) != int(fence_token):
+                    raise RuntimeError("unowned material terminal rejected by route-plan fence")
+                if plan[2] == "TERMINAL":
+                    return False
+                if plan[2] != "SEALED" or plan[3]:
+                    raise RuntimeError("unowned material terminal requires a sealed handle-free route plan")
+                receipt = self._require_receipt(conn, receipt_id)
+                if receipt[1] not in {"launching", "running", "timebox_expired"}:
+                    raise RuntimeError(f"unowned material receipt {receipt_id} cannot terminalize from state {receipt[1]}")
+                attempt = conn.execute(
+                    "SELECT state, fence_token FROM workflow_recovery_attempts WHERE attempt_id=?",
+                    (attempt_id,),
+                ).fetchone()
+                if attempt is None or int(attempt[1]) != int(fence_token) or attempt[0] not in {"PREPARED", "ACCEPTED"}:
+                    raise RuntimeError("unowned material terminal rejected by recovery fence")
+                conn.execute(
+                    "UPDATE release_review_receipts SET state=?, terminal_json=?, updated_at=? WHERE receipt_id=?",
+                    (receipt_state, json.dumps(terminal, sort_keys=True), now, receipt_id),
+                )
+                conn.execute(
+                    "UPDATE workflow_material_route_plans SET saga_state='TERMINAL', terminal_json=?, updated_at=? "
+                    "WHERE receipt_id=? AND saga_state='SEALED' AND external_handle_id=''",
+                    (json.dumps(terminal, sort_keys=True), now, receipt_id),
+                )
+                updated = conn.execute(
+                    "UPDATE workflow_recovery_attempts SET state=?, outcome=?, updated_at=? "
+                    "WHERE attempt_id=? AND fence_token=? AND state IN ('PREPARED', 'ACCEPTED')",
+                    (attempt_state, f"unowned_material:{status_normalized}", now, attempt_id, int(fence_token)),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("unowned material terminal lost its current recovery fence")
+                return True
+        finally:
+            conn.close()
+
+    def has_material_route_plan(self, receipt_id: str) -> bool:
+        """Return whether this receipt belongs to the sealed material saga."""
+        conn = self._connect()
+        try:
+            return conn.execute(
+                "SELECT 1 FROM workflow_material_route_plans WHERE receipt_id=?",
+                (self._required_text(receipt_id, "receipt_id"),),
+            ).fetchone() is not None
         finally:
             conn.close()
 

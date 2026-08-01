@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, MutableMapping, Protocol, Sequence
 
@@ -32,6 +33,24 @@ class ExecutableAdapter(Protocol):
     def execute(
         self, request: AdapterRequest, qualification: Qualification
     ) -> AdapterResult: ...
+
+
+@dataclass(frozen=True)
+class OwnedExternalExecution:
+    """An acquired fleet lease reserved for one externally-owned material child.
+
+    The service owns admission, lane lease and final audit/release.  The
+    material adapter owns only argv-only child I/O, while the dispatcher binds
+    the child identity to its separate recovery fence before it may run.
+    """
+
+    task: TaskSpec
+    pin: object
+    lease: object
+    request: AdapterRequest
+    qualification: Qualification
+    adapter: ExecutableAdapter
+    evaluations: tuple
 
 
 class FleetService:
@@ -282,7 +301,21 @@ class FleetService:
             now=at,
         )
 
-    def run(self, task: TaskSpec, *, prompt: str) -> FleetRunResult:
+    def run(
+        self,
+        task: TaskSpec,
+        *,
+        prompt: str,
+        preferred_lane_id: str | None = None,
+    ) -> FleetRunResult:
+        """Execute one task through the canonical fleet route.
+
+        ``preferred_lane_id`` is a dispatcher-owned admission constraint, not
+        a model-controlled provider override.  It exists so material review
+        fan-out can reserve distinct, already-qualified lanes while still
+        using the same lease, qualification, adapter, audit, and release
+        machinery as ordinary fleet execution.
+        """
         at = self._now().astimezone(timezone.utc)
         if not self.config.enabled:
             return FleetRunResult(
@@ -295,21 +328,108 @@ class FleetService:
             )
 
         candidates = self._inputs(at)
+        if preferred_lane_id is not None:
+            preferred_lane_id = str(preferred_lane_id).strip()
+            known_lanes = {candidate.profile.lane_id for candidate in candidates}
+            if not preferred_lane_id or preferred_lane_id not in known_lanes:
+                evaluations = tuple(
+                    evaluate_lane(
+                        candidate,
+                        task,
+                        now=at,
+                        minimum_confidence=self.config.minimum_confidence,
+                    )
+                    for candidate in candidates
+                )
+                self.store.record_event(
+                    at=at,
+                    task_id=task.task_id,
+                    lane_id=preferred_lane_id or None,
+                    event_type="ROUTE_DENIED",
+                    reason=ReasonCode.NO_ELIGIBLE_LANE.value,
+                    decision={"preferred_lane_id": preferred_lane_id},
+                )
+                return FleetRunResult(
+                    ok=False,
+                    task_id=task.task_id,
+                    reason=ReasonCode.NO_ELIGIBLE_LANE,
+                    pin=self.store.read_pin(task.task_id),
+                    lease=None,
+                    adapter_result=None,
+                    evaluations=evaluations,
+                )
+            existing_pin = self.store.read_pin(task.task_id)
+            if (
+                existing_pin is not None
+                and (
+                    existing_pin.lane_id != preferred_lane_id
+                    or not any(
+                        item.eligible
+                        and item.profile.lane_id == preferred_lane_id
+                        and item.profile.provider_id == existing_pin.provider_id
+                        and item.profile.adapter_kind == existing_pin.adapter_kind
+                        and item.selected_model == existing_pin.model_id
+                        and item.selected_effort == existing_pin.effort
+                        for item in (
+                            evaluate_lane(
+                                candidate,
+                                task,
+                                now=at,
+                                minimum_confidence=self.config.minimum_confidence,
+                            )
+                            for candidate in candidates
+                        )
+                    )
+                )
+            ):
+                evaluations = tuple(
+                    evaluate_lane(
+                        candidate,
+                        task,
+                        now=at,
+                        minimum_confidence=self.config.minimum_confidence,
+                    )
+                    for candidate in candidates
+                )
+                self.store.record_event(
+                    at=at,
+                    task_id=task.task_id,
+                    lane_id=existing_pin.lane_id,
+                    event_type="ROUTE_DENIED",
+                    reason=ReasonCode.PINNED_LANE_UNAVAILABLE.value,
+                    decision={
+                        "pinned_lane_id": existing_pin.lane_id,
+                        "preferred_lane_id": preferred_lane_id,
+                        "identity_check": "mismatch",
+                    },
+                )
+                return FleetRunResult(
+                    ok=False,
+                    task_id=task.task_id,
+                    reason=ReasonCode.PINNED_LANE_UNAVAILABLE,
+                    pin=existing_pin,
+                    lease=None,
+                    adapter_result=None,
+                    evaluations=evaluations,
+                )
         selected_lane_id = None
         if self.store.read_pin(task.task_id) is None:
-            evaluations = tuple(
-                evaluate_lane(
-                    candidate,
-                    task,
-                    now=at,
-                    minimum_confidence=self.config.minimum_confidence,
+            if preferred_lane_id is not None:
+                selected_lane_id = preferred_lane_id
+            else:
+                evaluations = tuple(
+                    evaluate_lane(
+                        candidate,
+                        task,
+                        now=at,
+                        minimum_confidence=self.config.minimum_confidence,
+                    )
+                    for candidate in candidates
                 )
-                for candidate in candidates
-            )
-            selected_lane_id = self._select_route(
-                evaluations,
-                rotation_index=self.store.rotation_cursor(),
-            ).lane_id
+                selected_lane_id = self._select_route(
+                    evaluations,
+                    rotation_index=self.store.rotation_cursor(),
+                ).lane_id
 
         acquisition = self.store.acquire(
             task,
@@ -318,8 +438,11 @@ class FleetService:
             ttl_seconds=self.config.lease_ttl_seconds,
             now=at,
             selected_lane_id=selected_lane_id,
-            enforce_selected_lane=self.lane_selector is not None,
+            enforce_selected_lane=(
+                preferred_lane_id is not None or self.lane_selector is not None
+            ),
         )
+
         if acquisition.reason is not ReasonCode.MET or acquisition.lease is None:
             return FleetRunResult(
                 ok=False,
@@ -454,6 +577,69 @@ class FleetService:
             adapter_result=adapter_result,
             evaluations=acquisition.evaluations,
         )
+
+    def acquire_owned_external(
+        self, task: TaskSpec, *, prompt: str, preferred_lane_id: str,
+    ) -> OwnedExternalExecution | FleetRunResult:
+        """Reserve one qualified argv-only external lane without running it yet."""
+        at = self._now().astimezone(timezone.utc)
+        preferred_lane_id = str(preferred_lane_id or "").strip()
+        candidates = self._inputs(at)
+        known_lanes = {candidate.profile.lane_id for candidate in candidates}
+        if not self.config.enabled:
+            return FleetRunResult(False, task.task_id, ReasonCode.FLEET_DISABLED, self.store.read_pin(task.task_id), None, None)
+        if not preferred_lane_id or preferred_lane_id not in known_lanes:
+            evaluations = tuple(evaluate_lane(candidate, task, now=at, minimum_confidence=self.config.minimum_confidence) for candidate in candidates)
+            return FleetRunResult(False, task.task_id, ReasonCode.NO_ELIGIBLE_LANE, self.store.read_pin(task.task_id), None, None, evaluations)
+        existing_pin = self.store.read_pin(task.task_id)
+        if existing_pin is not None and existing_pin.lane_id != preferred_lane_id:
+            evaluations = tuple(evaluate_lane(candidate, task, now=at, minimum_confidence=self.config.minimum_confidence) for candidate in candidates)
+            return FleetRunResult(False, task.task_id, ReasonCode.PINNED_LANE_UNAVAILABLE, existing_pin, None, None, evaluations)
+        acquisition = self.store.acquire(
+            task, candidates, owner_uuid=self.owner_uuid, ttl_seconds=self.config.lease_ttl_seconds,
+            now=at, selected_lane_id=preferred_lane_id, enforce_selected_lane=True,
+        )
+        if acquisition.reason is not ReasonCode.MET or acquisition.lease is None:
+            return FleetRunResult(False, task.task_id, acquisition.reason, acquisition.pin, acquisition.lease, None, acquisition.evaluations)
+        pin, lease = acquisition.pin, acquisition.lease
+        assert pin is not None
+        qualification = self.qualifications.get(pin.lane_id)
+        adapter = self.adapters.get(pin.lane_id)
+        profile = next((item for item in self.profiles if item.lane_id == pin.lane_id), None)
+        if qualification is None or adapter is None or profile is None or not callable(getattr(adapter, "start_owned_material", None)):
+            self.store.release(lease, outcome="failed", now=at)
+            return FleetRunResult(False, task.task_id, ReasonCode.PINNED_LANE_UNAVAILABLE, pin, lease, None, acquisition.evaluations)
+        renewed = self.store.heartbeat(lease, ttl_seconds=self.config.lease_ttl_seconds, now=at)
+        if renewed is None:
+            return FleetRunResult(False, task.task_id, ReasonCode.LEASE_CONFLICT, pin, lease, None, acquisition.evaluations)
+        self.store.record_event(
+            at=at, task_id=task.task_id, lane_id=pin.lane_id, event_type="EXECUTION_STARTED", reason=ReasonCode.MET.value,
+            decision={"adapter_kind": pin.adapter_kind.value, "provider_id": pin.provider_id, "model_id": pin.model_id,
+                      "effort": pin.effort, "fast_mode": pin.fast_mode, "auth_kind": qualification.auth_kind,
+                      "qualification": qualification.evidence_id, "owned_external": True},
+        )
+        return OwnedExternalExecution(
+            task=task, pin=pin, lease=renewed,
+            request=AdapterRequest(task_id=task.task_id, cwd=task.cwd, prompt=prompt, profile=profile,
+                                   model=pin.model_id, effort=pin.effort, fast_mode=pin.fast_mode,
+                                   timeout_seconds=self.config.execution_timeout_seconds),
+            qualification=qualification, adapter=adapter, evaluations=acquisition.evaluations,
+        )
+
+    def finalize_owned_external(self, execution: OwnedExternalExecution, adapter_result: AdapterResult) -> FleetRunResult:
+        """Record and release one exact owned external fleet lease once."""
+        at = self._now().astimezone(timezone.utc)
+        self.store.record_event(
+            at=at, task_id=execution.task.task_id, lane_id=execution.pin.lane_id,
+            event_type="EXECUTION_COMPLETED" if adapter_result.ok else "EXECUTION_FAILED",
+            reason=adapter_result.reason.value,
+            decision={"adapter_kind": adapter_result.adapter_kind.value, "provider_id": adapter_result.provider_id,
+                      "model_id": adapter_result.model_id, "auth_kind": adapter_result.auth_kind, "owned_external": True},
+        )
+        outcome = "completed" if adapter_result.ok else ("cancelled" if adapter_result.reason is ReasonCode.EXECUTION_CANCELLED else "failed")
+        self.store.release(execution.lease, outcome=outcome, now=at)
+        return FleetRunResult(adapter_result.ok, execution.task.task_id, adapter_result.reason, execution.pin,
+                              execution.lease, adapter_result, execution.evaluations)
 
     def release_task(self, task_id: str, *, outcome: str) -> bool:
         at = self._now().astimezone(timezone.utc)
