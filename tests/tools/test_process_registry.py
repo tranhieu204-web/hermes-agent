@@ -2794,3 +2794,134 @@ def test_contained_child_cannot_execute_before_it_is_adopted():
             except Exception:
                 pass
             containment.close()
+
+
+# ---------------------------------------------------------------------------
+# B1 (fence 8): Linux fork -> prctl race closure and prctl failure checking.
+#
+# Two independent blind Final Inspectors (Codex by AST, Grok by source) proved
+# the previous `_set_pdeathsig_sigkill` was a single BARE prctl call:
+#
+#   * if the owner dies between fork() and prctl(), the death signal has already
+#     been missed and the child survives unconstrained;
+#   * if prctl() itself fails, the non-zero return was ignored and exec still
+#     proceeded with no containment at all.
+#
+# The guard below closes both. It is written with injected dependencies so all
+# four control cases are falsifiable as unit tests on ANY host.
+#
+# HONESTY BOUNDARY: this host is Windows. These are unit controls over the exact
+# guard logic that runs in the forked child; they are NOT live Linux proof, and
+# nothing here claims a real Linux kernel executed PR_SET_PDEATHSIG.
+# ---------------------------------------------------------------------------
+
+
+def test_linux_guard_fails_closed_when_prctl_reports_failure():
+    """RED: a failed prctl was ignored and exec proceeded uncontained."""
+    from tools.process_registry import _linux_child_death_guard
+
+    exits = []
+    with pytest.raises(OSError) as excinfo:
+        _linux_child_death_guard(
+            4321,
+            prctl=lambda: -1,
+            getppid=lambda: 4321,
+            exit_now=exits.append,
+        )
+    # It must fail closed BEFORE any parent comparison or exec.
+    assert "prctl" in str(excinfo.value).lower()
+    assert exits == []
+
+
+def test_linux_guard_self_terminates_when_parent_died_before_arming():
+    """RED: the fork -> prctl race let an orphaned child continue to exec."""
+    from tools.process_registry import (
+        _PDEATHSIG_PARENT_CHANGED_EXIT,
+        _linux_child_death_guard,
+    )
+
+    exits = []
+    _linux_child_death_guard(
+        4321,
+        prctl=lambda: 0,
+        getppid=lambda: 1,  # reparented to init: the owner already died
+        exit_now=exits.append,
+    )
+    # Self-terminated before exec, with a distinguishable status.
+    assert exits == [_PDEATHSIG_PARENT_CHANGED_EXIT]
+
+
+def test_linux_guard_proceeds_only_for_the_exact_captured_parent():
+    """The success path must arm and then leave the child alone."""
+    from tools.process_registry import _linux_child_death_guard
+
+    calls = {"prctl": 0}
+
+    def _prctl():
+        calls["prctl"] += 1
+        return 0
+
+    exits = []
+    _linux_child_death_guard(
+        4321, prctl=_prctl, getppid=lambda: 4321, exit_now=exits.append
+    )
+    assert calls["prctl"] == 1
+    assert exits == []
+
+
+def test_linux_guard_checks_parent_only_after_arming():
+    """Ordering matters: arming first is what makes the check meaningful."""
+    from tools.process_registry import _linux_child_death_guard
+
+    order = []
+
+    def _prctl():
+        order.append("prctl")
+        return 0
+
+    def _getppid():
+        order.append("getppid")
+        return 4321
+
+    _linux_child_death_guard(
+        4321, prctl=_prctl, getppid=_getppid, exit_now=lambda code: order.append("exit")
+    )
+    assert order == ["prctl", "getppid"]
+
+
+def test_linux_preexec_factory_binds_the_expected_parent_pid():
+    """The captured parent PID must come from the spawning process."""
+    import os
+
+    from tools.process_registry import OwnerDeathContainment
+
+    containment = OwnerDeathContainment("linux_pdeathsig", True, "synthetic")
+    try:
+        assert containment.expected_parent_pid == os.getpid()
+        kwargs = containment.popen_kwargs()
+        assert callable(kwargs["preexec_fn"])
+        # The closure must carry THIS process's pid, not a placeholder: a wrong
+        # captured parent would make the race check compare against nothing.
+        assert kwargs["preexec_fn"].expected_parent_pid == os.getpid()
+        assert "creationflags" not in kwargs
+    finally:
+        containment.close()
+
+
+def test_windows_containment_behaviour_is_unchanged_by_the_linux_guard():
+    """No-regression control: the Windows path must be untouched."""
+    from tools.process_registry import create_owner_death_containment
+
+    containment = create_owner_death_containment()
+    try:
+        if containment.kind != "windows_job_object":
+            pytest.skip("Windows job-object path not active on this host")
+        kwargs = containment.popen_kwargs()
+        assert kwargs == {"creationflags": 0x00000004}  # CREATE_SUSPENDED only
+        assert "preexec_fn" not in kwargs
+        assert containment.available is True
+        facts = containment.public_facts()
+        assert facts["owner_death_containment"] == "windows_job_object"
+        assert facts["owner_death_containment_available"] is True
+    finally:
+        containment.close()

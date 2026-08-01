@@ -2613,6 +2613,9 @@ _CREATE_SUSPENDED = 0x00000004
 _THREAD_SUSPEND_RESUME = 0x0002
 _TH32CS_SNAPTHREAD = 0x00000004
 _PR_SET_PDEATHSIG = 1
+# Distinguishable exit status for a child that found its owner already
+# gone at arming time and self-terminated before exec.
+_PDEATHSIG_PARENT_CHANGED_EXIT = 89
 
 
 class OwnerDeathContainment:
@@ -2623,7 +2626,10 @@ class OwnerDeathContainment:
     process; callers are required to fail closed instead.
     """
 
-    __slots__ = ("kind", "available", "detail", "_job", "_closed")
+    __slots__ = (
+        "kind", "available", "detail", "_job", "_closed",
+        "expected_parent_pid",
+    )
 
     def __init__(self, kind, available, detail, job=None):
         self.kind = kind
@@ -2631,6 +2637,11 @@ class OwnerDeathContainment:
         self.detail = detail
         self._job = job
         self._closed = False
+        # Captured in the SPAWNING process, before any child exists, so the
+        # forked child can tell whether its owner is still the one that
+        # created it. Reading it inside the child would be useless.
+        import os as _os
+        self.expected_parent_pid = _os.getpid()
 
     def popen_kwargs(self):
         """Extra ``Popen`` kwargs that arm containment at creation time."""
@@ -2639,7 +2650,7 @@ class OwnerDeathContainment:
         if self.kind == "windows_job_object":
             return {"creationflags": _CREATE_SUSPENDED}
         if self.kind == "linux_pdeathsig":
-            return {"preexec_fn": _set_pdeathsig_sigkill}
+            return {"preexec_fn": _make_pdeathsig_preexec(self.expected_parent_pid)}
         return {}
 
     def adopt(self, process):
@@ -2697,14 +2708,64 @@ class OwnerDeathContainment:
         }
 
 
-def _set_pdeathsig_sigkill():  # pragma: no cover - runs in the forked child
-    """Ask the kernel to SIGKILL this child when its owner dies."""
-    import ctypes
-    import signal
+def _linux_child_death_guard(expected_parent_pid, *, prctl, getppid, exit_now):
+    """Arm PDEATHSIG and close the fork->prctl race. Runs in the forked child.
 
-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(
-        _PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0
-    )
+    `prctl(PR_SET_PDEATHSIG, SIGKILL)` only takes effect from the moment it
+    returns, which leaves two holes that a bare call cannot see:
+
+    1. **The race.** If the owner dies between `fork()` and `prctl()`, the death
+       has already happened and no signal will ever be delivered. The child
+       would then survive as an orphan running a prompt-bearing provider.
+    2. **The failure.** If `prctl()` itself fails, its non-zero return says the
+       kernel is NOT holding the guarantee, and exec must not proceed.
+
+    So this arms first, fails closed on a non-zero return, and only then
+    compares `getppid()` against the PID captured in the parent *before* the
+    spawn. A mismatch means the original owner is already gone, and the child
+    terminates itself here - before `exec`, so the provider argv never runs.
+
+    Dependencies are injected so every branch is falsifiable as a unit test on
+    any host. This function is the whole Linux contract; nothing else in the
+    child path may assume containment.
+    """
+    result = prctl()
+    if result != 0:
+        raise OSError(
+            f"prctl(PR_SET_PDEATHSIG, SIGKILL) failed with {result}; "
+            "refusing to exec an uncontained provider child"
+        )
+    if getppid() != expected_parent_pid:
+        # The owner died before the signal was armed. Nothing will ever kill
+        # this child, so it must kill itself, and it must do so before exec.
+        exit_now(_PDEATHSIG_PARENT_CHANGED_EXIT)
+
+
+def _make_pdeathsig_preexec(expected_parent_pid):
+    """Bind the real libc/os primitives to :func:`_linux_child_death_guard`."""
+
+    def _preexec():  # pragma: no cover - body runs only in the forked child
+        import ctypes
+        import os
+        import signal
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+
+        def _prctl():
+            return libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+
+        _linux_child_death_guard(
+            expected_parent_pid,
+            prctl=_prctl,
+            getppid=os.getppid,
+            exit_now=os._exit,
+        )
+
+    # Expose the bound PID so the binding itself is inspectable/testable without
+    # forking: a closure that captured the wrong parent is indistinguishable
+    # from a correct one by callability alone.
+    _preexec.expected_parent_pid = expected_parent_pid
+    return _preexec
 
 
 def _resume_exact_child_threads(pid):

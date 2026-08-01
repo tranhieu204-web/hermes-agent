@@ -679,3 +679,72 @@ meaningless self-call. `launch_shell_review` / `launch_async_review` remain
 intentional public dependency-injected entrypoints. Deep-mode provider metrics
 remain HOLD. Release remains HOLD pending a coordinator forward commit and fresh
 non-Claude inspection.
+
+#### Fence-8 repair record (2026-08-01, commit `d6897eec5`)
+
+Three blind Final Inspectors examined `d6897eec5e58dba8fd9afa34e3feb7da9a2fd392`.
+Codex returned FAIL, Grok returned a detailed FAIL (then, with no product change and
+no finding discharged, a contradictory short PASS), and AGY/Gemini returned PASS.
+The reconciled outcome is **FAIL / RELEASE HOLD**, decided on evidentiary coverage
+rather than a 2-to-1 count: AGY's PASS is superseded only on B1 and B2, the two rows
+where it did not examine the disputed artifact (it read the `prctl` call but never the
+post-`prctl` race or return code, and it read the internal Python call chain but never
+validated a payload against the registered `additionalProperties=False` schema). Full
+reconciliation, all four verdicts, all corrections and all four least-certain items are
+preserved in the external builder meta-audit.
+
+**B1 — Linux fork→`prctl` race closed and `prctl` failure checked.** The previous
+implementation was a single bare `prctl(PR_SET_PDEATHSIG, SIGKILL)`. Two holes follow
+from that and both are now closed:
+
+- the expected parent PID is captured in the **spawning** process, before any child
+  exists, and bound into the `preexec_fn` closure;
+- the child arms SIGKILL first, then **fails closed on a non-zero `prctl` return**
+  rather than proceeding to exec uncontained;
+- it then compares `getppid()` against the captured parent and, on mismatch, terminates
+  itself with a distinguishable status **before exec**, so the provider argv never runs
+  for a child whose owner already died.
+
+The guard takes its primitives by injection, so all branches are falsifiable as unit
+controls: `prctl` failure, parent-died-before-arming, correct-parent success, arming
+ordering, PID-capture binding, and a Windows no-regression control. The two AST
+predicates the inspectors used (`has_getppid_race_check`, `prctl_return_checked`) now
+both read **True**, having read **False** at `d6897eec5`.
+
+**This host is Windows. No live Linux proof is claimed.** The Linux guard is proven by
+injected-dependency unit controls over the exact logic that runs in the forked child;
+a real Linux kernel has not executed it here, and that limitation is stated wherever
+the result is reported.
+
+**B2 — the registered model-tool schema can now express complete material evidence.**
+`_MATERIAL_REVIEW_REQUIRED_FIELDS` needs 12 fields; the registered task-item schema
+previously declared 5 with `additionalProperties: False`, so a complete payload was
+rejected with *"Additional properties are not allowed"* and the passing test had been
+calling `delegate_task()` directly as a Python function with fields the model boundary
+forbids. The task-item schema now declares all 12 (plus optional `cwd`) with strict
+types and bounds — non-empty strings, `fence_token` integer ≥ 0, `deadline_seconds`
+number > 0, `preflight` object — and `additionalProperties` stays **false**. Proof runs
+through the live registry: a complete payload validates against
+`registry.get_entry("delegate_task").schema`, and the **registered handler** (not
+`delegate_task()` directly) delivers that evidence to `dispatch_material_review`.
+Unknown fields, wrong types, out-of-bound values, missing evidence, mixed
+generic/material batches and more than one material review all still fail closed.
+No new core tool was added and no schema bypass is used anywhere in the proof.
+
+**Fence-8 evidence.** Canonical wrapper command A: **4 files, 203 passed, 0 failed**
+(197 at `d6897eec5`, plus the six new B1 controls). Canonical wrapper command B:
+**1 file, 13 passed, 0 failed**. Broad 28-file suite from a 69-character root:
+**620 passed, 0 failed**. Both changed test files: 299 passed with only the three
+documented inherited `test_delegate.py` baselines failing. All changed Python compiles;
+`git diff --check` clean; 4 changed paths, all inside the 5 leased writes; nothing
+staged; quarantine untouched. Mutation guards for both repairs: **11/11 killed**, every
+mutated file restored to its exact pre-mutation SHA-256. Per the Grok correction, that
+mutation receipt is builder evidence only and is not independent inspection evidence.
+
+**Carried, not closed.** `execute_material_route` still has no production caller — both
+Codex and Grok note it is unchanged from base and not a newly introduced speculative
+caller. `launch_shell_review` / `launch_async_review` remain intentional public
+dependency-injected entrypoints. Grok's NEW-F3 (clean root has no git object store, so
+commit-SHA binding is freeze/manifest/content rather than `git cat-file`) is carried and
+coordinator-owned. Deep-mode provider metrics remain HOLD. Release remains HOLD pending
+a coordinator forward commit and a fresh non-Claude Final Inspection.

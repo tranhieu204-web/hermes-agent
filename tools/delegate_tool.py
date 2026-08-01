@@ -4142,11 +4142,76 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "review_lens": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Required for material parallel reviews when the requested check is not clearly spec, security, integration, or tests. Distinct lenses may share a model; identical lenses are rejected before dispatch.",
                         },
                         "candidate_hash": {
                             "type": "string",
+                            "minLength": 1,
                             "description": "Exact candidate identity for a material review batch. Used only for duplicate-admission identity, never as a model selector.",
+                        },
+                        # --- Receipt-bound material review evidence -----------
+                        # A material review reaches the sealed ingress only when
+                        # ALL of these are present alongside candidate_hash and
+                        # review_lens. They are declared here so the model-visible
+                        # contract can actually express complete evidence; the
+                        # object stays closed (additionalProperties: False) and
+                        # every field keeps a strict type and bound. Omitting any
+                        # of them still fails closed in delegate_task() before a
+                        # route is planned or a child exists.
+                        "scope": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Normalized scope of the material review, e.g. 'release tests'.",
+                        },
+                        "lane": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Requested fleet lane id for the material review, e.g. 'claude_code'.",
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Exact review prompt sent to the owned external material child.",
+                        },
+                        "attempt_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Recovery attempt id this review is bound to.",
+                        },
+                        "fence_token": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Monotonic fence token of the current recovery attempt. A stale fence cannot dispatch.",
+                        },
+                        "environment_fingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Canonical environment fingerprint bound to the attempt.",
+                        },
+                        "evidence_fingerprint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Canonical immutable-evidence fingerprint bound to the attempt.",
+                        },
+                        "preflight": {
+                            "type": "object",
+                            "description": "Operation-scoped preflight controls captured before admission.",
+                        },
+                        "deadline_seconds": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "description": "Timebox for the owned material child, in seconds.",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Relative path the review result is written to.",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Existing working directory for the material review. Defaults to the process directory.",
                         },
                     },
                     "required": ["goal"],

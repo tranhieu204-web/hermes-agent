@@ -15,6 +15,8 @@ import threading
 import time
 import types
 import unittest
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -3677,3 +3679,206 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ----------------------------------------------------------------------
+# B2 (fence 8): the REGISTERED model-tool schema must be able to express
+# complete material evidence.
+#
+# Two independent blind Final Inspectors proved the previous state:
+# `_MATERIAL_REVIEW_REQUIRED_FIELDS` needs 12 fields, the registered task
+# schema permitted only 5 with `additionalProperties: False`, and validating a
+# complete payload against the real schema returned "Additional properties are
+# not allowed". The passing test called `delegate_task()` directly as a Python
+# function with fields the model boundary forbids - proof of an internal
+# caller, not of the shipped model tool.
+#
+# These tests therefore go through the ACTUAL REGISTERED schema and the ACTUAL
+# REGISTERED handler. Nothing here validates against a local copy of the schema
+# dict, and nothing here calls `delegate_task()` directly to prove ingress.
+# ----------------------------------------------------------------------
+
+
+def _registered_delegate_entry():
+    """The live registry entry for the shipped delegate_task tool."""
+    from tools.registry import registry
+
+    entry = registry.get_entry("delegate_task")
+    assert entry is not None, "delegate_task is not registered"
+    return entry
+
+
+def _registered_task_item_schema():
+    """The task-item subschema exactly as the model sees it."""
+    entry = _registered_delegate_entry()
+    return entry.schema["parameters"]["properties"]["tasks"]["items"]
+
+
+class TestRegisteredMaterialSchema(unittest.TestCase):
+    """The model boundary itself, not an internal Python call."""
+
+    @staticmethod
+    def _complete_material_task():
+        return {
+            "goal": "Review the release candidate",
+            "candidate_hash": "b" * 64,
+            "review_lens": "runtime",
+            "scope": "release tests",
+            "lane": "claude_code",
+            "prompt": "review exact candidate",
+            "attempt_id": "attempt-1",
+            "fence_token": 7,
+            "environment_fingerprint": "env-b",
+            "evidence_fingerprint": "evidence-b",
+            "preflight": {"health": {"status": "verified", "evidence": "test"}},
+            "deadline_seconds": 60,
+            "output_path": "out.json",
+        }
+
+    def test_every_required_material_field_is_expressible_in_the_registered_schema(self):
+        """RED: 10 of 12 required fields were forbidden by the model schema."""
+        from tools.delegate_tool import _MATERIAL_REVIEW_REQUIRED_FIELDS
+
+        item = _registered_task_item_schema()
+        properties = item["properties"]
+        missing = [f for f in _MATERIAL_REVIEW_REQUIRED_FIELDS if f not in properties]
+        self.assertEqual(missing, [], f"model schema cannot express: {missing}")
+        # The deny-by-default posture is preserved, not traded away.
+        self.assertIs(item["additionalProperties"], False)
+        self.assertEqual(item["required"], ["goal"])
+
+    def test_complete_material_payload_validates_against_the_registered_schema(self):
+        """RED: this exact payload previously returned 'Additional properties are not allowed'."""
+        jsonschema = pytest.importorskip("jsonschema")
+
+        entry = _registered_delegate_entry()
+        payload = {"tasks": [self._complete_material_task()]}
+        # Validate against the WHOLE registered parameter schema, as a model call would be.
+        jsonschema.validate(instance=payload, schema=entry.schema["parameters"])
+
+    def test_registered_schema_still_rejects_unknown_and_wrong_typed_fields(self):
+        """Widening must not become a hole: strict types and closure remain."""
+        jsonschema = pytest.importorskip("jsonschema")
+
+        entry = _registered_delegate_entry()
+        schema = entry.schema["parameters"]
+
+        unknown = self._complete_material_task()
+        unknown["totally_unknown_field"] = "x"
+        with self.assertRaises(jsonschema.ValidationError):
+            jsonschema.validate(instance={"tasks": [unknown]}, schema=schema)
+
+        for field, bad_value in (
+            ("fence_token", "not-an-integer"),
+            ("deadline_seconds", "not-a-number"),
+            ("preflight", "not-an-object"),
+            ("prompt", 123),
+            ("lane", []),
+        ):
+            with self.subTest(field=field):
+                wrong = self._complete_material_task()
+                wrong[field] = bad_value
+                with self.assertRaises(jsonschema.ValidationError):
+                    jsonschema.validate(instance={"tasks": [wrong]}, schema=schema)
+
+    def test_registered_schema_enforces_bounds_not_merely_types(self):
+        """Strict bounds: empty identities and non-positive numbers are invalid."""
+        jsonschema = pytest.importorskip("jsonschema")
+
+        entry = _registered_delegate_entry()
+        schema = entry.schema["parameters"]
+        for field, bad_value in (
+            ("candidate_hash", ""),
+            ("attempt_id", ""),
+            ("scope", ""),
+            ("fence_token", -1),
+            ("deadline_seconds", 0),
+        ):
+            with self.subTest(field=field):
+                bad = self._complete_material_task()
+                bad[field] = bad_value
+                with self.assertRaises(jsonschema.ValidationError):
+                    jsonschema.validate(instance={"tasks": [bad]}, schema=schema)
+
+    def test_registered_handler_delivers_complete_evidence_to_the_adapter(self):
+        """RED: proof must run through the REGISTERED HANDLER, not delegate_task()."""
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        seen = {}
+
+        def _fake_dispatch(**kwargs):
+            seen.update(kwargs)
+            return {"status": "launched", "receipt_id": "r-1"}
+
+        task = self._complete_material_task()
+        task["cwd"] = os.getcwd()
+        with patch("tools.fleet_delegation.dispatch_material_review", _fake_dispatch), \
+                patch("tools.delegate_tool._run_single_child") as run_child:
+            raw = entry.handler({"tasks": [task]}, parent_agent=parent)
+        result = json.loads(raw)
+
+        self.assertEqual(result["status"], "launched")
+        run_child.assert_not_called()
+        self.assertEqual(seen["candidate_hash"], "b" * 64)
+        self.assertEqual(seen["review_lens"], "runtime")
+        self.assertEqual(seen["lane"], "claude_code")
+        self.assertEqual(seen["attempt_id"], "attempt-1")
+        self.assertEqual(seen["fence_token"], 7)
+        self.assertEqual(seen["environment_fingerprint"], "env-b")
+        self.assertEqual(seen["evidence_fingerprint"], "evidence-b")
+
+    def test_registered_handler_fails_closed_on_each_missing_evidence_field(self):
+        from tools.delegate_tool import _MATERIAL_REVIEW_REQUIRED_FIELDS
+
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+        for field in _MATERIAL_REVIEW_REQUIRED_FIELDS:
+            if field in ("candidate_hash", "review_lens"):
+                continue  # removing these makes it a non-material task entirely
+            with self.subTest(field=field):
+                task = self._complete_material_task()
+                task.pop(field)
+                with patch("tools.fleet_delegation.dispatch_material_review") as dispatch, \
+                        patch("tools.delegate_tool._run_single_child") as run_child:
+                    result = json.loads(entry.handler({"tasks": [task]}, parent_agent=parent))
+                self.assertIn(field, result["error"])
+                dispatch.assert_not_called()
+                run_child.assert_not_called()
+
+    def test_registered_handler_rejects_mixed_and_multiple_material_batches(self):
+        entry = _registered_delegate_entry()
+        parent = _make_mock_parent()
+
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            mixed = json.loads(entry.handler(
+                {"tasks": [self._complete_material_task(), {"goal": "unrelated"}]},
+                parent_agent=parent,
+            ))
+        self.assertIn("cannot be mixed with generic delegation tasks", mixed["error"])
+        dispatch.assert_not_called()
+
+        second = self._complete_material_task()
+        second["review_lens"] = "security"
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            two = json.loads(entry.handler(
+                {"tasks": [self._complete_material_task(), second]}, parent_agent=parent,
+            ))
+        self.assertIn("exactly one material review per call", two["error"])
+        dispatch.assert_not_called()
+
+    def test_generic_task_schema_and_dispatch_are_unchanged(self):
+        """A plain generic task must still validate and never touch the material path."""
+        jsonschema = pytest.importorskip("jsonschema")
+
+        entry = _registered_delegate_entry()
+        jsonschema.validate(
+            instance={"tasks": [{"goal": "ordinary work", "context": "c", "role": "leaf"}]},
+            schema=entry.schema["parameters"],
+        )
+        parent = _make_mock_parent()
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            try:
+                entry.handler({"tasks": [{"goal": "ordinary work"}]}, parent_agent=parent)
+            except Exception:
+                pass
+        dispatch.assert_not_called()
