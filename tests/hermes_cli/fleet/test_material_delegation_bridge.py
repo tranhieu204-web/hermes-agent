@@ -392,6 +392,9 @@ def test_sealed_owned_material_ingress_binds_dual_fences_before_external_executi
 
     hermes_home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "tools.fleet_delegation.create_owner_death_containment", _FakeContainment
+    )
     ad._reset_for_tests()
     try:
         service, _native_calls, _process_calls = _service(tmp_path, monkeypatch)
@@ -750,10 +753,52 @@ class _RecordingProcess:
         self.killed += 1
 
 
+class _FakeContainment:
+    """Stand-in for kernel owner-death containment in fake-process tests.
+
+    The real containment assigns an OS process handle to a Job Object, which a
+    `_RecordingProcess` stub does not have — production correctly REFUSES such
+    a child rather than downgrading.  These tests exercise the surrounding
+    lifecycle, so they inject a double.  The real guarantee is proven
+    separately by the out-of-process owner-death test, which spawns genuine
+    OS processes and kills a real owner.
+    """
+
+    kind = "test_double"
+    available = True
+    detail = "injected test double; real guarantee proven out-of-process"
+
+    def __init__(self):
+        self.adopted = []
+        self.closed = 0
+
+    def popen_kwargs(self):
+        return {}
+
+    def adopt(self, process):
+        self.adopted.append(process)
+        return True
+
+    def close(self):
+        self.closed += 1
+
+    def public_facts(self):
+        return {
+            "owner_death_containment": self.kind,
+            "owner_death_containment_available": True,
+            "owner_death_containment_detail": self.detail,
+        }
+
+
 def _material_harness(tmp_path, monkeypatch, *, lane="claude_code", pid=5150):
     """Build one real sealed-ingress launch environment on a temp HERMES_HOME."""
     hermes_home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    containment = _FakeContainment()
+    monkeypatch.setattr(
+        "tools.fleet_delegation.create_owner_death_containment",
+        lambda: containment,
+    )
     service, _native_calls, _process_calls = _service(tmp_path, monkeypatch)
     route = plan_material_routes(
         service, task_count=1, cwd=tmp_path,
@@ -817,6 +862,7 @@ def _material_harness(tmp_path, monkeypatch, *, lane="claude_code", pid=5150):
     return SimpleNamespace(
         service=service, route=route, ledger=ledger, ledger_path=hermes_home / "release-review-ledger.db",
         hermes_home=hermes_home, child=child, spawned=spawned, launch=launch,
+        containment=containment,
     )
 
 
@@ -1126,7 +1172,7 @@ def test_owned_material_route_proof_publishes_no_bare_served_model_claim(
         assert proof["served_model_proven"] is False
         assert proof["served_model_evidence"] == "NOT_PROVEN"
         assert proof["requested_selected_model_id"] == harness.route.model_id
-        assert "live backend receipt" not in str(proof.get("model_qualification", ""))
+        assert "model_qualification" not in proof
         # The proven subscription route stays enabled and unpaid.
         assert proof["fallback_enabled"] is False
         assert proof["fast_mode"] is False
@@ -1245,6 +1291,137 @@ def test_both_material_rails_share_one_receipt_builder(tmp_path, monkeypatch):
                 callers.add(node.name)
     # The superseded route-executor and the sealed owned rail, and nothing else.
     assert callers == {"execute_material_route", "_run_owned"}, callers
+
+
+def test_material_child_is_not_spawned_when_containment_is_unavailable(
+    tmp_path, monkeypatch
+):
+    """RED for B1: fail closed rather than spawn an unreapable prompt process.
+
+    On a platform with no kernel owner-death guarantee (macOS today), spawning
+    a provider CLI whose argv already carries the prompt would create a process
+    that a sudden owner death could strand. The rail must refuse to spawn at
+    all, release its lease, and say why — never downgrade silently.
+    """
+    from tools import async_delegation as ad
+    from tools.process_registry import OwnerDeathContainment
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5191)
+        monkeypatch.setattr(
+            "tools.fleet_delegation.create_owner_death_containment",
+            lambda: OwnerDeathContainment(
+                "unavailable", False, "no kernel owner-death guarantee on platform"
+            ),
+        )
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        # No provider child was ever created.
+        assert harness.spawned == []
+        # Exactly one Fleet lease was still released.
+        assert len(_lease_finalizations(harness.service)) == 1
+        # The durable saga must not claim a completed review.
+        saga_state, _provisional, owned_handle = _saga_row(harness.ledger_path)
+        assert saga_state == "TERMINAL"
+        assert not owned_handle
+    finally:
+        ad._reset_for_tests()
+
+
+def test_material_child_that_cannot_be_adopted_is_killed_and_fails_closed(
+    tmp_path, monkeypatch
+):
+    """RED for B1: containment present but NOT in force must not run the child.
+
+    `adopt()` returning False means the kernel guarantee was not established
+    for this exact child even though the platform supports it (job assignment
+    or resume failed).  On Windows the child is still suspended and has run
+    nothing, so it must be killed and the spawn must fail closed rather than
+    proceed with an unconstrained prompt-bearing process.
+    """
+    from tools import async_delegation as ad
+
+    class _RefusingContainment(_FakeContainment):
+        kind = "test_double_refusing"
+
+        def adopt(self, process):
+            self.adopted.append(process)
+            return False
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5193)
+        refusing = _RefusingContainment()
+        monkeypatch.setattr(
+            "tools.fleet_delegation.create_owner_death_containment", lambda: refusing
+        )
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        # Adoption was attempted on the exact child, and that child was killed.
+        assert len(refusing.adopted) == 1
+        assert harness.child.terminated + harness.child.killed >= 1
+        # Exactly one Fleet lease released; the saga never claims a real review.
+        assert len(_lease_finalizations(harness.service)) == 1
+        saga_state, _provisional, owned_handle = _saga_row(harness.ledger_path)
+        assert saga_state == "TERMINAL"
+        assert not owned_handle
+    finally:
+        ad._reset_for_tests()
+
+
+def test_receipt_allowlist_drops_any_qualification_claim_from_a_raw_proof():
+    """RED for B4: the allowlist itself must refuse qualification claims.
+
+    Even if some adapter emits `model_qualification`, the published receipt must
+    not republish it: client-side propagation cannot qualify the model that
+    served the request.  This drives the receipt builder directly with a raw
+    proof containing the field, so the guarantee is the allowlist and not an
+    accident of what adapters currently emit.
+    """
+    from hermes_cli.fleet.types import AdapterKind, AdapterResult
+    from tools.fleet_delegation import FleetMaterialRoute, build_material_route_receipt
+
+    route = FleetMaterialRoute(
+        lane_id="antigravity", provider_id="google-antigravity",
+        model_id="gemini-3.1-pro-high", adapter_kind="external_cli",
+        qualification_evidence_id="qualification:antigravity",
+        effective_execution_identity="identity:agy", available=True, reasons=(),
+    )
+    adapter_result = AdapterResult(
+        ok=True, reason=ReasonCode.MET, provider_id=route.provider_id,
+        model_id=route.model_id, auth_kind="cli_subscription",
+        adapter_kind=AdapterKind.EXTERNAL_CLI, output="ok",
+        metadata={"route_proof": {
+            "model_qualification": "agy client-propagated selected model",
+            "served_model_id": "gemini-3.1-pro-high",
+            "model_evidence_source": "agy client model-override propagation log line",
+            "model_evidence_kind": "requested_selected_propagation",
+            "served_model_proven": False,
+            "served_model_evidence": "NOT_PROVEN",
+        }},
+    )
+    _ok, _reason, receipt = build_material_route_receipt(
+        route, task_id="allowlist-check", candidate_hash="d" * 64,
+        review_lens="runtime", prompt_fingerprint="sha256:x",
+        identity_matches=True, adapter_result=adapter_result,
+        result_ok=True, result_reason=ReasonCode.MET,
+    )
+    claims = receipt["route_proof"]["claims"]
+    assert "model_qualification" not in claims
+    assert "served_model_id" not in claims
+    assert [key for key in claims if "qualification" in key] == []
+    # The truthful evidence keys still survive the filter.
+    assert claims["model_evidence_source"] == (
+        "agy client model-override propagation log line"
+    )
+    assert claims["served_model_evidence"] == "NOT_PROVEN"
 
 
 def test_every_owned_material_terminal_path_releases_exactly_one_lease(

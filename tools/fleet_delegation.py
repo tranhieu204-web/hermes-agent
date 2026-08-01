@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from hermes_cli.fleet.service import FleetService, OwnedExternalExecution
 from hermes_cli.fleet.types import AdapterResult, LaneEvaluation, Qualification, ReasonCode, TaskSpec
+from tools.process_registry import create_owner_death_containment
 from tools.release_review_ledger import canonical_effective_route_identity
 
 
@@ -98,6 +99,9 @@ class OwnedMaterialRunner:
         # written to both durable rails as the pre-execution gate.  It carries
         # no argv, prompt, environment, or provider fact.
         self._handle_id = f"mat_{uuid.uuid4().hex}"
+        # Held for the whole owned run: releasing the last job handle is
+        # what triggers the kernel kill, so it must outlive the child.
+        self._containment = None
         self._owned: tuple[str, int, int | None] | None = None
 
     def interrupt(self) -> None:
@@ -197,6 +201,15 @@ class OwnedMaterialRunner:
                 self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
             except Exception:
                 pass
+            # Release the kernel guarantee last.  While this runner is alive the
+            # job handle must stay open, because closing the final handle is
+            # exactly what kills the child; by here the child is terminal.
+            try:
+                if self._containment is not None:
+                    self._containment.close()
+                    self._containment = None
+            except Exception:
+                pass
 
     def _run_owned(
         self, execution: OwnedExternalExecution, task: TaskSpec,
@@ -234,10 +247,30 @@ class OwnedMaterialRunner:
             self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
             return {"status": "error", "summary": "material pre-execution durable gate failed"}
 
+        # ---- Kernel-enforced owner-death containment ------------------------
+        # A provider argv carries the prompt, so between Popen and the durable
+        # PID bind a sudden owner death (SIGKILL / TerminateProcess) would run
+        # no Python cleanup at all.  The guarantee must therefore be held by
+        # the kernel BEFORE the child is allowed to execute.  If no such
+        # guarantee is obtainable on this platform we fail closed and never
+        # spawn: an unreapable prompt-bearing process is worse than no review.
+        containment = create_owner_death_containment()
+        if not containment.available:
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            return {
+                "status": "error",
+                "summary": "owner-death containment unavailable; material child not spawned",
+                **containment.public_facts(),
+            }
+        self._containment = containment
+
         # ---- Child creation and owned-identity upgrade ----------------------
         try:
-            run = execution.adapter.start_owned_material(execution.request, execution.qualification)
+            run = execution.adapter.start_owned_material(
+                execution.request, execution.qualification, containment=containment,
+            )
         except Exception:
+            containment.close()
             self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
             return {"status": "error", "summary": "external material child could not start"}
 
@@ -721,7 +754,9 @@ def build_material_route_receipt(
             "requested_selected_model_label", "model_evidence_kind",
             "served_model_proven", "served_model_evidence",
             "effort", "auth_kind", "fast_mode",
-            "fallback_enabled", "model_qualification",
+            # `model_qualification` is deliberately NOT allowlisted: no lane may
+            # republish a qualification claim derived from client propagation.
+            "fallback_enabled", "model_evidence_source",
         )
         if key in raw_route_proof
         and isinstance(raw_route_proof[key], (str, bool, int, float))

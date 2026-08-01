@@ -611,3 +611,71 @@ done silently. Likewise `launch_shell_review`, `launch_async_review` and
 `execute_material_route` still have no production caller; only the sealed
 owned-material ingress was in scope here. Release remains HOLD pending a fresh
 commit and an independent, provider-distinct Final Inspection.
+
+#### Fence-7 repair record (2026-08-01, commit `a9a2a6db`)
+
+A held-out non-Claude Final Inspection of `a9a2a6db` returned **FAIL / HOLD**
+and was right on all three counts. Its receipt is retained at SHA-256
+`083f051d5d10ddc967f6e63bad6f8e4e8d88a016ce9125697ddcfc32b4495d55`. The second
+inspector in that batch produced no verdict and carries zero credit; a
+replacement investigation runs separately. Nothing below discharges any finding.
+
+**B1 — true owner death.** The prior coverage called `runner.interrupt()`
+inside a live owner, which proves an in-process cancel race, not owner death. A
+sudden owner death runs no userspace code at all, so the guarantee is now
+kernel-enforced and armed *before* the child may execute:
+
+- Windows: a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The child is
+  created suspended, assigned to the job, and only then resumed, so it cannot
+  execute a single instruction unconstrained. Owner death closes the last job
+  handle and the kernel terminates the job.
+- Linux: `prctl(PR_SET_PDEATHSIG, SIGKILL)` set in the forked child before exec.
+- Everything else (notably macOS): containment reports **unavailable** and the
+  material rail refuses to spawn, releasing its lease and terminalizing the
+  saga without claiming a review ran. It never downgrades silently.
+
+Proof is out-of-process: a real owner subprocess spawns a real long-lived child,
+the owner is hard-killed, and the exact child identity (`pid` + `create_time`,
+captured before the kill so PID reuse cannot fake a pass) must be gone. A
+negative control confirms the same scenario **without** containment leaves the
+child alive, so the test is not vacuous. Exact-child discipline is preserved:
+the job holds only this child, thread resume is filtered to that exact PID, and
+no PID scan or process-name match is used anywhere.
+
+**B2 — real production ingress.** `tools/delegate_tool.py` is the shipped model
+tool and the real composition root. Its material branch previously identified
+material fields and then rejected them. It now hands a request carrying
+**complete** receipt/fence/route evidence to `dispatch_material_review`, giving
+the runtime-reachable chain
+`delegate_task -> _dispatch_material_review_task -> dispatch_material_review ->
+launch_fleet_owned_material_review -> launch_material_async_review`. No new core
+model tool was added, no test-only wrapper, and no self-call. Material work
+still fails closed when any of `candidate_hash, review_lens, scope, lane,
+prompt, attempt_id, fence_token, environment_fingerprint, evidence_fingerprint,
+preflight, deadline_seconds, output_path` is absent, cannot be mixed into a
+generic batch, and cannot be dispatched two-at-a-time. Generic non-material
+delegation is untouched.
+
+**B4 — unproven qualification removed.** `model_qualification: "agy
+client-propagated selected model"` is gone. Client propagation cannot qualify
+the model that served a request, so the proof now carries
+`model_evidence_source` — naming the artifact, not asserting proof — and the
+receipt allowlist refuses `model_qualification` outright, so no adapter can
+republish a qualification claim. Requested/selected provenance and the
+`NOT_PROVEN` served-evidence class are unchanged.
+
+**Fence-7 evidence.** Focused leased files 479 passed / 3 failed, those 3 being
+the documented inherited `test_delegate.py` baseline exclusions reproduced
+identically from a pristine archive of `a9a2a6db`. Canonical 28-file broad suite
+from a 71-character root: **614 passed, 0 failed**. All changed Python compiles;
+`git diff --check` clean; 9 changed paths, all inside the 21 leased writes; no
+staged content. Mutation guards for the three fixes: **10/10 killed**, every
+mutated file restored to its exact pre-mutation SHA-256.
+
+**Carried, not closed.** `execute_material_route` still has no production
+caller. It runs through `FleetService.run`, the rail Hermes placed on HOLD;
+wiring a caller would resurrect that held defect and inventing one would be a
+meaningless self-call. `launch_shell_review` / `launch_async_review` remain
+intentional public dependency-injected entrypoints. Deep-mode provider metrics
+remain HOLD. Release remains HOLD pending a coordinator forward commit and fresh
+non-Claude inspection.

@@ -218,7 +218,126 @@ class TestReviewBatchAdmission(unittest.TestCase):
                 parent_agent=parent,
             ))
         self.assertIn("receipt-bound material-review adapter", result["error"])
+        self.assertIn("Missing required receipt/fence/route evidence", result["error"])
         run_child.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # B2 (fence 7): the shipped model-tool composition root must actually
+    # REACH the receipt-bound material adapter, not merely reject material
+    # work.  These drive `delegate_task` — the real production entrypoint —
+    # rather than the adapter directly.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _complete_material_task(**overrides):
+        task = {
+            "goal": "Review the release candidate",
+            "candidate_hash": "b" * 64,
+            "review_lens": "runtime",
+            "scope": "release tests",
+            "lane": "claude_code",
+            "prompt": "review exact candidate",
+            "attempt_id": "attempt-1",
+            "fence_token": 7,
+            "environment_fingerprint": "env-b",
+            "evidence_fingerprint": "evidence-b",
+            "preflight": {"health": {"status": "verified", "evidence": "test"}},
+            "deadline_seconds": 60,
+            "output_path": "out.json",
+            "cwd": os.getcwd(),
+        }
+        task.update(overrides)
+        return task
+
+    def test_complete_material_evidence_reaches_the_receipt_bound_adapter(self):
+        """RED for B2: the shipped ingress had no path to the material adapter."""
+        parent = _make_mock_parent()
+        seen = {}
+
+        def _fake_dispatch(**kwargs):
+            seen.update(kwargs)
+            return {"status": "launched", "receipt_id": "r-1"}
+
+        with patch("tools.fleet_delegation.dispatch_material_review", _fake_dispatch), \
+                patch("tools.delegate_tool._run_single_child") as run_child:
+            result = json.loads(delegate_task(
+                tasks=[self._complete_material_task()], parent_agent=parent,
+            ))
+
+        # It reached the adapter, and generic child construction never ran.
+        self.assertEqual(result["status"], "launched")
+        run_child.assert_not_called()
+        # Identity is forwarded exactly, never defaulted.
+        self.assertEqual(seen["candidate_hash"], "b" * 64)
+        self.assertEqual(seen["review_lens"], "runtime")
+        self.assertEqual(seen["lane"], "claude_code")
+        self.assertEqual(seen["attempt_id"], "attempt-1")
+        self.assertEqual(seen["fence_token"], 7)
+        self.assertEqual(seen["environment_fingerprint"], "env-b")
+        self.assertEqual(seen["evidence_fingerprint"], "evidence-b")
+        # The ingress plans no route and builds no receipt of its own.
+        self.assertNotIn("route", seen)
+        self.assertNotIn("fleet_service", seen)
+
+    def test_each_missing_evidence_field_fails_closed_without_dispatch(self):
+        """Every required field is load-bearing, not merely documented."""
+        parent = _make_mock_parent()
+        for field in (
+            "scope", "lane", "prompt", "attempt_id", "fence_token",
+            "environment_fingerprint", "evidence_fingerprint", "preflight",
+            "deadline_seconds", "output_path",
+        ):
+            with self.subTest(field=field):
+                task = self._complete_material_task()
+                task.pop(field)
+                with patch("tools.fleet_delegation.dispatch_material_review") as dispatch, \
+                        patch("tools.delegate_tool._run_single_child") as run_child:
+                    result = json.loads(delegate_task(
+                        tasks=[task], parent_agent=parent,
+                    ))
+                self.assertIn(field, result["error"])
+                dispatch.assert_not_called()
+                run_child.assert_not_called()
+
+    def test_material_review_cannot_be_smuggled_inside_a_generic_batch(self):
+        parent = _make_mock_parent()
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch, \
+                patch("tools.delegate_tool._run_single_child") as run_child:
+            result = json.loads(delegate_task(
+                tasks=[self._complete_material_task(), {"goal": "unrelated work"}],
+                parent_agent=parent,
+            ))
+        self.assertIn("cannot be mixed with generic delegation tasks", result["error"])
+        dispatch.assert_not_called()
+        run_child.assert_not_called()
+
+    def test_two_material_reviews_in_one_call_fail_closed(self):
+        parent = _make_mock_parent()
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            result = json.loads(delegate_task(
+                tasks=[
+                    self._complete_material_task(),
+                    self._complete_material_task(review_lens="security"),
+                ],
+                parent_agent=parent,
+            ))
+        self.assertIn("exactly one material review per call", result["error"])
+        dispatch.assert_not_called()
+
+    def test_generic_delegation_is_unchanged_by_the_material_ingress(self):
+        """Non-material delegation must never consult the material path.
+
+        This deliberately asserts only the material-ingress invariant. Whether
+        the generic path then succeeds in building a real child depends on the
+        interpreter's optional deps, which is not what this test is about.
+        """
+        parent = _make_mock_parent()
+        with patch("tools.fleet_delegation.dispatch_material_review") as dispatch:
+            try:
+                delegate_task(tasks=[{"goal": "ordinary work"}], parent_agent=parent)
+            except Exception:
+                pass
+        dispatch.assert_not_called()
 
     def test_worker_display_identity_leads_with_model_and_role(self):
         identity = _task_display_identity(

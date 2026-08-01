@@ -508,7 +508,10 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         # execute() proof keeps its historical served_model_* aliases (their
         # shape predates this candidate) but must now name the evidence class
         # truthfully alongside them.
-        assert route_proof["model_qualification"] == "agy client-propagated selected model"
+        assert "model_qualification" not in route_proof
+        assert route_proof["model_evidence_source"] == (
+            "agy client model-override propagation log line"
+        )
         assert route_proof["model_evidence_kind"] == "requested_selected_propagation"
         assert route_proof["served_model_evidence"] == "NOT_PROVEN"
         assert route_proof["served_model_proven"] is False
@@ -1410,7 +1413,7 @@ def test_agy_ordinary_route_proof_declares_propagation_evidence_alongside_aliase
     assert proof["requested_selected_model_id"] == CANONICAL_MODEL_ID
     assert proof["served_model_evidence"] == "NOT_PROVEN"
     assert proof["model_evidence_kind"] == "requested_selected_propagation"
-    assert "live backend receipt" not in str(proof.get("model_qualification", ""))
+    assert "model_qualification" not in proof
     # The proven subscription route stays enabled and unpaid.
     assert proof["auth_kind"] == qualification.auth_kind
     assert proof["fallback_enabled"] is False

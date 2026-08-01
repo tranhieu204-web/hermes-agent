@@ -2575,3 +2575,278 @@ registry.register(
     handler=_handle_process,
     emoji="⚙️",
 )
+
+
+# ---------------------------------------------------------------------------
+# Owner-death containment for owned external material children.
+#
+# The material rail spawns a provider CLI whose argv already carries the
+# prompt.  Between `Popen` returning and the PID/start identity being written
+# to both durable stores there is an interval in which the owner process could
+# die suddenly (SIGKILL / TerminateProcess).  No userspace code runs during
+# such a death, so no Python-level cleanup can be relied on: the guarantee has
+# to be enforced by the kernel BEFORE the child is allowed to run.
+#
+# Two kernel mechanisms give that guarantee deterministically:
+#
+#   Windows  a Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.  The child
+#            is created suspended, assigned to the job, and only then resumed,
+#            so it cannot execute a single instruction while unconstrained.
+#            When the owning process dies the last job handle closes and the
+#            kernel terminates every process in the job.
+#
+#   Linux    prctl(PR_SET_PDEATHSIG, SIGKILL) issued in the forked child before
+#            exec.  The kernel delivers SIGKILL when the owner dies.
+#
+# Anything else (notably macOS, which has no PDEATHSIG equivalent) reports
+# containment as UNAVAILABLE and the material rail must fail closed rather than
+# spawn a prompt-bearing process it cannot guarantee to reap.
+#
+# Exact-child discipline is preserved throughout: the job contains only this
+# one spawned child, resume targets only threads whose owning PID equals that
+# exact child, and no PID scan or process-name matching is ever performed.
+# ---------------------------------------------------------------------------
+
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_CREATE_SUSPENDED = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
+_TH32CS_SNAPTHREAD = 0x00000004
+_PR_SET_PDEATHSIG = 1
+
+
+class OwnerDeathContainment:
+    """Kernel-enforced guarantee that one exact child cannot outlive its owner.
+
+    Construct via :func:`create_owner_death_containment`.  A containment whose
+    ``available`` is False must never be used to spawn a prompt-bearing
+    process; callers are required to fail closed instead.
+    """
+
+    __slots__ = ("kind", "available", "detail", "_job", "_closed")
+
+    def __init__(self, kind, available, detail, job=None):
+        self.kind = kind
+        self.available = available
+        self.detail = detail
+        self._job = job
+        self._closed = False
+
+    def popen_kwargs(self):
+        """Extra ``Popen`` kwargs that arm containment at creation time."""
+        if not self.available:
+            return {}
+        if self.kind == "windows_job_object":
+            return {"creationflags": _CREATE_SUSPENDED}
+        if self.kind == "linux_pdeathsig":
+            return {"preexec_fn": _set_pdeathsig_sigkill}
+        return {}
+
+    def adopt(self, process):
+        """Bind the exact spawned child to the kernel guarantee, then run it.
+
+        Returns True only when the guarantee is actually in force for this
+        exact child.  On Windows the child stays suspended until it has been
+        assigned to the job, so a False return means it never ran.
+        """
+        if not self.available:
+            return False
+        if self.kind == "linux_pdeathsig":
+            return True  # already armed in the child before exec
+        if self.kind != "windows_job_object":
+            return False
+        handle = getattr(process, "_handle", None)
+        pid = getattr(process, "pid", None)
+        if handle is None or not pid:
+            return False
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        assigned = kernel32.AssignProcessToJobObject(
+            ctypes.c_void_p(int(self._job)), ctypes.c_void_p(int(handle))
+        )
+        if not assigned:
+            return False
+        return _resume_exact_child_threads(int(pid))
+
+    def close(self):
+        """Release the job handle.
+
+        Closing the LAST handle is what triggers the kernel kill, so this runs
+        only once the child is no longer owned by this runner.
+        """
+        if self._closed or self.kind != "windows_job_object" or self._job is None:
+            self._closed = True
+            return
+        self._closed = True
+        try:
+            import ctypes
+
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(
+                ctypes.c_void_p(int(self._job))
+            )
+        except Exception:
+            pass
+
+    def public_facts(self):
+        """Non-secret containment facts safe to place in durable evidence."""
+        return {
+            "owner_death_containment": self.kind,
+            "owner_death_containment_available": bool(self.available),
+            "owner_death_containment_detail": self.detail,
+        }
+
+
+def _set_pdeathsig_sigkill():  # pragma: no cover - runs in the forked child
+    """Ask the kernel to SIGKILL this child when its owner dies."""
+    import ctypes
+    import signal
+
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(
+        _PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0
+    )
+
+
+def _resume_exact_child_threads(pid):
+    """Resume only the threads owned by this exact PID.
+
+    This is not a process scan: the PID is the one just created, and every
+    thread considered is filtered on ``th32OwnerProcessID == pid``.  No process
+    name, command line, or unrelated PID is ever inspected.
+    """
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    class _THREADENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if snapshot in (None, -1, 0xFFFFFFFF):
+        return False
+    resumed = 0
+    try:
+        entry = _THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(_THREADENTRY32)
+        found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while found:
+            if int(entry.th32OwnerProcessID) == int(pid):
+                thread = kernel32.OpenThread(
+                    _THREAD_SUSPEND_RESUME, False, entry.th32ThreadID
+                )
+                if thread:
+                    try:
+                        if kernel32.ResumeThread(thread) != -1:
+                            resumed += 1
+                    finally:
+                        kernel32.CloseHandle(thread)
+            found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return resumed > 0
+
+
+def create_owner_death_containment():
+    """Establish kernel-enforced owner-death containment, or report it absent.
+
+    Never raises: an unavailable containment is a value the caller must treat
+    as fail-closed, not an exception to swallow.
+    """
+    import sys
+
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+
+            class _IO_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_ulonglong),
+                    ("WriteOperationCount", ctypes.c_ulonglong),
+                    ("OtherOperationCount", ctypes.c_ulonglong),
+                    ("ReadTransferCount", ctypes.c_ulonglong),
+                    ("WriteTransferCount", ctypes.c_ulonglong),
+                    ("OtherTransferCount", ctypes.c_ulonglong),
+                ]
+
+            class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                    ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                    ("IoInfo", _IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return OwnerDeathContainment(
+                    "unavailable", False, "CreateJobObjectW failed"
+                )
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(
+                ctypes.c_void_p(int(job)),
+                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                kernel32.CloseHandle(ctypes.c_void_p(int(job)))
+                return OwnerDeathContainment(
+                    "unavailable", False, "SetInformationJobObject failed"
+                )
+            return OwnerDeathContainment(
+                "windows_job_object",
+                True,
+                "job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+                job,
+            )
+        except Exception as exc:
+            return OwnerDeathContainment(
+                "unavailable", False, "job object unavailable: " + type(exc).__name__
+            )
+
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6", use_errno=True)
+        except Exception as exc:
+            return OwnerDeathContainment(
+                "unavailable", False, "prctl unavailable: " + type(exc).__name__
+            )
+        return OwnerDeathContainment(
+            "linux_pdeathsig", True, "prctl(PR_SET_PDEATHSIG, SIGKILL)"
+        )
+
+    # macOS and other POSIX have no equivalent kernel guarantee.  Report the
+    # truth; the material rail fails closed rather than pretending.
+    return OwnerDeathContainment(
+        "unavailable",
+        False,
+        "no kernel owner-death guarantee on platform " + repr(sys.platform),
+    )

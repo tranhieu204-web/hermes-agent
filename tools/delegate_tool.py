@@ -2572,6 +2572,123 @@ def _is_material_review_task(task: Dict[str, Any]) -> bool:
     return bool(str(task.get("candidate_hash", "")).strip()) or bool(str(task.get("review_lens", "")).strip())
 
 
+# Every field the receipt-bound material adapter needs before a candidate-bound
+# provider process may exist.  There is no default for any of them: a material
+# review without complete receipt/fence/route evidence must fail closed rather
+# than be dispatched on partial identity.
+_MATERIAL_REVIEW_REQUIRED_FIELDS = (
+    "candidate_hash",
+    "review_lens",
+    "scope",
+    "lane",
+    "prompt",
+    "attempt_id",
+    "fence_token",
+    "environment_fingerprint",
+    "evidence_fingerprint",
+    "preflight",
+    "deadline_seconds",
+    "output_path",
+)
+
+
+def _dispatch_material_review_task(
+    material_tasks: List[Dict[str, Any]],
+    task_list: List[Dict[str, Any]],
+    parent_agent: Any,
+) -> str:
+    """Receipt-bound production ingress for one candidate-bound material review.
+
+    This is the shipped `delegate_task` composition root, so it is the real
+    runtime entry point for the material rail rather than a test-only wrapper.
+    It performs no route planning, no child construction and no receipt
+    building of its own: it validates that complete evidence is present and
+    hands off to `dispatch_material_review`, which owns ledger resolution,
+    fleet-service construction, route planning and the sealed ingress.
+
+    Fail-closed rules, in order:
+      * a material request may not be mixed with generic tasks in one batch;
+      * exactly one material review per call (each needs its own fence);
+      * every field in `_MATERIAL_REVIEW_REQUIRED_FIELDS` must be present.
+    Any of these returns an error WITHOUT planning a route or spawning a child.
+    """
+    if len(task_list) != len(material_tasks):
+        return tool_error(
+            "Material review tasks cannot be mixed with generic delegation tasks "
+            "in one call; dispatch the material review on its own."
+        )
+    if len(material_tasks) != 1:
+        return tool_error(
+            "Dispatch exactly one material review per call; each review binds its "
+            "own recovery attempt and fence token."
+        )
+
+    task = material_tasks[0]
+    missing = [
+        field for field in _MATERIAL_REVIEW_REQUIRED_FIELDS
+        if task.get(field) in (None, "", {}, [])
+    ]
+    if missing:
+        return tool_error(
+            "Material review requests require the receipt-bound material-review "
+            "adapter; generic delegate_task child/batch dispatch is not permitted. "
+            f"Missing required receipt/fence/route evidence: {', '.join(missing)}."
+        )
+
+    try:
+        fence_token = int(task["fence_token"])
+    except (TypeError, ValueError):
+        return tool_error("Material review fence_token must be an integer.")
+    if not isinstance(task.get("preflight"), dict):
+        return tool_error("Material review preflight must be an object.")
+
+    cwd = str(task.get("cwd") or os.getcwd())
+    if not os.path.isdir(cwd):
+        return tool_error("Material review cwd must be an existing directory.")
+
+    from tools.fleet_delegation import dispatch_material_review
+
+    try:
+        result = dispatch_material_review(
+            candidate_hash=str(task["candidate_hash"]),
+            review_lens=str(task["review_lens"]),
+            scope=str(task["scope"]),
+            lane=str(task["lane"]),
+            prompt=str(task["prompt"]),
+            cwd=cwd,
+            attempt_id=str(task["attempt_id"]),
+            fence_token=fence_token,
+            environment_fingerprint=str(task["environment_fingerprint"]),
+            evidence_fingerprint=str(task["evidence_fingerprint"]),
+            preflight=task["preflight"],
+            deadline_seconds=float(task["deadline_seconds"]),
+            output_path=str(task["output_path"]),
+            dispatch_kwargs={
+                "goal": str(task.get("goal") or "material review"),
+                "context": str(task.get("context") or ""),
+                "toolsets": task.get("toolsets"),
+                "role": "reviewer",
+                "session_key": _session_key_for(parent_agent),
+                "max_async_children": 1,
+            },
+        )
+    except Exception as exc:  # fail closed; never leak provider/route internals
+        logger.warning("material review dispatch failed: %s", type(exc).__name__)
+        return tool_error(
+            f"Material review dispatch failed: {type(exc).__name__}."
+        )
+    return json.dumps(result, default=str)
+
+
+def _session_key_for(parent_agent: Any) -> str:
+    """Stable async-outbox session key for the dispatching parent."""
+    for attribute in ("session_id", "task_id", "session_key"):
+        value = getattr(parent_agent, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "delegate-material-review"
+
+
 def _review_route_identity(credentials: Dict[str, Any], parent_agent) -> tuple[str, str, str]:
     """Resolve the backing lane identity after credentials are selected.
 
@@ -2809,14 +2926,16 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # This public generic ingress has no receipt, fenced recovery attempt, or
-    # preflight identity.  Material reviews therefore fail closed here instead
-    # of ever reaching ordinary child or batch construction.
-    if any(_is_material_review_task(task) for task in task_list if isinstance(task, dict)):
-        return tool_error(
-            "Material review requests require the receipt-bound material-review adapter; "
-            "generic delegate_task child/batch dispatch is not permitted."
-        )
+    # Material reviews never reach ordinary child or batch construction.  A
+    # request that carries COMPLETE receipt/fence/route evidence is handed to
+    # the receipt-bound material adapter; anything short of that still fails
+    # closed, exactly as before.  Generic non-material delegation is untouched.
+    material_tasks = [
+        task for task in task_list
+        if isinstance(task, dict) and _is_material_review_task(task)
+    ]
+    if material_tasks:
+        return _dispatch_material_review_task(material_tasks, task_list, parent_agent)
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):

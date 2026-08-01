@@ -271,7 +271,10 @@ def _agy_route_proof(
         "auth_kind": qualification.auth_kind,
         "fast_mode": False,
         "fallback_enabled": False,
-        "model_qualification": "agy client-propagated selected model",
+        # NOT `model_qualification`.  A client-side propagation line cannot
+        # qualify the model that actually served the request, so this names the
+        # evidence ARTIFACT rather than asserting any qualification or proof.
+        "model_evidence_source": "agy client model-override propagation log line",
     }
     return proof
 
@@ -448,12 +451,20 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
 
     def start_owned_material(
         self, request: AdapterRequest, qualification: Qualification,
+        *, containment: Any = None,
     ) -> OwnedExternalMaterialRun:
         """Start an argv-only external material child without executing it yet.
 
         This restricted seam is intentionally unavailable to generic fleet
         work.  The material dispatcher binds the returned PID/start identity
         on both durable rails before it invokes ``finish``.
+
+        ``containment`` carries the caller's kernel-enforced owner-death
+        guarantee.  When supplied it arms the guarantee at creation time and
+        the child is only released to run once the kernel is holding it, so a
+        sudden owner death cannot leave a prompt-bearing process alive.  The
+        caller is responsible for refusing to spawn when no containment is
+        available; this seam does not silently downgrade.
         """
         failure = validate_execution(request, qualification)
         if failure is not None:
@@ -484,17 +495,42 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
             stdin_payload = request.prompt
         else:
             raise RuntimeError("only owned Claude Code and Antigravity material routes are supported")
-        process = self._popen(
-            argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=request.cwd,
-            env=safe_child_environment(),
-            shell=False,
-            creationflags=no_console_creationflags(),
-        )
+        spawn_kwargs: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "cwd": request.cwd,
+            "env": safe_child_environment(),
+            "shell": False,
+            "creationflags": no_console_creationflags(),
+        }
+        if containment is not None:
+            extra = containment.popen_kwargs()
+            # Creation flags must be OR-ed, never replaced: dropping the
+            # no-console flag would surface a window, and dropping the
+            # containment flag would let the child run unconstrained.
+            if "creationflags" in extra:
+                spawn_kwargs["creationflags"] |= int(extra.pop("creationflags"))
+            spawn_kwargs.update(extra)
+        process = self._popen(argv, **spawn_kwargs)
+        if containment is not None and not containment.adopt(process):
+            # The child exists but the kernel guarantee is NOT in force.  On
+            # Windows it is still suspended and has executed nothing.  Kill
+            # exactly it and fail closed rather than run a prompt-bearing
+            # process that could outlive a sudden owner death.
+            for method in ("kill", "terminate"):
+                call = getattr(process, method, None)
+                if callable(call):
+                    try:
+                        call()
+                        break
+                    except Exception:
+                        continue
+            raise RuntimeError(
+                "owner-death containment could not be established for the "
+                "external material child"
+            )
         return OwnedExternalMaterialRun(
             adapter=self,
             process=process,

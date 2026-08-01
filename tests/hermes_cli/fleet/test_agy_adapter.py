@@ -421,3 +421,31 @@ def test_agy_subscription_route_stays_available_and_unpaid_after_renaming(
     assert proof["fast_mode"] is False
     assert result.metadata["receipt_check"]["auth_method"] == "consumer"
     assert result.metadata["receipt_check"]["endpoint_kind"] == "antigravity_cloud_code"
+
+
+def test_agy_proof_claims_no_model_qualification_from_client_propagation(
+    tmp_path, monkeypatch
+):
+    """RED for B4 (fence 7): `model_qualification` asserted an unproven claim.
+
+    The AGY receipt is a client-side propagation line. It cannot qualify the
+    model that actually served the request, so no field may be NAMED as a model
+    qualification. The evidence artifact may still be described — but as a
+    source, not as proof.
+    """
+    result = _successful_agy_execute(tmp_path, monkeypatch)
+    assert result.ok, result.reason
+    proof = result.metadata["route_proof"]
+
+    assert "model_qualification" not in proof
+    assert [key for key in proof if "qualification" in str(key)] == []
+    # Provenance and the withdrawn served claim both survive the removal.
+    assert proof["requested_selected_model_id"] == CANONICAL_MODEL_ID
+    assert proof["requested_selected_model_label"] == DISPLAY_MODEL_LABEL
+    assert proof["model_evidence_kind"] == "requested_selected_propagation"
+    assert proof["served_model_proven"] is False
+    assert proof["served_model_evidence"] == "NOT_PROVEN"
+    # The artifact is still identified, as a source rather than as proof.
+    assert proof["model_evidence_source"] == (
+        "agy client model-override propagation log line"
+    )

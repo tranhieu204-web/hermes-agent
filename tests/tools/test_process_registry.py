@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -2578,3 +2579,218 @@ def test_owned_argv_handle_releases_after_adapter_consumes_its_result(registry):
         if process.poll() is None:
             process.kill()
             process.wait(timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# B1 (fence 7): TRUE owner-death containment.
+#
+# The held-out inspector correctly rejected the previous coverage: calling
+# `runner.interrupt()` inside a live owner proves an in-process cancel race,
+# NOT owner death.  A sudden owner death (SIGKILL / TerminateProcess) runs no
+# userspace code at all, so the guarantee must be kernel-enforced and must be
+# demonstrated by actually killing a real owner process.
+#
+# These tests therefore spawn a genuine OS process tree:
+#
+#     pytest  ->  owner (real subprocess)  ->  provider stand-in (real child)
+#
+# and then hard-kill the owner, asserting the EXACT child PID dies.  Nothing is
+# mocked, and no PID scan is used: the child's identity is captured as
+# (pid, create_time) before the kill so PID reuse cannot produce a false pass.
+# ---------------------------------------------------------------------------
+
+_OWNER_DEATH_OWNER_SOURCE = """
+import json, subprocess, sys, time
+
+sys.path.insert(0, {repo!r})
+from tools.process_registry import create_owner_death_containment
+
+containment = create_owner_death_containment()
+if not containment.available:
+    print(json.dumps({{"error": "containment_unavailable", "detail": containment.detail}}), flush=True)
+    raise SystemExit(2)
+
+spawn = containment.popen_kwargs()
+flags = int(spawn.pop("creationflags", 0))
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(600)"],
+    creationflags=flags, **spawn
+)
+if not containment.adopt(child):
+    child.kill()
+    print(json.dumps({{"error": "adopt_failed"}}), flush=True)
+    raise SystemExit(3)
+
+print(json.dumps({{"child_pid": child.pid, "kind": containment.kind}}), flush=True)
+time.sleep(600)
+"""
+
+
+def _repo_root_for_owner_death():
+    from pathlib import Path
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "AGENTS.md").exists() and (parent / "tools").is_dir():
+            return parent
+    raise AssertionError("repository root not found")
+
+
+def _containment_kind():
+    from tools.process_registry import create_owner_death_containment
+
+    containment = create_owner_death_containment()
+    try:
+        return containment.kind, containment.available, containment.detail
+    finally:
+        containment.close()
+
+
+def test_real_owner_death_kills_the_exact_provider_child():
+    """A hard-killed owner must take its exact spawned child with it.
+
+    This is an out-of-process test on purpose. The owner is a real Python
+    process; the "provider" is a real long-lived child. The owner is killed
+    with no chance to run cleanup, exactly like a host crash.
+    """
+    psutil = pytest.importorskip("psutil")
+    kind, available, detail = _containment_kind()
+    if not available:
+        pytest.skip(f"no kernel owner-death guarantee on this platform: {detail}")
+
+    repo = str(_repo_root_for_owner_death())
+    owner = subprocess.Popen(
+        [sys.executable, "-c", _OWNER_DEATH_OWNER_SOURCE.format(repo=repo)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    child_proc = None
+    try:
+        line = owner.stdout.readline()
+        assert line.strip(), f"owner produced no handshake; stderr={owner.stderr.read()[:400]!r}"
+        payload = json.loads(line)
+        assert "child_pid" in payload, payload
+        child_pid = int(payload["child_pid"])
+        assert payload["kind"] == kind
+
+        # Bind the exact child identity BEFORE the kill so a recycled PID
+        # cannot later be mistaken for the survivor.
+        child_proc = psutil.Process(child_pid)
+        child_create_time = child_proc.create_time()
+        assert child_proc.is_running()
+
+        # Sudden owner death: no cleanup, no signal handler, no atexit.
+        owner.kill()
+        owner.wait(timeout=30)
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                if not child_proc.is_running():
+                    break
+                if child_proc.status() == psutil.STATUS_ZOMBIE:
+                    break
+                # Same PID must not still be the SAME process we spawned.
+                if child_proc.create_time() != child_create_time:
+                    break
+            except psutil.NoSuchProcess:
+                break
+            time.sleep(0.05)
+
+        alive = False
+        try:
+            alive = (
+                child_proc.is_running()
+                and child_proc.status() != psutil.STATUS_ZOMBIE
+                and child_proc.create_time() == child_create_time
+            )
+        except psutil.NoSuchProcess:
+            alive = False
+        assert not alive, (
+            f"provider child {child_pid} survived owner death under {kind}; "
+            "the kernel containment guarantee is not in force"
+        )
+    finally:
+        for proc in (owner,):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        if child_proc is not None:
+            try:
+                child_proc.kill()
+            except Exception:
+                pass
+
+
+def test_owner_death_containment_reports_its_kind_truthfully():
+    """Containment must never claim a guarantee the platform cannot give."""
+    kind, available, detail = _containment_kind()
+    assert kind in {"windows_job_object", "linux_pdeathsig", "unavailable"}
+    if sys.platform == "win32":
+        assert kind == "windows_job_object" and available
+    elif sys.platform.startswith("linux"):
+        assert kind == "linux_pdeathsig" and available
+    else:
+        # macOS and friends have no equivalent; it must say so rather than
+        # silently pretend the guarantee exists.
+        assert kind == "unavailable" and not available
+    assert isinstance(detail, str) and detail
+
+
+def test_unavailable_containment_offers_no_spawn_arming():
+    """A fail-closed containment must not hand out spawn kwargs or adopt."""
+    from tools.process_registry import OwnerDeathContainment
+
+    containment = OwnerDeathContainment("unavailable", False, "synthetic")
+    assert containment.popen_kwargs() == {}
+    assert containment.adopt(object()) is False
+    assert containment.public_facts()["owner_death_containment_available"] is False
+    containment.close()
+
+
+def test_contained_child_cannot_execute_before_it_is_adopted():
+    """The child must be frozen until the kernel guarantee actually holds.
+
+    Assignment happens after Popen returns, so without suspended creation there
+    is a real window in which a prompt-bearing process is already running while
+    nothing constrains it. This binds that window shut: the child writes a
+    marker file as its very first action, and that marker must not exist until
+    `adopt()` has run.
+    """
+    from tools.process_registry import create_owner_death_containment
+
+    containment = create_owner_death_containment()
+    if not containment.available:
+        containment.close()
+        pytest.skip("no kernel owner-death guarantee on this platform")
+    if containment.kind != "windows_job_object":
+        containment.close()
+        pytest.skip("suspended-create arming is the Windows job-object path")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = os.path.join(tmp, "child-ran.marker")
+        spawn = containment.popen_kwargs()
+        flags = int(spawn.pop("creationflags", 0))
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             f"open({marker!r}, 'w').write('ran'); import time; time.sleep(30)"],
+            creationflags=flags, **spawn
+        )
+        try:
+            # Give an unconstrained child ample time to have run already.
+            time.sleep(1.0)
+            assert not os.path.exists(marker), (
+                "child executed before containment was adopted; the spawn->assign "
+                "race window is open"
+            )
+            assert containment.adopt(child) is True
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not os.path.exists(marker):
+                time.sleep(0.02)
+            assert os.path.exists(marker), "child never resumed after adoption"
+        finally:
+            try:
+                child.kill()
+            except Exception:
+                pass
+            containment.close()
