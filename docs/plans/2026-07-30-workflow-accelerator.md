@@ -531,3 +531,83 @@ focused material/async/ledger/process test matrix passed 226 tests (16
 skipped), compilation and diff checks passed. Remaining acceptance: explicit
 cancel/owner-death race coverage for this ingress, recursive completion-value
 validation, full Accelerator suite, changed-scope reviews, and exact CI.
+
+**Correction (2026-08-01, sequence 17).** The paragraph above is superseded and
+is retained only as history. Two independent Final Inspections returned FAIL /
+RELEASE HOLD against it, and both were right on the substance:
+
+- The 226-test figure is stale. The current focused seven-file matrix is 286
+  passed / 16 skipped, and the canonical 28-file broad suite is 599 passed with
+  one failure that is a harness precondition, not a product defect
+  (`test_long_worktree_path_does_not_inflate_tr` asserts a >60-character or
+  `worktrees` repository root; the candidate root is 53 characters). The same
+  file passes 25/25 from a 69-character root.
+- "Binds the ledger and async outbox fence before consuming output" understated
+  the requirement. Binding happened only *after* the child existed, so a
+  failure between child creation and binding left a live unowned child and an
+  unreleased Fleet lease, and the Antigravity prompt reached an executable argv
+  before any durable rail owned it.
+- The ingress was not reachable from shipped code: it had zero non-test
+  callers, so the rail described here was effectively dead.
+
+#### Sequence-17 repair record (2026-08-01)
+
+**Owner:** one Claude Opus 5 writer, bounded to eighteen leased paths.
+
+1. **Pre-execution durable ownership.** Both rails now bind an opaque
+   provisional handle *before* any provider argv can be constructed
+   (`bind_material_provisional_handle` on the review ledger and the async
+   outbox; saga state `SEALED → STARTING → OWNED`). A crash inside that window
+   leaves a PID-free saga that recovery terminalizes, and a direct
+   `SEALED → OWNED` transition is now rejected, so an owned PID can never be
+   the first durable trace of external work.
+2. **Exactly-one lease finalization, structurally.** Registration, both binds,
+   `run.finish()` and completion bookkeeping all run inside cleanup scope, and
+   a `try/finally` net around the whole owned run guarantees the Fleet lease is
+   released exactly once even on an unenumerated escape. Every post-creation
+   failure terminates that exact child — registry PID-plus-start-time path
+   first, held process handle as fallback, and no PID scan or process-tree
+   sweep. Cancellation arriving between child creation and registration is no
+   longer lost.
+3. **Real production composition root.** `dispatch_material_review()` in
+   `tools/fleet_delegation.py` resolves the canonical ledger, builds the live
+   fleet service through `build_fleet_service()`, plans the single route and
+   calls the sealed ingress. Generic `delegate_task` and the public async
+   launcher stay fail-closed for material work.
+4. **Ordinary capacity policy restored.** The parent `evaluate_lane` rule that
+   promotes stale, absent or non-comparable capacity evidence into hard reasons
+   for verified-health task workers is restored verbatim. It had been deleted
+   to satisfy a test fixture; the fixture was repaired instead. This is
+   fleet-wide ordinary routing, not a bridge-local concern.
+5. **Truthful model evidence.** Antigravity's
+   `Propagating selected model override to backend` line is written by the
+   client before the request leaves the host, so it proves the
+   *requested/selected* model, not a served identity. The owned-material proof
+   now carries no bare `served_model_id`/`served_model_label` at all and
+   publishes `model_evidence_kind=requested_selected_propagation`,
+   `served_model_proven=false`, `served_model_evidence=NOT_PROVEN`. Claude
+   Code's `modelUsage` response envelope is genuinely served evidence and is
+   published as `PROVEN`. The proven Antigravity subscription route stays
+   enabled; no API-key, paid, cloud or fallback route is introduced.
+
+**Deep-mode continuation benchmark.** The mechanical half is MEASURED and
+deterministic: a successor that can prove exact validation reuse executes 0 of
+24 verification units where a cold restart executes all 24 (median over seven
+trials). The provider half — median active model time, token spend,
+reproduced-finding rate and false-pass rate — is an explicit **HOLD**: each
+requires executing real Deep-Mode lanes against live providers, which this
+writer lane is forbidden to do. No value is estimated in their place. Unblock
+condition: a separately authorized lane with live Deep-Mode capacity for at
+least two distinct qualified effective routes, running STANDARD 1..3 → DEEP
+1..3 twice (cold restart vs packet reuse) over one identical candidate,
+environment, scope and failure fingerprint.
+
+**Carried, not discharged.** The ordinary `execute()` Antigravity proof still
+carries its historical `served_model_id`/`served_model_label` aliases, now
+accompanied by the explicit `NOT_PROVEN` class. Removing them outright would
+require editing `tests/hermes_cli/fleet/test_agy_adapter.py`, which is outside
+the leased path set, so it is held for a separately scoped change rather than
+done silently. Likewise `launch_shell_review`, `launch_async_review` and
+`execute_material_route` still have no production caller; only the sealed
+owned-material ingress was in scope here. Release remains HOLD pending a fresh
+commit and an independent, provider-distinct Final Inspection.

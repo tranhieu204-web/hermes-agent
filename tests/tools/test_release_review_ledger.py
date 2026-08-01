@@ -328,6 +328,27 @@ def test_material_terminal_saga_commits_receipt_plan_and_recovery_attempt_togeth
     ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
     with sqlite3.connect(tmp_path / "reviews.db") as conn:
         conn.execute("UPDATE release_review_receipts SET state='running' WHERE receipt_id=?", (receipt["receipt_id"],))
+    # A direct SEALED -> OWNED bind is refused: external work must always be
+    # preceded by the pre-execution provisional gate on the same handle.
+    with pytest.raises(RuntimeError, match="provisional gate"):
+        ledger.bind_material_owned_handle(
+            receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            handle_id="owned-handle", pid=123, host_start_time=456,
+        )
+    assert ledger.bind_material_provisional_handle(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        handle_id="owned-handle",
+    )
+    assert ledger.bind_material_provisional_handle(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        handle_id="owned-handle",
+    )
+    # A provisional gate held by one handle cannot be upgraded by another.
+    with pytest.raises(RuntimeError, match="provisional gate"):
+        ledger.bind_material_owned_handle(
+            receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+            handle_id="foreign-handle", pid=123, host_start_time=456,
+        )
     assert ledger.bind_material_owned_handle(
         receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
         handle_id="owned-handle", pid=123, host_start_time=456,
@@ -416,6 +437,60 @@ def test_unowned_material_saga_becomes_interrupted_without_accepting_a_late_resu
         receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
         evidence={"reason": "late_replay"},
     )
+
+
+def test_provisionally_gated_material_saga_terminalizes_without_claiming_a_child_ran(tmp_path):
+    """A crash between the pre-execution gate and the owned bind is recoverable.
+
+    The handle is durable but no PID exists, so whether a child was actually
+    created is unknowable.  Recovery must terminalize as unowned/INTERRUPTED and
+    must never relaunch or accept a synthetic completion.
+    """
+    ledger = ReleaseReviewLedger(tmp_path / "reviews.db")
+    packet = ledger.record_recovery_packet(_recovery_packet())
+    attempt = _admit_recovery(ledger, packet["packet_hash"])
+    receipt = ledger.admit_fleet_material_launch(
+        attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        route_plan={"requested": 1, "degraded_route_capacity": False,
+                    "selected": {"lane_id": "codex", "effective_execution_identity": "route-a", "review_lens": "runtime"},
+                    "unavailable": []},
+        **_request(environment_fingerprint="env-a", scope="release tests", preflight=_preflight()),
+    )
+    ledger.transition_recovery_attempt(attempt["attempt_id"], fence_token=attempt["fence_token"], state="ACCEPTED")
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        conn.execute("UPDATE release_review_receipts SET state='running' WHERE receipt_id=?", (receipt["receipt_id"],))
+    assert ledger.bind_material_provisional_handle(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        handle_id="gated-handle",
+    )
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        saga_state, provisional, owned, pid = conn.execute(
+            "SELECT saga_state, provisional_handle_id, external_handle_id, external_pid "
+            "FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()
+        attempt_state = conn.execute(
+            "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+        ).fetchone()[0]
+    # The gate durably owns the pending child WITHOUT claiming it is running.
+    assert (saga_state, provisional, owned, pid) == ("STARTING", "gated-handle", "", None)
+    assert attempt_state == "ACCEPTED"
+
+    assert ledger.interrupt_unowned_material_saga(
+        receipt["receipt_id"], attempt_id=attempt["attempt_id"], fence_token=attempt["fence_token"],
+        evidence={"reason": "host_crash_between_gate_and_owned_bind"},
+    )
+    with sqlite3.connect(tmp_path / "reviews.db") as conn:
+        receipt_state, terminal_json = conn.execute(
+            "SELECT state, terminal_json FROM release_review_receipts WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()
+        plan_state = conn.execute(
+            "SELECT saga_state FROM workflow_material_route_plans WHERE receipt_id=?", (receipt["receipt_id"],)
+        ).fetchone()[0]
+        attempt_state = conn.execute(
+            "SELECT state FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt["attempt_id"],)
+        ).fetchone()[0]
+    assert (receipt_state, plan_state, attempt_state) == ("unknown", "TERMINAL", "INTERRUPTED")
+    assert json.loads(terminal_json)["evidence"]["external_handle_bound"] is False
 
 
 def test_fleet_material_plan_rejects_a_caller_supplied_runner(tmp_path, monkeypatch):

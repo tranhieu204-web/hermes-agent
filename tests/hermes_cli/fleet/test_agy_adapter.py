@@ -110,8 +110,16 @@ def test_agy_uses_display_label_positional_prompt_and_unique_profile_logs(
     assert first.ok and second.ok
     assert first.model_id == second.model_id == CANONICAL_MODEL_ID
     assert first.metadata["route_proof"]["requested_model_id"] == CANONICAL_MODEL_ID
-    assert first.metadata["route_proof"]["served_model_id"] == CANONICAL_MODEL_ID
-    assert first.metadata["route_proof"]["served_model_label"] == DISPLAY_MODEL_LABEL
+    # The AGY receipt proves the client-propagated SELECTED model, not a
+    # provider-served identity, so the proof names it that way.
+    assert (
+        first.metadata["route_proof"]["requested_selected_model_id"]
+        == CANONICAL_MODEL_ID
+    )
+    assert (
+        first.metadata["route_proof"]["requested_selected_model_label"]
+        == DISPLAY_MODEL_LABEL
+    )
     assert len(calls) == 2
     log_paths = []
     for argv, kwargs, log_path in calls:
@@ -139,7 +147,7 @@ def test_agy_uses_display_label_positional_prompt_and_unique_profile_logs(
                 'label="Gemini 3.6 Flash (High)"'
             ),
             ReasonCode.MODEL_MISMATCH,
-            "served_model_mismatch",
+            "propagated_model_mismatch",
         ),
         ("unrelated log line", ReasonCode.MALFORMED_OUTPUT, "missing_receipt"),
         (b"\xff\xfe", ReasonCode.MALFORMED_OUTPUT, "malformed_log"),
@@ -217,7 +225,7 @@ def test_agy_unknown_backend_label_is_not_echoed_to_failure_evidence(
     assert result.ok is False
     assert result.reason is ReasonCode.MODEL_MISMATCH
     assert result.output == ""
-    assert result.metadata["receipt_check"]["status"] == "unsupported_served_model"
+    assert result.metadata["receipt_check"]["status"] == "unsupported_propagated_model"
     assert not list(home.rglob("*.log"))
     evidence_files = list((home / "fleet" / "evidence" / "agy").glob("*.json"))
     assert len(evidence_files) == 1
@@ -252,9 +260,9 @@ def test_agy_receipt_records_observed_backend_model_before_comparison(tmp_path):
         expected_display_label=DISPLAY_MODEL_LABEL,
     )
 
-    assert receipt["status"] == "served_model_mismatch"
-    assert receipt["served_model_id"] == "gemini-3.6-flash-high"
-    assert receipt["served_model_label"] == "Gemini 3.6 Flash (High)"
+    assert receipt["status"] == "propagated_model_mismatch"
+    assert receipt["requested_selected_model_id"] == "gemini-3.6-flash-high"
+    assert receipt["requested_selected_model_label"] == "Gemini 3.6 Flash (High)"
     assert receipt["canonical_model_id"] == CANONICAL_MODEL_ID
 
 
@@ -297,3 +305,119 @@ def test_agy_nonzero_exit_cannot_report_completion(tmp_path, monkeypatch):
     assert result.output == ""
     assert result.metadata["receipt_check"]["status"] == "process_exit_nonzero"
     assert not list(home.rglob("*.log"))
+
+
+# ---------------------------------------------------------------------------
+# Truthful model-evidence naming (known-finding closure, sequence 19).
+#
+# Antigravity's `Propagating selected model override to backend` line is written
+# by the CLIENT before the request leaves the host. It proves which model was
+# REQUESTED and SELECTED and propagated; it is not a provider response artifact
+# and proves nothing about which model actually served the request.
+#
+# Therefore NO published key or status on the Antigravity surfaces may be named
+# as if it carried a provider-served identity. The only permitted uses of the
+# word "served" are the two explicit evidence-class declarations that state the
+# served identity is NOT proven.
+# ---------------------------------------------------------------------------
+
+_SERVED_EVIDENCE_DECLARATIONS = {"served_model_proven", "served_model_evidence"}
+
+
+def _keys_implying_provider_response(payload) -> list[str]:
+    """Keys whose NAME asserts a provider-returned served identity."""
+    return sorted(
+        key
+        for key in payload
+        if "served" in str(key) and str(key) not in _SERVED_EVIDENCE_DECLARATIONS
+    )
+
+
+def _successful_agy_execute(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    def process(argv, **_kwargs):
+        _write_receipt(argv, RECEIPT_LINE)
+        return SimpleNamespace(returncode=0, stdout="antigravity complete", stderr="")
+
+    request = _request(tmp_path)
+    return AntigravityAdapter(sys.executable, run_process=process).execute(
+        request, _qualification(request)
+    )
+
+
+def test_agy_route_proof_carries_no_key_implying_a_provider_served_identity(
+    tmp_path, monkeypatch
+):
+    """RED: the ordinary execute() proof still shipped served_model_* aliases."""
+    result = _successful_agy_execute(tmp_path, monkeypatch)
+    assert result.ok, result.reason
+
+    proof = result.metadata["route_proof"]
+    assert _keys_implying_provider_response(proof) == []
+    # The requested/selected route evidence is preserved, not deleted.
+    assert proof["requested_model_id"] == CANONICAL_MODEL_ID
+    assert proof["requested_selected_model_id"] == CANONICAL_MODEL_ID
+    assert proof["requested_selected_model_label"] == DISPLAY_MODEL_LABEL
+    assert proof["model_evidence_kind"] == "requested_selected_propagation"
+    # And the served claim is explicitly withdrawn rather than silently dropped.
+    assert proof["served_model_proven"] is False
+    assert proof["served_model_evidence"] == "NOT_PROVEN"
+
+
+def test_agy_receipt_check_carries_no_key_implying_a_provider_served_identity(
+    tmp_path, monkeypatch
+):
+    """RED: the receipt itself published served_model_id/served_model_label."""
+    result = _successful_agy_execute(tmp_path, monkeypatch)
+    assert result.ok, result.reason
+
+    receipt = result.metadata["receipt_check"]
+    assert _keys_implying_provider_response(receipt) == []
+    assert receipt["requested_selected_model_id"] == CANONICAL_MODEL_ID
+    assert receipt["requested_selected_model_label"] == DISPLAY_MODEL_LABEL
+
+
+def test_agy_status_values_never_describe_a_provider_served_model(tmp_path):
+    """RED: mismatch/ambiguity statuses were named as served-model outcomes."""
+    log_path = tmp_path / "agy.log"
+    log_path.write_text(
+        "\n".join(
+            (
+                "applyAuthResult: authMethod=consumer, quotaProject=",
+                "URL: https://daily-cloudcode-pa.googleapis.com/"
+                "v1internal:streamGenerateContent?alt=sse",
+                "Propagating selected model override to backend: "
+                'label="Gemini 3.6 Flash (High)"',
+            )
+        ),
+        encoding="utf-8",
+    )
+    receipt = inspect_agy_subscription_receipt(
+        log_path,
+        canonical_model_id=CANONICAL_MODEL_ID,
+        expected_display_label=DISPLAY_MODEL_LABEL,
+    )
+    assert "served" not in receipt["status"]
+    assert receipt["status"] == "propagated_model_mismatch"
+    # The observed propagated identity is still preserved for diagnosis.
+    assert receipt["requested_selected_model_id"] == "gemini-3.6-flash-high"
+    assert receipt["requested_selected_model_label"] == "Gemini 3.6 Flash (High)"
+    assert receipt["canonical_model_id"] == CANONICAL_MODEL_ID
+    assert _keys_implying_provider_response(receipt) == []
+
+
+def test_agy_subscription_route_stays_available_and_unpaid_after_renaming(
+    tmp_path, monkeypatch
+):
+    """Withdrawing the served claim must not disable the proven AGY route."""
+    result = _successful_agy_execute(tmp_path, monkeypatch)
+    assert result.ok is True
+    assert result.reason is ReasonCode.MET
+    assert result.output == "antigravity complete"
+    proof = result.metadata["route_proof"]
+    assert proof["auth_kind"] == "cli_subscription"
+    assert proof["fallback_enabled"] is False
+    assert proof["fast_mode"] is False
+    assert result.metadata["receipt_check"]["auth_method"] == "consumer"
+    assert result.metadata["receipt_check"]["endpoint_kind"] == "antigravity_cloud_code"

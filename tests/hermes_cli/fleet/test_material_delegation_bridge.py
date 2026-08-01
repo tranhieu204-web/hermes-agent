@@ -12,6 +12,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.fleet.adapters.live_routes import (
     AntigravityAdapter,
     ClaudeCodeAdapter,
@@ -35,7 +37,11 @@ from hermes_cli.fleet.types import (
     ReasonCode,
     TaskSpec,
 )
-from tools.fleet_delegation import execute_material_route, plan_material_routes
+from tools.fleet_delegation import (
+    dispatch_material_review,
+    execute_material_route,
+    plan_material_routes,
+)
 from tools.release_review_launch import launch_fleet_owned_material_review
 from tools.release_review_ledger import ReleaseReviewLedger
 
@@ -50,6 +56,51 @@ AGY_RECEIPT = (
 
 
 class _Capacity:
+    """Capacity a real admissible lane must have.
+
+    The live fleet service always sets ``require_verified_health=True``, so a
+    material route is subject to exactly the same task-worker capacity policy as
+    ordinary routing: fresh, measured, comparable evidence.  A fixture that
+    routes on stale/unknown capacity would only pass by weakening fleet-wide
+    policy — see ``_StaleCapacity`` for the fail-closed counterpart.
+    """
+
+    def read(self, lane_id, *, now, reserved_pct):
+        return CapacityRead(
+            CapacitySnapshot(
+                lane_id=lane_id,
+                used_pct=Decimal("56"),
+                remaining_pct=Decimal("44"),
+                reserved_pct=reserved_pct,
+                effective_remaining_pct=Decimal("44") - reserved_pct,
+                source_kind="bridge_file",
+                source_id=f"bridge:{lane_id}#hash",
+                captured_at=NOW - timedelta(minutes=5),
+                read_at=now,
+                expires_at=NOW + timedelta(hours=1),
+                freshness=Freshness.FRESH,
+                confidence=Confidence.HIGH,
+                schema_version="plans-1",
+                overage_disabled=True,
+                comparability_group="subscription-weekly",
+                quota_window_id="2026-W31",
+                measurement_kind=MeasurementKind.MEASURED,
+            ),
+            None,
+            health=HealthRead(
+                status=LaneHealth.UP,
+                captured_at=NOW,
+                read_at=now,
+                expires_at=NOW + timedelta(minutes=5),
+                freshness=Freshness.FRESH,
+                source_id=f"health:{lane_id}",
+            ),
+        )
+
+
+class _StaleCapacity:
+    """Stale historical console usage: transport healthy, quota unknowable."""
+
     def read(self, lane_id, *, now, reserved_pct):
         return CapacityRead(
             CapacitySnapshot(
@@ -111,7 +162,7 @@ def _qualification(profile):
     )
 
 
-def _service(tmp_path, monkeypatch):
+def _service(tmp_path, monkeypatch, capacity_source=None):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     profiles = ordered_profiles()[:4]
     qualifications = {profile.lane_id: _qualification(profile) for profile in profiles}
@@ -183,7 +234,7 @@ def _service(tmp_path, monkeypatch):
         profiles=profiles,
         qualifications=qualifications,
         adapters=adapters,
-        capacity_source=_Capacity(),
+        capacity_source=capacity_source or _Capacity(),
         now=lambda: NOW,
         require_verified_health=True,
     )
@@ -660,3 +711,798 @@ def test_material_receipt_rejects_adapter_identity_mismatch(
     assert not result["ok"]
     assert result["reason"] == ReasonCode.PROVIDER_MISMATCH.value
     assert result["route_receipt"]["status"] == "FAILED"
+
+
+# ---------------------------------------------------------------------------
+# Owned-material ownership / orphan safety.
+#
+# The lifecycle claim under test is narrow and falsifiable: no provider prompt
+# may reach an executable argv, and no external child may exist unowned, before
+# BOTH durable rails (review ledger route plan + async submission outbox) hold a
+# provisional ownership record for it.  Every failure after child creation must
+# terminate that exact child and finalize exactly one Fleet lease.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingProcess:
+    """Exact-child stand-in that records termination of itself only."""
+
+    def __init__(self, pid, payload, *, stderr=""):
+        self.pid = pid
+        self.returncode = 0
+        self._payload = payload
+        self._stderr = stderr
+        self.terminated = 0
+        self.killed = 0
+        self.communicated = 0
+
+    def communicate(self, prompt=None, timeout=None):
+        self.communicated += 1
+        return (self._payload, self._stderr)
+
+    def poll(self):
+        return None if not (self.terminated or self.killed) else -15
+
+    def terminate(self):
+        self.terminated += 1
+
+    def kill(self):
+        self.killed += 1
+
+
+def _material_harness(tmp_path, monkeypatch, *, lane="claude_code", pid=5150):
+    """Build one real sealed-ingress launch environment on a temp HERMES_HOME."""
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    service, _native_calls, _process_calls = _service(tmp_path, monkeypatch)
+    route = plan_material_routes(
+        service, task_count=1, cwd=tmp_path,
+        prompt_fingerprint=f"sha256:harness-{lane}", preferred_lane_ids=(lane,),
+    ).assignments[0]
+
+    if lane == "antigravity":
+        payload = "antigravity complete"
+    else:
+        payload = json.dumps({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "approved", "session_id": "harness-session", "num_turns": 1,
+            "modelUsage": {route.model_id: {}},
+        })
+    child = _RecordingProcess(pid, payload)
+    spawned = []
+
+    def _popen(argv, **_kwargs):
+        spawned.append(list(argv))
+        if "--log-file" in argv:
+            log_path = Path(argv[argv.index("--log-file") + 1])
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(AGY_RECEIPT, encoding="utf-8")
+        return child
+
+    service.adapters[lane]._popen = _popen
+
+    ledger = ReleaseReviewLedger(hermes_home / "release-review-ledger.db")
+    packet = ledger.record_recovery_packet({
+        "schema_version": 1, "candidate_hash": "b" * 64, "environment_fingerprint": "env-b",
+        "normalized_scope": "release tests", "failure_fingerprint": "failed:one",
+        "normalized_task": "review candidate", "failed_set": ["one"], "reproducer": ["pytest", "one"],
+        "versions": {"python": "3.13"}, "attempted_remedy_hash": "none",
+        "verified_facts": ["reproduced"], "unresolved_questions": ["review"],
+        "quarantined": [], "redaction_attestation": True,
+    })
+    attempt = ledger.admit_recovery_attempt(
+        packet_hash=packet["packet_hash"], candidate_hash="b" * 64,
+        environment_fingerprint="env-b", normalized_scope="release tests",
+        failure_fingerprint="failed:one", normalized_task="review candidate",
+        mode="STANDARD", ordinal=1, owner="opus",
+        effective_route_identity=route.effective_execution_identity, lens="runtime",
+    )
+    launch = dict(
+        fleet_service=service, cwd=str(tmp_path), attempt_id=attempt["attempt_id"],
+        fence_token=attempt["fence_token"],
+        dispatch_kwargs={"goal": "review", "context": "candidate", "toolsets": None,
+                         "role": "reviewer", "model": route.model_id,
+                         "session_key": "test", "max_async_children": 1},
+        candidate_hash="b" * 64, scope="release tests", lane=lane, model=route.model_id,
+        prompt="review exact candidate", deadline_seconds=60, output_path="out.json",
+        environment_fingerprint="env-b", evidence_fingerprint="evidence-b",
+        effective_route_identity=route.effective_execution_identity, review_lens="runtime",
+        preflight={
+            key: {"status": "verified", "evidence": "test",
+                  **({"authenticated": True, "method": "proof", "endpoint": "/health"}
+                     if key == "health" else {})}
+            for key in ("target", "install", "restart", "rollback", "health")
+        },
+    )
+    return SimpleNamespace(
+        service=service, route=route, ledger=ledger, ledger_path=hermes_home / "release-review-ledger.db",
+        hermes_home=hermes_home, child=child, spawned=spawned, launch=launch,
+    )
+
+
+def _drain(module, seconds=3):
+    deadline = time.monotonic() + seconds
+    while module.active_count() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return module.active_count()
+
+
+def _lease_finalizations(service, *, task_prefix="material-external-"):
+    return [
+        event for event in service.store.audit()
+        if str(event["task_id"]).startswith(task_prefix)
+        and event["event_type"] in {"EXECUTION_COMPLETED", "EXECUTION_FAILED"}
+    ]
+
+
+def _column_value(db_path, table, column, *, extra=""):
+    """Read one column defensively so a missing column reads as None, not an error."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            return None
+        row = conn.execute(f"SELECT {column} FROM {table} {extra}").fetchone()
+        return None if row is None else row[0]
+
+
+def _saga_row(ledger_path):
+    with closing(sqlite3.connect(ledger_path)) as conn:
+        return conn.execute(
+            "SELECT saga_state, external_handle_id, external_pid "
+            "FROM workflow_material_route_plans"
+        ).fetchone()
+
+
+def test_material_prompt_reaches_no_argv_before_both_rails_hold_provisional_ownership(
+    tmp_path, monkeypatch
+):
+    """RED for F1/R2: the AGY prompt is in argv at Popen before any durable bind."""
+    from tools import async_delegation as ad
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, lane="antigravity", pid=5151)
+        observed = {}
+        adapter = harness.service.adapters["antigravity"]
+        inner = adapter._popen
+
+        def _observing_popen(argv, **kwargs):
+            observed["saga_state"] = _column_value(
+                harness.ledger_path, "workflow_material_route_plans", "saga_state"
+            )
+            observed["ledger_provisional"] = _column_value(
+                harness.ledger_path, "workflow_material_route_plans", "provisional_handle_id"
+            )
+            observed["outbox_provisional"] = _column_value(
+                harness.hermes_home / "state.db", "async_delegations",
+                "external_provisional_handle_id",
+            )
+            observed["prompt_in_argv"] = "review exact candidate" in list(argv)
+            return inner(argv, **kwargs)
+
+        adapter._popen = _observing_popen
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        # The prompt legitimately appears in the AGY argv, but only AFTER both
+        # durable rails already own the pending child.
+        assert observed["prompt_in_argv"] is True
+        assert observed["saga_state"] == "STARTING"
+        assert observed["ledger_provisional"]
+        assert observed["outbox_provisional"]
+        assert observed["ledger_provisional"] == observed["outbox_provisional"]
+    finally:
+        ad._reset_for_tests()
+
+
+def test_registration_failure_after_child_creation_kills_child_and_finalizes_one_lease(
+    tmp_path, monkeypatch
+):
+    """RED for R1: inspector 1 measured child_killed=False, fleet_lease_finalized=0."""
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5152)
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("injected registry failure")
+
+        monkeypatch.setattr(process_registry, "register_owned_argv_process", _boom)
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert harness.child.terminated + harness.child.killed >= 1
+        assert harness.child.communicated == 0
+        assert len(_lease_finalizations(harness.service)) == 1
+        saga = _saga_row(harness.ledger_path)
+        assert saga is not None and saga[0] in {"STARTING", "TERMINAL"}
+        # No owned handle/PID was ever recorded for a child that never bound.
+        assert not saga[1]
+        assert not saga[2]
+    finally:
+        ad._reset_for_tests()
+
+
+def test_ledger_owned_binding_failure_kills_child_and_finalizes_one_lease(
+    tmp_path, monkeypatch
+):
+    from tools import async_delegation as ad
+    from tools import release_review_ledger as rrl
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5153)
+
+        def _boom(self, *_args, **_kwargs):
+            raise RuntimeError("injected ledger owned-bind failure")
+
+        monkeypatch.setattr(rrl.ReleaseReviewLedger, "bind_material_owned_handle", _boom)
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert harness.child.terminated + harness.child.killed >= 1
+        assert harness.child.communicated == 0
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_outbox_owned_binding_failure_kills_child_and_finalizes_one_lease(
+    tmp_path, monkeypatch
+):
+    from tools import async_delegation as ad
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5154)
+        monkeypatch.setattr(ad, "bind_material_external_handle", lambda *_a, **_k: False)
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert harness.child.terminated + harness.child.killed >= 1
+        assert harness.child.communicated == 0
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_cancel_between_child_creation_and_registration_terminates_exact_child(
+    tmp_path, monkeypatch
+):
+    """RED for meta-audit C4: cancel in that window was silently lost."""
+    from tools import async_delegation as ad
+    from tools import fleet_delegation as fd
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5155)
+        runners = []
+        original_factory = fd.OwnedMaterialRunner.factory
+
+        def _capturing_factory(self, delegation_id, receipt_id):
+            runners.append(self)
+            return original_factory(self, delegation_id, receipt_id)
+
+        monkeypatch.setattr(fd.OwnedMaterialRunner, "factory", _capturing_factory)
+
+        adapter = harness.service.adapters["claude_code"]
+        inner = adapter._popen
+
+        def _cancel_then_spawn(argv, **kwargs):
+            process = inner(argv, **kwargs)
+            # Owner death / explicit cancel arriving after the child exists but
+            # before it is registered.
+            runners[0].interrupt()
+            return process
+
+        adapter._popen = _cancel_then_spawn
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert harness.child.terminated + harness.child.killed >= 1
+        assert harness.child.communicated == 0
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_adapter_finish_failure_still_finalizes_exactly_one_lease(
+    tmp_path, monkeypatch
+):
+    """RED for meta-audit C5: an exception after binding leaked a second lease."""
+    from tools import async_delegation as ad
+    from hermes_cli.fleet.adapters import live_routes
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5156)
+
+        def _boom(self, run, *, timeout_seconds=None):
+            raise RuntimeError("injected adapter finish failure")
+
+        monkeypatch.setattr(
+            live_routes._SubscriptionCliAdapter, "_finish_owned_material_run", _boom
+        )
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert len(_lease_finalizations(harness.service)) == 1
+        assert harness.child.terminated + harness.child.killed >= 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_completion_bookkeeping_failure_after_finish_still_finalizes_one_lease(
+    tmp_path, monkeypatch
+):
+    """RED for the C5 class one step later than `run.finish()`.
+
+    `complete_owned_argv_process` runs after a successful finish and before the
+    lease is released.  When it raised, the exception escaped the runner with
+    the Fleet lease still held — the same leak as R1, on a path neither
+    inspector exercised.  The child has already exited here, so the contract is
+    exactly-one finalization and no attempt to signal a dead process.
+    """
+    from tools import async_delegation as ad
+    from tools.process_registry import process_registry
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5157)
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("injected completion bookkeeping failure")
+
+        monkeypatch.setattr(
+            process_registry, "complete_owned_argv_process", _boom
+        )
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_owned_material_route_proof_publishes_no_bare_served_model_claim(
+    tmp_path, monkeypatch
+):
+    """RED for R5/blocker 4 on the rail this candidate actually publishes.
+
+    The Antigravity receipt is built from the client's own pre-flight
+    "Propagating selected model override to backend" line, which proves what
+    was requested/selected — never what the provider served.  The owned
+    material proof therefore must carry no bare ``served_model_id`` /
+    ``served_model_label`` key at all, and must declare the evidence class
+    explicitly, so a downstream consumer cannot read propagation as served
+    identity.  (The ordinary ``execute()`` path keeps its historical aliases;
+    that difference is deliberate and documented in ``_agy_route_proof``.)
+    """
+    from tools import async_delegation as ad
+    from hermes_cli.fleet.adapters import live_routes
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, lane="antigravity", pid=5159)
+        proofs = []
+        inner = live_routes._SubscriptionCliAdapter._finish_owned_material_run
+
+        def _capture(self, run, *, timeout_seconds=None):
+            result = inner(self, run, timeout_seconds=timeout_seconds)
+            proof = (result.metadata or {}).get("route_proof")
+            if proof is not None:
+                proofs.append(proof)
+            return result
+
+        monkeypatch.setattr(
+            live_routes._SubscriptionCliAdapter, "_finish_owned_material_run", _capture
+        )
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert proofs, "owned material run published no route proof"
+        proof = proofs[0]
+        assert "served_model_id" not in proof
+        assert "served_model_label" not in proof
+        assert proof["model_evidence_kind"] == "requested_selected_propagation"
+        assert proof["served_model_proven"] is False
+        assert proof["served_model_evidence"] == "NOT_PROVEN"
+        assert proof["requested_selected_model_id"] == harness.route.model_id
+        assert "live backend receipt" not in str(proof.get("model_qualification", ""))
+        # The proven subscription route stays enabled and unpaid.
+        assert proof["fallback_enabled"] is False
+        assert proof["fast_mode"] is False
+    finally:
+        ad._reset_for_tests()
+
+
+def test_published_material_receipt_carries_the_truthful_model_evidence_class(
+    tmp_path, monkeypatch
+):
+    """RED for R5: the public receipt republished identity with no provenance.
+
+    Withdrawing the overclaim is only half the repair — the receipt has to
+    positively state which evidence class it holds, or a consumer still cannot
+    tell an unproven Antigravity client-propagation from a proven Claude
+    response envelope.  So the allowlist must carry the evidence keys, and it
+    must NOT carry a bare ``served_model_id`` that a propagation-only lane
+    could republish as provider-returned identity.
+    """
+    service, _native_calls, _process_calls = _service(tmp_path, monkeypatch)
+    plan = plan_material_routes(
+        service, task_count=4, cwd=tmp_path, prompt_fingerprint="sha256:model-evidence",
+    )
+    routes = {route.lane_id: route for route in plan.assignments}
+
+    expected = {
+        "antigravity": ("requested_selected_propagation", False, "NOT_PROVEN"),
+        "claude_code": ("served_response_envelope", True, "PROVEN"),
+    }
+    for lane, (kind, proven, evidence) in expected.items():
+        result = execute_material_route(
+            service,
+            routes[lane],
+            task_id=f"model-evidence-{lane}",
+            cwd=tmp_path,
+            prompt="Review candidate deadbeef",
+            candidate_hash="deadbeef",
+            review_lens=f"lens-{lane}",
+        )
+        assert result["ok"], (lane, result["reason"])
+        claims = result["route_receipt"]["route_proof"]["claims"]
+        assert claims["model_evidence_kind"] == kind, lane
+        assert claims["served_model_proven"] is proven, lane
+        assert claims["served_model_evidence"] == evidence, lane
+        # A bare served identity can never be republished by a material receipt.
+        assert "served_model_id" not in claims, lane
+        assert "served_model_label" not in claims, lane
+
+
+def test_owned_rail_publishes_a_receipt_from_the_shared_sealed_builder(
+    tmp_path, monkeypatch
+):
+    """RED for the sequence-19 duplication finding.
+
+    The owned rail used to hand-roll its public envelope, so the deny-by-default
+    claim allowlist and the model-evidence class existed on only one of the two
+    material rails.  Both rails must now construct their receipt through
+    ``build_material_route_receipt`` so the two shapes cannot drift.
+    """
+    from tools import async_delegation as ad
+    from tools import fleet_delegation as fd
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, lane="antigravity", pid=5181)
+        seen = []
+        inner = fd.build_material_route_receipt
+
+        def _spy(*args, **kwargs):
+            out = inner(*args, **kwargs)
+            seen.append(out)
+            return out
+
+        monkeypatch.setattr(fd, "build_material_route_receipt", _spy)
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert seen, "owned rail did not use the shared sealed receipt builder"
+        _ok, _reason, receipt = seen[-1]
+        claims = receipt["route_proof"]["claims"]
+        assert claims["model_evidence_kind"] == "requested_selected_propagation"
+        assert claims["served_model_proven"] is False
+        assert claims["served_model_evidence"] == "NOT_PROVEN"
+        assert "served_model_id" not in claims
+        assert receipt["candidate_hash"] == "b" * 64
+        assert receipt["review_lens"] == "runtime"
+        assert receipt["receipt_hash"]
+    finally:
+        ad._reset_for_tests()
+
+
+def test_both_material_rails_share_one_receipt_builder(tmp_path, monkeypatch):
+    """A bounded AST census: exactly one construction site, two real callers."""
+    import ast
+
+    source = (_repo_root() / "tools" / "fleet_delegation.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    definitions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_material_route_receipt"
+    ]
+    assert len(definitions) == 1, "the material receipt must have ONE construction site"
+
+    callers = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and getattr(inner.func, "id", None) == "build_material_route_receipt"
+            ):
+                callers.add(node.name)
+    # The superseded route-executor and the sealed owned rail, and nothing else.
+    assert callers == {"execute_material_route", "_run_owned"}, callers
+
+
+def test_every_owned_material_terminal_path_releases_exactly_one_lease(
+    tmp_path, monkeypatch
+):
+    """Structural exactly-once: even an unenumerated escape cannot leak a lease.
+
+    This drives the runner's own safety net rather than a named failure site, so
+    a future edit that adds a new terminal path without its own finalization is
+    still caught.
+    """
+    from tools import async_delegation as ad
+    from tools import fleet_delegation as fd
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5158)
+
+        def _escape(self, execution, task, delegation_id, receipt_id):
+            raise KeyboardInterrupt("unenumerated escape after lease acquisition")
+
+        monkeypatch.setattr(fd.OwnedMaterialRunner, "_run_owned", _escape)
+
+        result = launch_fleet_owned_material_review(harness.ledger, **harness.launch)
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+# ---------------------------------------------------------------------------
+# Production ingress.
+#
+# The material bridge is only real if a NON-TEST caller reaches it.  These tests
+# drive the production dispatcher (which owns ledger resolution, route planning
+# and the sealed-ingress call) rather than the module-private helper, and a
+# bounded AST census proves the wiring exists in shipped code.
+# ---------------------------------------------------------------------------
+
+_CENSUS_ROOTS = ("tools", "hermes_cli", "gateway", "agent", "cron", "tui_gateway")
+_CENSUS_FILES = ("cli.py", "run_agent.py", "model_tools.py", "toolsets.py")
+
+
+def _repo_root():
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "AGENTS.md").exists() and (parent / "tools").is_dir():
+            return parent
+    raise AssertionError("repository root not found")
+
+
+def _bounded_caller_census(symbol):
+    """Deterministic, bounded AST census of production call sites for ``symbol``.
+
+    Bounded by construction: a fixed root list, no test trees, no globbing of
+    the whole filesystem.  Only real ``Call`` nodes count — an import or a
+    string mention is not a caller.
+    """
+    import ast
+
+    root = _repo_root()
+    targets = []
+    for name in _CENSUS_ROOTS:
+        directory = root / name
+        if directory.is_dir():
+            targets.extend(sorted(directory.rglob("*.py")))
+    targets.extend(root / name for name in _CENSUS_FILES if (root / name).exists())
+
+    callers = {}
+    for path in targets:
+        parts = set(path.relative_to(root).parts)
+        if "tests" in parts or path.name.startswith("test_"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        count = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (
+                func.id if isinstance(func, ast.Name)
+                else func.attr if isinstance(func, ast.Attribute)
+                else None
+            )
+            if name == symbol:
+                count += 1
+        if count:
+            callers[str(path.relative_to(root)).replace("\\", "/")] = count
+    return callers
+
+
+def test_bounded_caller_census_proves_a_non_test_production_caller_for_the_sealed_ingress():
+    """RED for F2/R3: the sealed ingress had zero non-test callers."""
+    callers = _bounded_caller_census("launch_fleet_owned_material_review")
+    assert callers, (
+        "launch_fleet_owned_material_review has no production caller; the material "
+        "bridge would be test-reachable only"
+    )
+    # The definition site itself must not be counted as a caller.
+    assert "tools/release_review_launch.py" not in callers
+    assert "tools/fleet_delegation.py" in callers
+
+
+def test_production_dispatcher_reaches_sealed_material_ingress_and_binds_both_rails(
+    tmp_path, monkeypatch
+):
+    """RED for F2/R3: E2E through the production dispatcher, not the private helper."""
+    from tools import async_delegation as ad
+    from tools.fleet_delegation import dispatch_material_review
+
+    ad._reset_for_tests()
+    try:
+        harness = _material_harness(tmp_path, monkeypatch, pid=5160)
+        result = dispatch_material_review(
+            fleet_service=harness.service,
+            ledger=harness.ledger,
+            candidate_hash="b" * 64,
+            review_lens="runtime",
+            scope="release tests",
+            lane="claude_code",
+            prompt="review exact candidate",
+            cwd=tmp_path,
+            attempt_id=harness.launch["attempt_id"],
+            fence_token=harness.launch["fence_token"],
+            environment_fingerprint="env-b",
+            evidence_fingerprint="evidence-b",
+            preflight=harness.launch["preflight"],
+            deadline_seconds=60,
+            output_path="out.json",
+            dispatch_kwargs={"goal": "review", "context": "candidate", "toolsets": None,
+                             "role": "reviewer", "session_key": "test", "max_async_children": 1},
+        )
+        assert result["status"] == "launched"
+        assert _drain(ad) == 0
+
+        with closing(sqlite3.connect(harness.ledger_path)) as conn:
+            saga_state, provisional, owned, pid = conn.execute(
+                "SELECT saga_state, provisional_handle_id, external_handle_id, external_pid "
+                "FROM workflow_material_route_plans"
+            ).fetchone()
+        assert saga_state == "TERMINAL"
+        assert provisional and owned == provisional and pid == 5160
+        with closing(sqlite3.connect(harness.hermes_home / "state.db")) as conn:
+            outbox_handle, outbox_pid = conn.execute(
+                "SELECT external_handle_id, external_pid FROM async_delegations"
+            ).fetchone()
+        assert (outbox_handle, outbox_pid) == (owned, 5160)
+        assert len(_lease_finalizations(harness.service)) == 1
+    finally:
+        ad._reset_for_tests()
+
+
+def test_production_dispatcher_defaults_to_the_live_fleet_composition_root(
+    tmp_path, monkeypatch
+):
+    """The default (production) path must build the real live fleet service."""
+    from hermes_cli.fleet import inspection
+    from tools import fleet_delegation as fd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    built = []
+
+    def _fake_build(**kwargs):
+        built.append(kwargs)
+        raise RuntimeError("composition root reached")
+
+    monkeypatch.setattr(inspection, "build_fleet_service", _fake_build)
+    with pytest.raises(RuntimeError, match="composition root reached"):
+        fd.dispatch_material_review(
+            candidate_hash="c" * 64, review_lens="runtime", scope="release tests",
+            lane="claude_code", prompt="review", cwd=tmp_path, attempt_id="attempt",
+            fence_token=1, environment_fingerprint="env-c", evidence_fingerprint="evidence-c",
+            preflight={}, deadline_seconds=60, output_path="out.json", dispatch_kwargs={},
+        )
+    assert built == [{}]
+
+
+def test_production_dispatcher_fails_closed_without_candidate_or_lens(
+    tmp_path, monkeypatch
+):
+    """Generic (non-material) requests must never reach the sealed ingress."""
+    from tools import fleet_delegation as fd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    reached = []
+    monkeypatch.setattr(
+        fd, "plan_material_routes",
+        lambda *a, **k: reached.append(True),
+    )
+    for missing in ("candidate_hash", "review_lens", "prompt"):
+        request = dict(
+            candidate_hash="d" * 64, review_lens="runtime", scope="release tests",
+            lane="claude_code", prompt="review", cwd=tmp_path, attempt_id="attempt",
+            fence_token=1, environment_fingerprint="env-d", evidence_fingerprint="evidence-d",
+            preflight={}, deadline_seconds=60, output_path="out.json", dispatch_kwargs={},
+            fleet_service=object(), ledger=object(),
+        )
+        request[missing] = ""
+        result = fd.dispatch_material_review(**request)
+        assert result["status"] == "rejected"
+    assert reached == []
+
+
+def test_material_route_fails_closed_on_stale_or_non_comparable_capacity(
+    tmp_path, monkeypatch
+):
+    """Distinct material-route safety under the restored ordinary capacity gate.
+
+    Material work is the most expensive thing the fleet can start, so it gets no
+    exemption from the fleet-wide rule: unknowable remaining quota means no
+    route.  Transport health being UP is deliberately not sufficient.
+    """
+    service, _native_calls, _process_calls = _service(
+        tmp_path, monkeypatch, capacity_source=_StaleCapacity()
+    )
+    plan = plan_material_routes(
+        service, task_count=1, cwd=tmp_path,
+        prompt_fingerprint="sha256:stale-capacity", preferred_lane_ids=("claude_code",),
+    )
+    assert not plan.assignments
+    assert plan.degraded_route_capacity
+    reasons = set(plan.unavailable[0].reasons)
+    assert reasons & {
+        ReasonCode.USAGE_STALE.value,
+        ReasonCode.USAGE_NOT_COMPARABLE.value,
+        ReasonCode.CAPACITY_STALE.value,
+    }
+
+    result = dispatch_material_review(
+        fleet_service=service, ledger=object(), candidate_hash="e" * 64,
+        review_lens="runtime", scope="release tests", lane="claude_code",
+        prompt="review exact candidate", cwd=tmp_path, attempt_id="attempt",
+        fence_token=1, environment_fingerprint="env-e", evidence_fingerprint="evidence-e",
+        preflight={}, deadline_seconds=60, output_path="out.json", dispatch_kwargs={},
+    )
+    assert result["status"] == "rejected"
+    assert result["error"] == "no qualified distinct fleet material route"
+    assert result["degraded_route_capacity"] is True
+
+
+def test_stale_pid_start_identity_cannot_cancel_a_recycled_owned_handle(
+    tmp_path, monkeypatch
+):
+    """Owner-death race: a stale start identity must never signal a live PID."""
+    from tools.process_registry import process_registry
+
+    harness = _material_harness(tmp_path, monkeypatch, pid=5157)
+    session = process_registry.register_owned_argv_process(
+        harness.child, handle_id="mat_stale_identity", task_id="material-external-stale",
+        cwd=str(tmp_path),
+    )
+    stale_start = (session.host_start_time or 0) + 4242
+    assert not process_registry.cancel_owned_argv_process(
+        "mat_stale_identity", pid=harness.child.pid, host_start_time=stale_start,
+    )
+    assert harness.child.terminated == 0 and harness.child.killed == 0

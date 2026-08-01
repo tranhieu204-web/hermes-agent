@@ -141,24 +141,34 @@ def _inspect_agy_receipt(
 
     distinct_labels = set(labels)
     if len(distinct_labels) != 1:
-        check["status"] = "ambiguous_served_model"
+        check["status"] = "ambiguous_propagated_model"
         return check
 
-    served_model_label = labels[0]
-    served_model_id = _AGY_MODEL_IDS_BY_LABEL.get(served_model_label)
+    # NOTE ON PROVENANCE.  `Propagating selected model override to backend` is
+    # written by the Antigravity CLIENT before the request leaves the host.  It
+    # proves which model was REQUESTED and SELECTED and propagated; it is NOT a
+    # provider-returned served identity and proves nothing about which model
+    # actually served the request.  Nothing here may therefore be NAMED as a
+    # served identity: the only permitted uses of "served" are the two explicit
+    # declarations below that state the served identity is NOT proven.
+    propagated_model_label = labels[0]
+    propagated_model_id = _AGY_MODEL_IDS_BY_LABEL.get(propagated_model_label)
     check["receipt_count"] = len(labels)
-    if served_model_id is None:
-        check["status"] = "unsupported_served_model"
+    if propagated_model_id is None:
+        check["status"] = "unsupported_propagated_model"
         return check
     check.update(
         {
-            "served_model_id": served_model_id,
-            "served_model_label": served_model_label,
+            "requested_selected_model_id": propagated_model_id,
+            "requested_selected_model_label": propagated_model_label,
+            "model_evidence_kind": "requested_selected_propagation",
+            "served_model_proven": False,
+            "served_model_evidence": "NOT_PROVEN",
         }
     )
-    if served_model_id != canonical_model_id:
-        check["status"] = "served_model_mismatch"
-    elif served_model_label != expected_display_label:
+    if propagated_model_id != canonical_model_id:
+        check["status"] = "propagated_model_mismatch"
+    elif propagated_model_label != expected_display_label:
         check["status"] = "expected_label_mismatch"
     else:
         check["status"] = "matched"
@@ -179,15 +189,15 @@ def _apply_agy_subscription_route_markers(
     if "GOOGLE_API_KEY" in text or "GEMINI_API_KEY" in text:
         check["status"] = "api_key_route_present"
         return check
-    served_model_id = check.get("served_model_id")
-    served_model_label = check.get("served_model_label")
+    propagated_model_id = check.get("requested_selected_model_id")
+    propagated_model_label = check.get("requested_selected_model_label")
     if (
-        not isinstance(served_model_id, str)
-        or not isinstance(served_model_label, str)
-        or _AGY_MODEL_IDS_BY_LABEL.get(served_model_label) != served_model_id
-        or served_model_id != check.get("canonical_model_id")
+        not isinstance(propagated_model_id, str)
+        or not isinstance(propagated_model_label, str)
+        or _AGY_MODEL_IDS_BY_LABEL.get(propagated_model_label) != propagated_model_id
+        or propagated_model_id != check.get("canonical_model_id")
     ):
-        check["status"] = "served_model_identity_invalid"
+        check["status"] = "propagated_model_identity_invalid"
         return check
     check.update(
         {
@@ -220,6 +230,50 @@ def inspect_agy_subscription_receipt(
         check["status"] = "unreadable_log"
         return check
     return _apply_agy_subscription_route_markers(text, check)
+
+
+def _agy_route_proof(
+    *,
+    executable: Path | str,
+    request: AdapterRequest,
+    qualification: Qualification,
+    receipt_check: Mapping[str, object],
+) -> dict[str, object]:
+    """Published Antigravity route proof with truthful model-evidence class.
+
+    The AGY receipt is built from the client's own
+    ``Propagating selected model override to backend`` line, which is written
+    before the request leaves the host.  It proves the model that was
+    *requested and selected*, never the model the provider actually served.
+    The proof therefore publishes ``requested_selected_model_*`` plus an
+    explicit ``NOT_PROVEN`` served-evidence class.  The subscription route
+    itself stays proven and unpaid — only the served-identity claim is
+    withdrawn.
+
+    No compatibility alias is emitted.  A key named ``served_model_id`` would
+    assert a provider-returned identity that this lane cannot observe, so it is
+    removed outright on every rail rather than retained beside the disclaimer:
+    a consumer reading only the key name would still be misled.
+    """
+
+    proof: dict[str, object] = {
+        "executable": str(executable),
+        "version": qualification.version,
+        "requested_model_id": request.model,
+        "requested_selected_model_id": receipt_check.get("requested_selected_model_id"),
+        "requested_selected_model_label": receipt_check.get(
+            "requested_selected_model_label"
+        ),
+        "model_evidence_kind": "requested_selected_propagation",
+        "served_model_proven": False,
+        "served_model_evidence": "NOT_PROVEN",
+        "effort": request.effort,
+        "auth_kind": qualification.auth_kind,
+        "fast_mode": False,
+        "fallback_enabled": False,
+        "model_qualification": "agy client-propagated selected model",
+    }
+    return proof
 
 
 def _finalize_agy_log(
@@ -306,7 +360,13 @@ def inspect_claude_cli_payload(
     check.update(
         {
             "status": "matched",
+            # `modelUsage` is part of the provider's own RESPONSE envelope, so
+            # unlike the Antigravity propagation line this genuinely binds the
+            # served model identity.
             "served_model_id": canonical_model_id,
+            "model_evidence_kind": "served_response_envelope",
+            "served_model_proven": True,
+            "served_model_evidence": "PROVEN",
             "session_id": session_id,
             "num_turns": payload.get("num_turns"),
             "fallback_enabled": False,
@@ -501,6 +561,12 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                     "requested_model_id": run.request.model, "effort": run.request.effort,
                     "auth_kind": run.qualification.auth_kind, "fast_mode": False,
                     "fallback_enabled": False,
+                    # Unlike Antigravity's client-side propagation line, the
+                    # Claude `--output-format json` envelope is a provider
+                    # response artifact, so served identity really is proven.
+                    "model_evidence_kind": "served_response_envelope",
+                    "served_model_proven": True,
+                    "served_model_evidence": "PROVEN",
                 },
             },
         )
@@ -521,7 +587,8 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
             )
         if receipt_check["status"] != "matched" or not isinstance(stdout, str) or not stdout.strip():
             reason = ReasonCode.MODEL_MISMATCH if receipt_check["status"] in {
-                "display_label_mismatch", "expected_label_mismatch", "served_model_mismatch", "unsupported_served_model",
+                "display_label_mismatch", "expected_label_mismatch",
+                "propagated_model_mismatch", "unsupported_propagated_model",
             } else ReasonCode.MALFORMED_OUTPUT
             receipt_check["receipt_status"] = receipt_check["status"]
             receipt_check["status"] = "malformed_output" if not stdout else receipt_check["status"]
@@ -539,13 +606,10 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
             ok=True, reason=ReasonCode.MET, provider_id=run.request.profile.provider_id,
             model_id=run.request.model, auth_kind=run.qualification.auth_kind or "unknown",
             adapter_kind=AdapterKind.EXTERNAL_CLI, output=stdout,
-            metadata={"receipt_check": receipt_check, "route_proof": {
-                "executable": str(run.executable), "version": run.qualification.version,
-                "requested_model_id": run.request.model, "served_model_id": receipt_check["served_model_id"],
-                "served_model_label": receipt_check["served_model_label"], "effort": run.request.effort,
-                "auth_kind": run.qualification.auth_kind, "fast_mode": False, "fallback_enabled": False,
-                "model_qualification": "agy live backend receipt",
-            }},
+            metadata={"receipt_check": receipt_check, "route_proof": _agy_route_proof(
+                executable=run.executable, request=run.request,
+                qualification=run.qualification, receipt_check=receipt_check,
+            )},
         )
 
     def _argv(self, executable: Path, request: AdapterRequest) -> list[str]:
@@ -722,8 +786,8 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                 in {
                     "display_label_mismatch",
                     "expected_label_mismatch",
-                    "served_model_mismatch",
-                    "unsupported_served_model",
+                    "propagated_model_mismatch",
+                    "unsupported_propagated_model",
                 }
                 else ReasonCode.MALFORMED_OUTPUT
             )
@@ -771,18 +835,12 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
             output=completed.stdout,
             metadata={
                 "receipt_check": receipt_check,
-                "route_proof": {
-                    "executable": str(executable),
-                    "version": qualification.version,
-                    "requested_model_id": request.model,
-                    "served_model_id": receipt_check["served_model_id"],
-                    "served_model_label": receipt_check["served_model_label"],
-                    "effort": request.effort,
-                    "auth_kind": qualification.auth_kind,
-                    "fast_mode": False,
-                    "fallback_enabled": False,
-                    "model_qualification": "agy live backend receipt",
-                },
+                "route_proof": _agy_route_proof(
+                    executable=executable,
+                    request=request,
+                    qualification=qualification,
+                    receipt_check=receipt_check,
+                ),
             },
         )
 
@@ -821,17 +879,18 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
         if completed.returncode != 0:
             return self._failure(request, qualification, ReasonCode.EXECUTION_FAILED)
         output = completed.stdout
-        metadata: dict[str, object] = {
-            "route_proof": {
-                "executable": str(executable),
-                "version": qualification.version,
-                "requested_model_id": request.model,
-                "effort": request.effort,
-                "auth_kind": qualification.auth_kind,
-                "fast_mode": False,
-                "fallback_enabled": False,
-            }
+        # The evidence class is filled in per lane below, once the response
+        # envelope has actually been validated.  It is never asserted up front.
+        route_proof: dict[str, object] = {
+            "executable": str(executable),
+            "version": qualification.version,
+            "requested_model_id": request.model,
+            "effort": request.effort,
+            "auth_kind": qualification.auth_kind,
+            "fast_mode": False,
+            "fallback_enabled": False,
         }
+        metadata: dict[str, object] = {"route_proof": route_proof}
         try:
             payload = json.loads(output)
         except (TypeError, json.JSONDecodeError):
@@ -858,6 +917,13 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
                 )
             output = payload["result"]
             metadata["cli_receipt"] = check
+            # `modelUsage` is part of the provider's own response envelope, so
+            # this lane genuinely proves the served identity.
+            route_proof.update({
+                "model_evidence_kind": "served_response_envelope",
+                "served_model_proven": True,
+                "served_model_evidence": "PROVEN",
+            })
             return AdapterResult(
                 ok=True,
                 reason=ReasonCode.MET,
@@ -873,6 +939,17 @@ class _SubscriptionCliAdapter(ExternalCliAdapter):
         usage = payload.get("modelUsage")
         if isinstance(usage, dict) and usage and request.model not in usage:
             return self._failure(request, qualification, ReasonCode.MODEL_MISMATCH)
+        # Served identity is proven here only when the response envelope
+        # actually carried it; an absent `modelUsage` proves nothing and must
+        # be published as NOT_PROVEN rather than assumed.
+        served_proven = isinstance(usage, dict) and bool(usage) and request.model in usage
+        route_proof.update({
+            "model_evidence_kind": (
+                "served_response_envelope" if served_proven else "no_served_evidence"
+            ),
+            "served_model_proven": served_proven,
+            "served_model_evidence": "PROVEN" if served_proven else "NOT_PROVEN",
+        })
         output = payload["result"]
         metadata["cli_receipt"] = {
             key: payload[key]

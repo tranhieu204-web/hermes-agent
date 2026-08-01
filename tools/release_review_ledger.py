@@ -253,6 +253,7 @@ class ReleaseReviewLedger:
                         plan_json TEXT NOT NULL, plan_hash TEXT NOT NULL UNIQUE,
                         saga_state TEXT NOT NULL DEFAULT 'SEALED',
                         terminal_json TEXT NOT NULL DEFAULT '{}',
+                        provisional_handle_id TEXT NOT NULL DEFAULT '',
                         external_handle_id TEXT NOT NULL DEFAULT '',
                         external_pid INTEGER, external_host_start_time INTEGER,
                         created_at REAL NOT NULL, updated_at REAL NOT NULL DEFAULT 0
@@ -262,6 +263,7 @@ class ReleaseReviewLedger:
                 for name, sql_type, default in (
                     ("saga_state", "TEXT", "'SEALED'"),
                     ("terminal_json", "TEXT", "'{}'"),
+                    ("provisional_handle_id", "TEXT", "''"),
                     ("external_handle_id", "TEXT", "''"),
                     ("external_pid", "INTEGER", "0"),
                     ("external_host_start_time", "INTEGER", "0"),
@@ -1374,6 +1376,57 @@ class ReleaseReviewLedger:
         finally:
             conn.close()
 
+    def bind_material_provisional_handle(
+        self,
+        receipt_id: str,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        handle_id: str,
+    ) -> bool:
+        """Claim durable ownership of a material child BEFORE it is created.
+
+        This is the pre-execution gate.  No provider argv may be constructed —
+        and therefore no prompt may reach an executable — until this row and its
+        async-outbox counterpart both hold the same opaque handle.  Only the
+        handle is durable here: no PID exists yet, so a crash in this window is
+        recoverable as an unowned saga (``interrupt_unowned_material_saga``) and
+        can never be mistaken for a child that actually ran.
+        """
+        handle = self._required_text(handle_id, "external handle_id")
+        now = time.time()
+        conn = self._connect()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                plan = conn.execute(
+                    "SELECT attempt_id, fence_token, saga_state, external_handle_id, provisional_handle_id "
+                    "FROM workflow_material_route_plans WHERE receipt_id=?",
+                    (self._required_text(receipt_id, "receipt_id"),),
+                ).fetchone()
+                if plan is None or plan[0] != self._required_text(attempt_id, "attempt_id") or int(plan[1]) != int(fence_token):
+                    raise RuntimeError("material provisional handle rejected by route-plan fence")
+                if plan[2] == "STARTING":
+                    return plan[4] == handle
+                if plan[2] != "SEALED" or plan[3] or plan[4]:
+                    raise RuntimeError("material provisional handle cannot replace an existing saga state")
+                receipt = self._require_receipt(conn, receipt_id)
+                attempt = conn.execute(
+                    "SELECT state, fence_token FROM workflow_recovery_attempts WHERE attempt_id=?", (attempt_id,)
+                ).fetchone()
+                if receipt[1] != "running" or attempt is None or int(attempt[1]) != int(fence_token) or attempt[0] != "ACCEPTED":
+                    raise RuntimeError("material provisional handle is not bound to the current accepted execution")
+                updated = conn.execute(
+                    "UPDATE workflow_material_route_plans SET saga_state='STARTING', provisional_handle_id=?, updated_at=? "
+                    "WHERE receipt_id=? AND saga_state='SEALED' AND provisional_handle_id='' AND external_handle_id=''",
+                    (handle, now, receipt_id),
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError("material provisional handle binding lost its current fence")
+                return True
+        finally:
+            conn.close()
+
     def bind_material_owned_handle(
         self,
         receipt_id: str,
@@ -1384,7 +1437,12 @@ class ReleaseReviewLedger:
         pid: int,
         host_start_time: int | None,
     ) -> bool:
-        """Bind the exact external child before material execution may run."""
+        """Upgrade the pre-execution gate to the exact created child's identity.
+
+        A direct ``SEALED -> OWNED`` transition is rejected: the same handle must
+        already have passed :meth:`bind_material_provisional_handle`, so an owned
+        PID can never be the first durable trace of external work.
+        """
         handle = self._required_text(handle_id, "external handle_id")
         if not isinstance(pid, int) or pid <= 0:
             raise ValueError("external PID must be positive")
@@ -1396,14 +1454,17 @@ class ReleaseReviewLedger:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 plan = conn.execute(
-                    "SELECT attempt_id, fence_token, saga_state, external_handle_id FROM workflow_material_route_plans WHERE receipt_id=?",
+                    "SELECT attempt_id, fence_token, saga_state, external_handle_id, provisional_handle_id "
+                    "FROM workflow_material_route_plans WHERE receipt_id=?",
                     (self._required_text(receipt_id, "receipt_id"),),
                 ).fetchone()
                 if plan is None or plan[0] != self._required_text(attempt_id, "attempt_id") or int(plan[1]) != int(fence_token):
                     raise RuntimeError("material external handle rejected by route-plan fence")
                 if plan[2] == "OWNED":
                     return plan[3] == handle
-                if plan[2] != "SEALED" or plan[3]:
+                if plan[2] != "STARTING" or plan[4] != handle:
+                    raise RuntimeError("material external handle requires its pre-execution provisional gate")
+                if plan[3]:
                     raise RuntimeError("material external handle cannot replace an existing saga state")
                 receipt = self._require_receipt(conn, receipt_id)
                 attempt = conn.execute(
@@ -1413,8 +1474,8 @@ class ReleaseReviewLedger:
                     raise RuntimeError("material external handle is not bound to the current accepted execution")
                 updated = conn.execute(
                     "UPDATE workflow_material_route_plans SET saga_state='OWNED', external_handle_id=?, external_pid=?, external_host_start_time=?, updated_at=? "
-                    "WHERE receipt_id=? AND saga_state='SEALED' AND external_handle_id=''",
-                    (handle, pid, host_start_time, now, receipt_id),
+                    "WHERE receipt_id=? AND saga_state='STARTING' AND provisional_handle_id=? AND external_handle_id=''",
+                    (handle, pid, host_start_time, now, receipt_id, handle),
                 )
                 if updated.rowcount != 1:
                     raise RuntimeError("material external handle binding lost its current fence")
@@ -1446,6 +1507,11 @@ class ReleaseReviewLedger:
         accepted as a real review result.  This transaction records a fenced
         interrupted/cancelled terminal outcome without claiming that a child
         ever ran.
+
+        ``STARTING`` is included deliberately: a host crash between the
+        pre-execution provisional gate and the owned bind leaves a handle with
+        no PID.  That saga is still unowned — it must terminalize here rather
+        than relaunch, because whether a child was created is unknowable.
         """
         status_normalized = _normalized(status)
         if status_normalized not in {"unknown", "cancelled"}:
@@ -1471,8 +1537,8 @@ class ReleaseReviewLedger:
                     raise RuntimeError("unowned material terminal rejected by route-plan fence")
                 if plan[2] == "TERMINAL":
                     return False
-                if plan[2] != "SEALED" or plan[3]:
-                    raise RuntimeError("unowned material terminal requires a sealed handle-free route plan")
+                if plan[2] not in {"SEALED", "STARTING"} or plan[3]:
+                    raise RuntimeError("unowned material terminal requires a sealed or provisional PID-free route plan")
                 receipt = self._require_receipt(conn, receipt_id)
                 if receipt[1] not in {"launching", "running", "timebox_expired"}:
                     raise RuntimeError(f"unowned material receipt {receipt_id} cannot terminalize from state {receipt[1]}")
@@ -1488,7 +1554,7 @@ class ReleaseReviewLedger:
                 )
                 conn.execute(
                     "UPDATE workflow_material_route_plans SET saga_state='TERMINAL', terminal_json=?, updated_at=? "
-                    "WHERE receipt_id=? AND saga_state='SEALED' AND external_handle_id=''",
+                    "WHERE receipt_id=? AND saga_state IN ('SEALED', 'STARTING') AND external_handle_id=''",
                     (json.dumps(terminal, sort_keys=True), now, receipt_id),
                 )
                 updated = conn.execute(

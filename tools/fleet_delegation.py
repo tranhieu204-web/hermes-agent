@@ -19,7 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from hermes_cli.fleet.service import FleetService, OwnedExternalExecution
 from hermes_cli.fleet.types import AdapterResult, LaneEvaluation, Qualification, ReasonCode, TaskSpec
@@ -27,6 +27,10 @@ from tools.release_review_ledger import canonical_effective_route_identity
 
 
 _MATERIAL_CAPABILITIES = frozenset({"workspace_read", "shell"})
+
+
+class _MaterialCancelled(Exception):
+    """Internal signal: this exact runner was cancelled, not failed."""
 
 
 def _sha256_json(value: object) -> str:
@@ -89,6 +93,11 @@ class OwnedMaterialRunner:
         self._fence_token = int(fence_token)
         self._lock = threading.Lock()
         self._cancelled = False
+        self._finalized = False
+        # The opaque handle is minted BEFORE anything can execute so it can be
+        # written to both durable rails as the pre-execution gate.  It carries
+        # no argv, prompt, environment, or provider fact.
+        self._handle_id = f"mat_{uuid.uuid4().hex}"
         self._owned: tuple[str, int, int | None] | None = None
 
     def interrupt(self) -> None:
@@ -113,6 +122,48 @@ class OwnedMaterialRunner:
             adapter_kind=execution.pin.adapter_kind,
         )
 
+    def _terminate_owned_child(
+        self, process: Any, *, pid: int | None, host_start_time: int | None, registered: bool,
+    ) -> bool:
+        """Terminate ONLY the exact child this runner created.
+
+        Preference order is the registry's PID-plus-start-time verified path;
+        if the child was never registered (the failure this guards), fall back
+        to the process object we hold a reference to.  There is deliberately no
+        PID scan, process-name match, or process-tree sweep: an unverifiable
+        identity must not be signalled at all.
+        """
+        if registered and pid:
+            try:
+                from tools.process_registry import process_registry
+                if process_registry.cancel_owned_argv_process(
+                    self._handle_id, pid=int(pid), host_start_time=host_start_time,
+                    source="material-review.binding-failure",
+                ):
+                    return True
+            except Exception:
+                pass
+        for method in ("terminate", "kill"):
+            call = getattr(process, method, None)
+            if not callable(call):
+                continue
+            try:
+                call()
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _finalize_once(
+        self, execution: OwnedExternalExecution, adapter_result: AdapterResult,
+    ) -> Any:
+        """Release the Fleet lease exactly once across every terminal path."""
+        with self._lock:
+            if self._finalized:
+                return None
+            self._finalized = True
+        return self._service.finalize_owned_external(execution, adapter_result)
+
     def _run(self, delegation_id: str, receipt_id: str) -> dict[str, object]:
         task = TaskSpec(
             task_id=f"material-external-{delegation_id}", cwd=self._cwd,
@@ -134,47 +185,154 @@ class OwnedMaterialRunner:
             return {"status": "error", "summary": "qualified external material lane was not acquirable", "reason": acquired.reason.value}
         execution = acquired
         try:
-            run = execution.adapter.start_owned_material(execution.request, execution.qualification)
-        except Exception:
-            self._service.finalize_owned_external(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
-            return {"status": "error", "summary": "external material child could not start"}
+            return self._run_owned(execution, task, delegation_id, receipt_id)
+        finally:
+            # Structural exactly-once guarantee.  Every terminal path below
+            # finalizes with its own precise adapter result; this net only fires
+            # when an unenumerated escape (registry bookkeeping error, or a
+            # BaseException such as KeyboardInterrupt) would otherwise leak the
+            # Fleet lease.  `_finalize_once` makes it a no-op after a precise
+            # finalization, so the lease is released exactly once either way.
+            try:
+                self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            except Exception:
+                pass
 
-        handle_id = f"mat_{uuid.uuid4().hex}"
+    def _run_owned(
+        self, execution: OwnedExternalExecution, task: TaskSpec,
+        delegation_id: str, receipt_id: str,
+    ) -> dict[str, object]:
         from tools.process_registry import process_registry
         from tools.release_review_ledger import ReleaseReviewLedger
         from tools import async_delegation
-        session = process_registry.register_owned_argv_process(
-            run.process, handle_id=handle_id, task_id=task.task_id, cwd=str(self._cwd),
-        )
-        with self._lock:
-            self._owned = (handle_id, int(run.process.pid), session.host_start_time)
-            cancelled = self._cancelled
-        if cancelled:
-            self.interrupt()
+
+        # ---- Pre-execution durable gate -------------------------------------
+        # Nothing below may construct a provider argv until BOTH durable rails
+        # own this handle.  The prompt therefore cannot reach an executable
+        # before the submission/lease/outbox ownership exists, and a crash in
+        # this window leaves a PID-free saga that recovery terminalizes rather
+        # than relaunching.
+        handle_id = self._handle_id
         try:
+            with self._lock:
+                cancelled = self._cancelled
+            if cancelled:
+                raise _MaterialCancelled()
             ledger = ReleaseReviewLedger(self._ledger_path)
+            ledger.bind_material_provisional_handle(
+                receipt_id, attempt_id=self._attempt_id,
+                fence_token=self._fence_token, handle_id=handle_id,
+            )
+            if not async_delegation.bind_material_provisional_handle(
+                delegation_id, fence_token=self._fence_token, handle_id=handle_id,
+            ):
+                raise RuntimeError("async material provisional gate lost its current fence")
+        except _MaterialCancelled:
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_CANCELLED))
+            return {"status": "cancelled", "summary": "material review cancelled before the durable gate"}
+        except Exception:
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            return {"status": "error", "summary": "material pre-execution durable gate failed"}
+
+        # ---- Child creation and owned-identity upgrade ----------------------
+        try:
+            run = execution.adapter.start_owned_material(execution.request, execution.qualification)
+        except Exception:
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            return {"status": "error", "summary": "external material child could not start"}
+
+        process = run.process
+        registered = False
+        session = None
+        try:
+            session = process_registry.register_owned_argv_process(
+                process, handle_id=handle_id, task_id=task.task_id, cwd=str(self._cwd),
+            )
+            registered = True
+            with self._lock:
+                self._owned = (handle_id, int(process.pid), session.host_start_time)
+                cancelled = self._cancelled
             ledger.bind_material_owned_handle(
                 receipt_id, attempt_id=self._attempt_id, fence_token=self._fence_token,
-                handle_id=handle_id, pid=int(run.process.pid), host_start_time=session.host_start_time,
+                handle_id=handle_id, pid=int(process.pid), host_start_time=session.host_start_time,
             )
             if not async_delegation.bind_material_external_handle(
                 delegation_id, fence_token=self._fence_token, handle_id=handle_id,
-                pid=int(run.process.pid), host_start_time=session.host_start_time,
+                pid=int(process.pid), host_start_time=session.host_start_time,
             ):
                 raise RuntimeError("async material handle binding lost its current fence")
-        except Exception:
-            self.interrupt()
-            self._service.finalize_owned_external(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
-            return {"status": "error", "summary": "external material handle binding failed"}
+            if cancelled:
+                raise _MaterialCancelled()
+        except BaseException as exc:
+            # The child exists but is not fully owned: terminate exactly it and
+            # release exactly one Fleet lease.  This must not re-raise, or the
+            # lease would leak the way an escaped registration error used to.
+            self._terminate_owned_child(
+                process, pid=getattr(process, "pid", None),
+                host_start_time=getattr(session, "host_start_time", None),
+                registered=registered,
+            )
+            was_cancel = isinstance(exc, _MaterialCancelled)
+            self._finalize_once(execution, self._failure(
+                execution,
+                ReasonCode.EXECUTION_CANCELLED if was_cancel else ReasonCode.EXECUTION_FAILED,
+            ))
+            return {
+                "status": "cancelled" if was_cancel else "error",
+                "summary": (
+                    "external material child cancelled before ownership completed"
+                    if was_cancel else "external material handle binding failed"
+                ),
+            }
 
-        result = run.finish()
-        process_registry.complete_owned_argv_process(
-            handle_id, pid=int(run.process.pid), host_start_time=session.host_start_time,
-            returncode=getattr(run.process, "returncode", None),
-        )
-        final = self._service.finalize_owned_external(execution, result)
+        # ---- Owned execution ------------------------------------------------
+        try:
+            result = run.finish()
+        except BaseException:
+            self._terminate_owned_child(
+                process, pid=int(process.pid),
+                host_start_time=session.host_start_time, registered=True,
+            )
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            return {"status": "error", "summary": "owned external material execution failed"}
+        try:
+            process_registry.complete_owned_argv_process(
+                handle_id, pid=int(process.pid), host_start_time=session.host_start_time,
+                returncode=getattr(process, "returncode", None),
+            )
+        except Exception:
+            # The child already exited, so there is nothing to terminate — but
+            # the lease still has to be released on this path rather than
+            # escaping into the caller with the lease held.
+            self._finalize_once(execution, self._failure(execution, ReasonCode.EXECUTION_FAILED))
+            return {"status": "error", "summary": "owned external material completion bookkeeping failed"}
+        final = self._finalize_once(execution, result)
+        if final is None:  # pragma: no cover - defensive; only a double-finalize path
+            return {"status": "error", "summary": "owned external material lease was already finalized"}
         with self._lock:
             cancelled = self._cancelled
+        # Build the public envelope through the SAME sealed receipt helper the
+        # other material rail uses, rather than hand-rolling a second shape.
+        # That is what keeps the deny-by-default claim allowlist — including the
+        # model-evidence class — identical on both rails.
+        pin = getattr(final, "pin", None) or execution.pin
+        _ok, _reason, receipt = build_material_route_receipt(
+            self._route,
+            task_id=task.task_id,
+            candidate_hash=self._candidate_hash,
+            review_lens=self._review_lens,
+            prompt_fingerprint=str(task.prompt_fingerprint),
+            identity_matches=bool(
+                pin is not None
+                and pin.lane_id == self._route.lane_id
+                and pin.provider_id == self._route.provider_id
+                and pin.model_id == self._route.model_id
+                and pin.adapter_kind.value == self._route.adapter_kind
+            ),
+            adapter_result=getattr(final, "adapter_result", None) or result,
+            result_ok=bool(final.ok),
+            result_reason=final.reason,
+        )
         return {
             "status": "cancelled" if cancelled else ("completed" if final.ok else "error"),
             "summary": "owned external material review finished",
@@ -187,6 +345,7 @@ class OwnedMaterialRunner:
                 "model_id": self._route.model_id,
                 "adapter_kind": self._route.adapter_kind,
                 "outcome": final.reason.value,
+                "route_receipt": receipt,
             },
         }
 
@@ -309,6 +468,105 @@ def plan_material_routes(
     )
 
 
+def dispatch_material_review(
+    *,
+    candidate_hash: str,
+    review_lens: str,
+    scope: str,
+    lane: str,
+    prompt: str,
+    cwd: Path | str,
+    attempt_id: str,
+    fence_token: int,
+    environment_fingerprint: str,
+    evidence_fingerprint: str,
+    preflight: Mapping[str, object],
+    deadline_seconds: float,
+    output_path: str,
+    dispatch_kwargs: Mapping[str, object],
+    ledger: Any = None,
+    fleet_service: FleetService | None = None,
+    receipt_id: str | None = None,
+) -> dict[str, object]:
+    """Production dispatcher for one candidate-bound owned material review.
+
+    This is the shipped composition root for the material bridge: it resolves
+    the canonical Hermes review ledger, builds the live fleet service through
+    ``hermes_cli.fleet.inspection.build_fleet_service``, plans the single
+    canonical route, and hands the result to the sealed receipt-bound ingress.
+
+    It is deliberately the ONLY production entry point.  Generic
+    ``delegate_task`` and the public async launcher stay fail-closed for
+    material work, and a request that does not carry a candidate, lens, and
+    prompt is rejected here before any route is planned or any child exists.
+    """
+    from hermes_cli.fleet.inspection import build_fleet_service
+    from hermes_constants import get_hermes_home
+    from tools.release_review_ledger import ReleaseReviewLedger
+    from tools.release_review_launch import launch_fleet_owned_material_review
+
+    candidate_hash = str(candidate_hash or "").strip().lower()
+    review_lens = str(review_lens or "").strip().lower()
+    prompt = str(prompt or "").strip()
+    lane = str(lane or "").strip()
+    if not candidate_hash or not review_lens or not prompt or not lane:
+        return {
+            "status": "rejected",
+            "error": "material reviews require a candidate_hash, review_lens, lane, and prompt",
+        }
+
+    service = build_fleet_service() if fleet_service is None else fleet_service
+    if ledger is None:
+        ledger = ReleaseReviewLedger(get_hermes_home() / "release-review-ledger.db")
+
+    resolved_cwd = Path(cwd).resolve()
+    plan = plan_material_routes(
+        service,
+        task_count=1,
+        cwd=resolved_cwd,
+        prompt_fingerprint=_sha256_json(
+            {
+                "candidate_hash": candidate_hash,
+                "review_lens": review_lens,
+                "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            }
+        ),
+        preferred_lane_ids=(lane,),
+    )
+    if not plan.assignments:
+        return {
+            "status": "rejected",
+            "error": "no qualified distinct fleet material route",
+            "degraded_route_capacity": plan.degraded_route_capacity,
+            "unavailable": [item.public_receipt() for item in plan.unavailable],
+        }
+    route = plan.assignments[0]
+
+    bound_dispatch = dict(dispatch_kwargs)
+    bound_dispatch["model"] = route.model_id
+    return launch_fleet_owned_material_review(
+        ledger,
+        fleet_service=service,
+        cwd=str(resolved_cwd),
+        attempt_id=attempt_id,
+        fence_token=int(fence_token),
+        dispatch_kwargs=bound_dispatch,
+        receipt_id=receipt_id,
+        candidate_hash=candidate_hash,
+        scope=scope,
+        lane=lane,
+        model=route.model_id,
+        prompt=prompt,
+        deadline_seconds=deadline_seconds,
+        output_path=output_path,
+        environment_fingerprint=environment_fingerprint,
+        evidence_fingerprint=evidence_fingerprint,
+        effective_route_identity=route.effective_execution_identity,
+        review_lens=review_lens,
+        preflight=preflight,
+    )
+
+
 def execute_material_route(
     service: FleetService,
     route: FleetMaterialRoute,
@@ -358,7 +616,59 @@ def execute_material_route(
         and actual_pin.model_id == route.model_id
         and actual_pin.adapter_kind.value == route.adapter_kind
     )
+    ok, reason, receipt = build_material_route_receipt(
+        route,
+        task_id=task_id,
+        candidate_hash=candidate_hash,
+        review_lens=review_lens,
+        prompt_fingerprint=prompt_fingerprint,
+        identity_matches=identity_matches,
+        adapter_result=result.adapter_result,
+        result_ok=bool(result.ok),
+        result_reason=result.reason,
+    )
     adapter_result = result.adapter_result
+    service.store.record_event(
+        at=service._now().astimezone(),  # noqa: SLF001 - same service clock
+        task_id=task_id,
+        lane_id=route.lane_id,
+        event_type="MATERIAL_RESULT_COMMITTED" if ok else "MATERIAL_RESULT_FAILED",
+        reason=reason,
+        decision=receipt,
+    )
+    return {
+        "ok": ok,
+        "reason": reason,
+        "output": (
+            adapter_result.output
+            if adapter_result is not None and isinstance(adapter_result.output, str)
+            else ""
+        ),
+        "route_receipt": receipt,
+    }
+
+
+def build_material_route_receipt(
+    route: FleetMaterialRoute,
+    *,
+    task_id: str,
+    candidate_hash: str,
+    review_lens: str,
+    prompt_fingerprint: str,
+    identity_matches: bool,
+    adapter_result: AdapterResult | None,
+    result_ok: bool,
+    result_reason: ReasonCode,
+) -> tuple[bool, str, dict[str, object]]:
+    """Build the single canonical public material route receipt.
+
+    This is the one place a material receipt is constructed.  Both material
+    rails call it — the superseded ``execute_material_route`` path and the
+    sealed owned-external rail — so the deny-by-default claim allowlist, the
+    identity/adapter cross-checks and the receipt hash cannot drift apart
+    between them.  It performs no I/O and records no event; the caller owns
+    persistence, because the two rails persist through different stores.
+    """
     adapter_provider_matches = bool(
         adapter_result is not None
         and adapter_result.provider_id == route.provider_id
@@ -371,20 +681,20 @@ def execute_material_route(
         adapter_result is not None
         and adapter_result.adapter_kind.value == route.adapter_kind
     )
-    if result.ok and identity_matches and not adapter_provider_matches:
+    if result_ok and identity_matches and not adapter_provider_matches:
         reason = ReasonCode.PROVIDER_MISMATCH.value
-    elif result.ok and identity_matches and not adapter_model_matches:
+    elif result_ok and identity_matches and not adapter_model_matches:
         reason = ReasonCode.MODEL_MISMATCH.value
-    elif result.ok and identity_matches and not adapter_kind_matches:
+    elif result_ok and identity_matches and not adapter_kind_matches:
         reason = ReasonCode.QUALIFICATION_FAILED.value
     else:
         reason = (
-            result.reason.value
-            if identity_matches or not result.ok
+            result_reason.value
+            if identity_matches or not result_ok
             else ReasonCode.PROVIDER_MISMATCH.value
         )
     ok = bool(
-        result.ok
+        result_ok
         and identity_matches
         and adapter_provider_matches
         and adapter_model_matches
@@ -397,11 +707,20 @@ def execute_material_route(
     )
     # Provider adapters may use executable paths or endpoint details for local
     # qualification.  A material receipt must not republish those values.
+    #
+    # The model-evidence keys are allowlisted as a set so a published claim is
+    # always self-describing: `model_evidence_kind` / `served_model_proven` /
+    # `served_model_evidence` travel with the identity they qualify.  A bare
+    # `served_model_id` is deliberately NOT allowlisted — a lane that only has
+    # client-side propagation evidence (Antigravity) must not be able to
+    # republish it as a provider-returned served identity.
     allowed_proof = {
         key: raw_route_proof[key]
         for key in (
-            "version", "requested_model_id", "served_model_id",
-            "served_model_label", "effort", "auth_kind", "fast_mode",
+            "version", "requested_model_id", "requested_selected_model_id",
+            "requested_selected_model_label", "model_evidence_kind",
+            "served_model_proven", "served_model_evidence",
+            "effort", "auth_kind", "fast_mode",
             "fallback_enabled", "model_qualification",
         )
         if key in raw_route_proof
@@ -430,21 +749,4 @@ def execute_material_route(
         "route_proof": route_proof,
     }
     receipt["receipt_hash"] = _sha256_json(receipt)
-    service.store.record_event(
-        at=service._now().astimezone(),  # noqa: SLF001 - same service clock
-        task_id=task_id,
-        lane_id=route.lane_id,
-        event_type="MATERIAL_RESULT_COMMITTED" if ok else "MATERIAL_RESULT_FAILED",
-        reason=reason,
-        decision=receipt,
-    )
-    return {
-        "ok": ok,
-        "reason": reason,
-        "output": (
-            adapter_result.output
-            if adapter_result is not None and isinstance(adapter_result.output, str)
-            else ""
-        ),
-        "route_receipt": receipt,
-    }
+    return ok, reason, receipt

@@ -153,6 +153,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             candidate_hash TEXT NOT NULL DEFAULT '',
             effective_execution_identity TEXT NOT NULL DEFAULT '',
             recovery_attempt_id TEXT NOT NULL DEFAULT '',
+            external_provisional_handle_id TEXT NOT NULL DEFAULT '',
             external_handle_id TEXT NOT NULL DEFAULT '',
             external_pid INTEGER, external_host_start_time INTEGER
         )"""
@@ -178,6 +179,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         ("candidate_hash", "TEXT NOT NULL DEFAULT ''"),
         ("effective_execution_identity", "TEXT NOT NULL DEFAULT ''"),
         ("recovery_attempt_id", "TEXT NOT NULL DEFAULT ''"),
+        ("external_provisional_handle_id", "TEXT NOT NULL DEFAULT ''"),
         ("external_handle_id", "TEXT NOT NULL DEFAULT ''"),
         ("external_pid", "INTEGER"),
         ("external_host_start_time", "INTEGER"),
@@ -340,6 +342,44 @@ def _claim_executor_submission(delegation_id: str) -> bool:
         return updated.rowcount == 1
 
 
+def bind_material_provisional_handle(
+    delegation_id: str,
+    *,
+    fence_token: int,
+    handle_id: str,
+) -> bool:
+    """Claim outbox ownership of a material child BEFORE it is created.
+
+    This is the async half of the pre-execution gate.  It records only the
+    opaque handle — never a PID, because none exists yet — so a crash in this
+    window is recoverable as an unowned submission rather than being mistaken
+    for a child that ran.  ``external_handle_id`` stays empty, which keeps the
+    owned-identity immutability trigger armed for the real bind.
+    """
+    opaque_handle = str(handle_id or "").strip()
+    if not opaque_handle or any(char.isspace() for char in opaque_handle):
+        raise ValueError("external handle_id must be a non-empty opaque token")
+    with _DB_LOCK, _transaction() as conn:
+        row = conn.execute(
+            "SELECT external_provisional_handle_id, external_handle_id FROM async_delegations "
+            "WHERE delegation_id=? AND state='running' AND submission_fence=?",
+            (delegation_id, int(fence_token)),
+        ).fetchone()
+        if row is None:
+            return False
+        if row[0]:
+            return row[0] == opaque_handle
+        if row[1]:
+            return False
+        updated = conn.execute(
+            "UPDATE async_delegations SET external_provisional_handle_id=?, updated_at=? "
+            "WHERE delegation_id=? AND state='running' AND submission_fence=? "
+            "AND external_provisional_handle_id='' AND external_handle_id=''",
+            (opaque_handle, time.time(), delegation_id, int(fence_token)),
+        )
+        return updated.rowcount == 1
+
+
 def bind_material_external_handle(
     delegation_id: str,
     *,
@@ -350,9 +390,11 @@ def bind_material_external_handle(
 ) -> bool:
     """Persist one opaque owned external child before it may be material-running.
 
-    This writes only non-secret process identity facts.  The caller must then
-    bind the matching ledger plan; a crash between the rails is intentionally
-    recoverable and never authorizes a duplicate launch.
+    This writes only non-secret process identity facts.  The same handle must
+    already hold the pre-execution provisional gate, so an owned PID can never
+    be the first durable trace of external work.  The caller must then bind the
+    matching ledger plan; a crash between the rails is intentionally recoverable
+    and never authorizes a duplicate launch.
     """
     opaque_handle = str(handle_id or "").strip()
     if not opaque_handle or any(char.isspace() for char in opaque_handle):
@@ -363,18 +405,21 @@ def bind_material_external_handle(
         raise ValueError("external process start time is invalid")
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute(
-            "SELECT external_handle_id, external_pid, external_host_start_time FROM async_delegations "
-            "WHERE delegation_id=? AND state='running' AND submission_fence=?",
+            "SELECT external_handle_id, external_pid, external_host_start_time, external_provisional_handle_id "
+            "FROM async_delegations WHERE delegation_id=? AND state='running' AND submission_fence=?",
             (delegation_id, int(fence_token)),
         ).fetchone()
         if row is None:
             return False
         if row[0]:
-            return row == (opaque_handle, pid, host_start_time)
+            return row[:3] == (opaque_handle, pid, host_start_time)
+        if row[3] != opaque_handle:
+            return False
         updated = conn.execute(
             "UPDATE async_delegations SET external_handle_id=?, external_pid=?, external_host_start_time=?, updated_at=? "
-            "WHERE delegation_id=? AND state='running' AND submission_fence=? AND external_handle_id=''",
-            (opaque_handle, pid, host_start_time, time.time(), delegation_id, int(fence_token)),
+            "WHERE delegation_id=? AND state='running' AND submission_fence=? AND external_handle_id='' "
+            "AND external_provisional_handle_id=?",
+            (opaque_handle, pid, host_start_time, time.time(), delegation_id, int(fence_token), opaque_handle),
         )
         return updated.rowcount == 1
 

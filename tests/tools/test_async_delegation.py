@@ -1261,6 +1261,24 @@ def test_material_external_handle_is_fenced_and_immutable_in_async_outbox(tmp_pa
     }
     assert ad._persist_dispatch(record)
     assert ad._activate_durable_dispatch(record["delegation_id"])
+    # An owned PID may never be the FIRST durable trace of external work: the
+    # pre-execution provisional gate must already hold this exact handle.
+    assert not ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=7, handle_id="owned-handle", pid=123, host_start_time=456,
+    )
+    assert ad.bind_material_provisional_handle(
+        record["delegation_id"], fence_token=7, handle_id="owned-handle",
+    )
+    assert ad.bind_material_provisional_handle(
+        record["delegation_id"], fence_token=7, handle_id="owned-handle",
+    )
+    assert not ad.bind_material_provisional_handle(
+        record["delegation_id"], fence_token=7, handle_id="a-different-handle",
+    )
+    # A provisional gate held by another handle cannot be upgraded.
+    assert not ad.bind_material_external_handle(
+        record["delegation_id"], fence_token=7, handle_id="foreign-handle", pid=123, host_start_time=456,
+    )
     assert ad.bind_material_external_handle(
         record["delegation_id"], fence_token=7, handle_id="owned-handle", pid=123, host_start_time=456,
     )
@@ -1291,6 +1309,9 @@ def test_fenced_cancel_uses_durable_owned_handle_after_controller_loss(tmp_path,
     }
     assert ad._persist_dispatch(record)
     assert ad._activate_durable_dispatch(record["delegation_id"])
+    assert ad.bind_material_provisional_handle(
+        record["delegation_id"], fence_token=7, handle_id="durable-handle",
+    )
     assert ad.bind_material_external_handle(
         record["delegation_id"], fence_token=7, handle_id="durable-handle", pid=321, host_start_time=654,
     )

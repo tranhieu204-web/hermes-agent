@@ -176,7 +176,7 @@ def test_live_doctor_qualifies_exact_subscription_routes_from_receipts(tmp_path,
     assert claude_commands[0][1:] == ("--version",)
     assert any(command[1:] == ("models",) for command in commands)
     assert not any(Path(command[0]).stem == "agy" and "auth" in command for command in commands)
-    assert "served-model receipt" in qualifications["antigravity"].detail
+    assert "served-model receipt" in qualifications["antigravity"].detail  # prose pinned out-of-lease; see live.py note
 
 
 def test_live_doctor_requires_exact_agy_model_list_qualification():
@@ -502,9 +502,20 @@ def test_default_service_qualifies_and_executes_each_live_lane(
         assert argv[-2:] == ["--print-timeout", "1800s"]
         route_proof = result.adapter_result.metadata["route_proof"]
         assert route_proof["requested_model_id"] == "gemini-3.1-pro-high"
-        assert route_proof["model_qualification"] == "agy live backend receipt"
-        assert route_proof["served_model_id"] == "gemini-3.1-pro-high"
-        assert route_proof["served_model_label"] == "Gemini 3.1 Pro (High)"
+        # The AGY receipt is built from the client's own pre-flight
+        # "Propagating selected model override" line, so it proves the
+        # requested/selected model and NOT a served identity.  The ordinary
+        # execute() proof keeps its historical served_model_* aliases (their
+        # shape predates this candidate) but must now name the evidence class
+        # truthfully alongside them.
+        assert route_proof["model_qualification"] == "agy client-propagated selected model"
+        assert route_proof["model_evidence_kind"] == "requested_selected_propagation"
+        assert route_proof["served_model_evidence"] == "NOT_PROVEN"
+        assert route_proof["served_model_proven"] is False
+        assert route_proof["requested_selected_model_id"] == "gemini-3.1-pro-high"
+        assert route_proof["requested_selected_model_label"] == "Gemini 3.1 Pro (High)"
+        assert "served_model_id" not in route_proof
+        assert "served_model_label" not in route_proof
 
 
 def test_claude_lane_never_qualifies_without_live_plan_cli_receipt(
@@ -642,7 +653,7 @@ def test_live_served_model_label_mismatch_fails_closed_and_sanitized(
     assert qualification.parent_session_proven is False
     assert qualification.subscription_only_proven is False
     assert qualification.paid_fallback_absent is False
-    assert qualification.detail == "live served-model receipt mismatch"
+    assert qualification.detail == "live selected-model receipt mismatch"
     payload = json.dumps(qualification.__dict__, default=str)
     assert secret not in payload
     assert MISMATCH_MODEL_LABEL not in payload
@@ -665,8 +676,8 @@ def test_live_proof_cache_rejects_requested_identity_synthesized_as_served(
                 "executable": executable,
                 "version": "agy 1.1.6",
                 "canonical_model_id": CANONICAL_MODEL_ID,
-                "served_model_id": "gemini-3.6-flash-high",
-                "served_model_label": MISMATCH_MODEL_LABEL,
+                "requested_selected_model_id": "gemini-3.6-flash-high",
+                "requested_selected_model_label": MISMATCH_MODEL_LABEL,
                 "status": "matched",
                 "captured_at": NOW.isoformat(),
                 "expires_at": (NOW + timedelta(minutes=5)).isoformat(),
@@ -718,8 +729,8 @@ def test_live_proof_cache_requires_consumer_cloud_code_route(
         "executable": executable,
         "version": "agy 1.1.6",
         "canonical_model_id": CANONICAL_MODEL_ID,
-        "served_model_id": CANONICAL_MODEL_ID,
-        "served_model_label": DISPLAY_MODEL_LABEL,
+        "requested_selected_model_id": CANONICAL_MODEL_ID,
+        "requested_selected_model_label": DISPLAY_MODEL_LABEL,
         "auth_method": "consumer",
         "endpoint_kind": "antigravity_cloud_code",
         "status": "matched",
@@ -767,8 +778,8 @@ def test_live_proof_cache_ignores_extra_models(tmp_path, monkeypatch):
         "executable": executable,
         "version": "agy 1.1.6",
         "canonical_model_id": CANONICAL_MODEL_ID,
-        "served_model_id": CANONICAL_MODEL_ID,
-        "served_model_label": DISPLAY_MODEL_LABEL,
+        "requested_selected_model_id": CANONICAL_MODEL_ID,
+        "requested_selected_model_label": DISPLAY_MODEL_LABEL,
         "auth_method": "consumer",
         "endpoint_kind": "antigravity_cloud_code",
         "status": "matched",
@@ -960,7 +971,7 @@ def test_live_exact_consumer_subscription_receipt_qualifies(tmp_path, monkeypatc
     assert qualification.paid_fallback_absent is True
     assert qualification.auth_kind == "cli_subscription"
     assert "live" in qualification.detail.lower()
-    assert "served-model receipt" in qualification.detail
+    assert "served-model receipt" in qualification.detail  # prose pinned out-of-lease
     assert len(calls) == 1
     argv = list(calls[0])
     assert argv[argv.index("--model") + 1] == DISPLAY_MODEL_LABEL
@@ -1110,7 +1121,7 @@ def test_serialized_doctor_marks_antigravity_ineligible_on_mismatch(
     )
     assert antigravity["eligible"] is False
     assert antigravity["selectable"] is False
-    assert antigravity["qualification_detail"] == "live served-model receipt mismatch"
+    assert antigravity["qualification_detail"] == "live selected-model receipt mismatch"
 
 
 def test_mismatch_qualification_does_not_create_antigravity_pin(tmp_path, monkeypatch):
@@ -1282,3 +1293,125 @@ def test_native_lanes_unchanged_when_antigravity_probe_injected(tmp_path, monkey
     assert claude_probes[0][claude_probes[0].index("--model") + 1] == (
         profile_map()["claude_code"].ordered_models[0]
     )
+
+
+# ---------------------------------------------------------------------------
+# Truthful model evidence.
+#
+# Antigravity's `Propagating selected model override to backend: label="..."`
+# line is emitted by the CLIENT before the request leaves.  It proves what was
+# REQUESTED/SELECTED and propagated — it is not a provider-returned served
+# identity.  Claude Code's `--output-format json` envelope, by contrast, is a
+# provider response artifact whose `modelUsage` does bind served identity.
+# These two classes of evidence must never be published under the same name.
+# ---------------------------------------------------------------------------
+
+
+def _agy_receipt(tmp_path, text=_LIVE_RECEIPT_MATCH):
+    from hermes_cli.fleet.adapters.live_routes import inspect_agy_subscription_receipt
+
+    log_path = tmp_path / "agy-evidence.log"
+    log_path.write_text(text, encoding="utf-8")
+    return inspect_agy_subscription_receipt(
+        log_path,
+        canonical_model_id=CANONICAL_MODEL_ID,
+        expected_display_label=DISPLAY_MODEL_LABEL,
+    )
+
+
+def test_agy_receipt_declares_requested_selected_evidence_not_served_identity(tmp_path):
+    """RED for R5/blocker 4: propagation was published as served-model identity."""
+    receipt = _agy_receipt(tmp_path)
+    assert receipt["status"] == "matched"
+    assert receipt["model_evidence_kind"] == "requested_selected_propagation"
+    assert receipt["served_model_proven"] is False
+    assert receipt["served_model_evidence"] == "NOT_PROVEN"
+    # The structural identity check still binds the requested id.
+    assert receipt["requested_selected_model_id"] == CANONICAL_MODEL_ID
+    assert receipt["requested_selected_model_label"] == DISPLAY_MODEL_LABEL
+
+
+def test_claude_payload_receipt_declares_served_response_evidence():
+    """The Claude lane really does have provider-returned served identity."""
+    from hermes_cli.fleet.adapters.live_routes import inspect_claude_cli_payload
+
+    check = inspect_claude_cli_payload(
+        {
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "ok", "session_id": "s", "num_turns": 1,
+            "modelUsage": {"claude-opus-5": {}},
+        },
+        canonical_model_id="claude-opus-5",
+    )
+    assert check["status"] == "matched"
+    assert check["model_evidence_kind"] == "served_response_envelope"
+    assert check["served_model_proven"] is True
+    assert check["served_model_evidence"] == "PROVEN"
+
+
+def test_agy_ordinary_route_proof_declares_propagation_evidence_alongside_aliases(
+    tmp_path, monkeypatch
+):
+    """The ordinary AGY proof must name its evidence class truthfully.
+
+    Scope note: the historical bare ``served_model_*`` aliases are retained on
+    this ordinary ``execute()`` path because their published shape predates
+    this candidate and is pinned by a baseline test outside the leased path
+    set.  What this candidate fixes here is the *claim*: the proof now declares
+    ``NOT_PROVEN`` and names the requested/selected model as such, so an alias
+    can no longer be read as provider-returned identity.  The candidate's own
+    owned-material rail omits the aliases entirely — see
+    ``test_owned_material_route_proof_publishes_no_bare_served_model_claim``
+    in ``tests/hermes_cli/fleet/test_material_delegation_bridge.py``.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    profile = profile_map()["antigravity"]
+    executable = str(Path(sys.executable).resolve())
+
+    def _run(argv, **_kwargs):
+        log_path = Path(argv[argv.index("--log-file") + 1])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(_LIVE_RECEIPT_MATCH, encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="antigravity complete", stderr="")
+
+    adapter = AntigravityAdapter(executable, run_process=_run)
+    qualification = Qualification(
+        qualified=True,
+        captured_at=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        auth_kind="cli_subscription",
+        auth_source="google:antigravity-live-receipt",
+        overage_disabled=True,
+        provider_id=profile.provider_id,
+        models=(CANONICAL_MODEL_ID,),
+        efforts=profile.supported_efforts,
+        fast_off_supported=True,
+        capabilities=profile.capabilities,
+        executable=executable,
+        version="synthetic-agy",
+        evidence_id="synthetic-agy-qualification",
+        subscription_only_proven=True,
+        paid_fallback_absent=True,
+        overage_state=OverageState.OFF,
+    )
+    result = adapter.execute(
+        AdapterRequest(
+            task_id="agy-evidence", cwd=tmp_path, prompt="review",
+            profile=profile, model=CANONICAL_MODEL_ID, effort="high",
+            fast_mode=False, timeout_seconds=30,
+        ),
+        qualification,
+    )
+    assert result.ok, result.reason
+    proof = result.metadata["route_proof"]
+    # Truthful separation: requested/selected is named as such, and the served
+    # claim is explicitly NOT_PROVEN rather than silently asserted.
+    assert proof["served_model_proven"] is False
+    assert proof["requested_selected_model_id"] == CANONICAL_MODEL_ID
+    assert proof["served_model_evidence"] == "NOT_PROVEN"
+    assert proof["model_evidence_kind"] == "requested_selected_propagation"
+    assert "live backend receipt" not in str(proof.get("model_qualification", ""))
+    # The proven subscription route stays enabled and unpaid.
+    assert proof["auth_kind"] == qualification.auth_kind
+    assert proof["fallback_enabled"] is False
+    assert proof["fast_mode"] is False

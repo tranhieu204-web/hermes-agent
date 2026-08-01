@@ -51,9 +51,12 @@ _RECEIPT_STATUS_DETAIL = {
     "display_label_mismatch": "live served-model receipt mismatch",
     "served_model_mismatch": "live served-model receipt mismatch",
     "expected_label_mismatch": "live served-model receipt mismatch",
-    "ambiguous_served_model": "live served-model receipt mismatch (ambiguous)",
-    "unsupported_served_model": "live served-model receipt unsupported model",
-    "served_model_identity_invalid": "live served-model receipt identity invalid",
+    # Antigravity statuses describe the CLIENT-propagated selected model, which
+    # is not a provider-served identity; they are named accordingly.
+    "propagated_model_mismatch": "live selected-model receipt mismatch",
+    "ambiguous_propagated_model": "live selected-model receipt mismatch (ambiguous)",
+    "unsupported_propagated_model": "live selected-model receipt unsupported model",
+    "propagated_model_identity_invalid": "live selected-model receipt identity invalid",
     "missing_receipt": "live served-model receipt missing",
     "missing_log": "live served-model receipt missing",
     "malformed_receipt": "live served-model receipt malformed",
@@ -235,8 +238,9 @@ class FleetQualificationDoctor:
         if not isinstance(status, str) or not status:
             return None
         if status == "matched" and (
-            payload.get("served_model_id") != model_id
-            or payload.get("served_model_label") != _AGY_MODEL_LABELS.get(model_id)
+            payload.get("requested_selected_model_id") != model_id
+            or payload.get("requested_selected_model_label")
+            != _AGY_MODEL_LABELS.get(model_id)
             or payload.get("auth_method") != "consumer"
             or payload.get("endpoint_kind") != "antigravity_cloud_code"
         ):
@@ -619,8 +623,15 @@ class FleetQualificationDoctor:
         if status == "matched":
             proof.update(
                 {
-                    "served_model_id": receipt.get("served_model_id"),
-                    "served_model_label": receipt.get("served_model_label"),
+                    # Client-propagated selected identity, never a served one.
+                    # A cache entry written under the old served_* names fails
+                    # this check and is treated as a cold miss, never a pass.
+                    "requested_selected_model_id": receipt.get(
+                        "requested_selected_model_id"
+                    ),
+                    "requested_selected_model_label": receipt.get(
+                        "requested_selected_model_label"
+                    ),
                     "auth_method": receipt.get("auth_method"),
                     "endpoint_kind": receipt.get("endpoint_kind"),
                     "log_sha256": receipt.get("log_sha256"),
@@ -822,6 +833,15 @@ class FleetQualificationDoctor:
                 )
             elif profile.lane_id == "antigravity":
                 policy_detail = (
+                    # NOTE: the "served-model receipt" wording below predates
+                    # this candidate and is pinned by
+                    # tests/hermes_cli/fleet/test_external_parent_contract.py,
+                    # which is outside this lease's path set.  The receipt in
+                    # fact records the model the agy CLIENT propagated, not a
+                    # provider-returned served identity — every structured key
+                    # and status is named accordingly.  Correcting this prose
+                    # needs a separately scoped change; it is not silently
+                    # treated as accurate here.
                     "policy evidence: agy executable/version plus exact model "
                     "catalog gate, bounded live consumer-subscription "
                     "served-model receipt (label/auth/endpoint/no API-key), "

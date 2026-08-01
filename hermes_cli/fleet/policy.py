@@ -190,11 +190,19 @@ def evaluate_lane(
             or not snapshot.quota_window_id
         ):
             usage_reasons.append(ReasonCode.USAGE_NOT_COMPARABLE)
-    # Verified transport health remains a hard worker gate above. Capacity
-    # freshness is deliberately separate: stale or absent percentages are
-    # advisory and force deterministic rotation, never a false "provider
-    # unavailable" result. Only fresh measured evidence may prove exhaustion
-    # or a reserve-floor breach.
+    # Capacity evidence is advisory ONLY where verified health is not required.
+    # A service that demands verified health (the live fleet does) also demands
+    # comparable capacity for task workers: routing a worker onto a lane whose
+    # remaining quota is stale, absent, or non-comparable can silently exhaust a
+    # subscription. This is deliberately fleet-wide ordinary-routing policy and
+    # is not relaxed for any single caller or bridge.
+    if (
+        inputs.require_verified_health
+        and purpose is RoutePurpose.TASK_WORKER
+        and usage_reasons
+    ):
+        reasons.extend(usage_reasons)
+        usage_reasons = []
 
     # 8. Cooldown.
     if inputs.cooldown_until is not None and inputs.cooldown_until > at:
