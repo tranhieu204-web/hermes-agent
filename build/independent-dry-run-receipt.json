@@ -1,0 +1,212 @@
+{
+  "activation_status": "not_activated",
+  "artifact_type": "isolated_dispatch_policy_dry_run",
+  "as_of": "2026-08-05T12:00:00Z",
+  "dry_run": true,
+  "receipts": [
+    {
+      "candidate_attempts": [
+        {
+          "outcome": "ALLOW",
+          "quota_headroom": null,
+          "reasons": [
+            {
+              "code": "ROUTE_ALLOWED",
+              "message": "exact requested route and effort passed all policy gates",
+              "route_id": "sakaan.builder.primary.v1"
+            }
+          ],
+          "route": {
+            "fallback_route_ids": [],
+            "model": "fixture-builder-high",
+            "profile": "builder-primary",
+            "provider": "fixture-provider-a",
+            "quota_scope": "workers",
+            "rank": 400,
+            "reasoning_effort": "high",
+            "role": "builder",
+            "route_id": "sakaan.builder.primary.v1"
+          }
+        }
+      ],
+      "quota_headroom": null,
+      "reasons": [
+        {
+          "code": "ROUTE_ALLOWED",
+          "message": "exact requested route and effort passed all policy gates",
+          "route_id": "sakaan.builder.primary.v1"
+        }
+      ],
+      "requested_profile": "builder-primary",
+      "requested_reasoning_effort": "high",
+      "requested_role": "builder",
+      "requested_route_id": "sakaan.builder.primary.v1",
+      "selected_route": {
+        "fallback_route_ids": [],
+        "model": "fixture-builder-high",
+        "profile": "builder-primary",
+        "provider": "fixture-provider-a",
+        "quota_scope": "workers",
+        "rank": 400,
+        "reasoning_effort": "high",
+        "role": "builder",
+        "route_id": "sakaan.builder.primary.v1"
+      },
+      "status": "ALLOW",
+      "used_fallback": false
+    },
+    {
+      "candidate_attempts": [
+        {
+          "outcome": "HOLD",
+          "quota_headroom": 0.25,
+          "reasons": [
+            {
+              "code": "ROUTINE_CODER_HEADROOM_BELOW_30_PERCENT",
+              "message": "routine_coder requires provider quota headroom of at least 30%",
+              "route_id": "sakaan.routine-coder.primary.v1"
+            }
+          ],
+          "route": {
+            "fallback_route_ids": [],
+            "model": "fixture-routine-medium",
+            "profile": "routine-coder-primary",
+            "provider": "fixture-provider-d",
+            "quota_scope": "workers",
+            "rank": 100,
+            "reasoning_effort": "medium",
+            "role": "routine_coder",
+            "route_id": "sakaan.routine-coder.primary.v1"
+          }
+        }
+      ],
+      "quota_headroom": null,
+      "reasons": [
+        {
+          "code": "ROUTINE_CODER_HEADROOM_BELOW_30_PERCENT",
+          "message": "routine_coder requires provider quota headroom of at least 30%",
+          "route_id": "sakaan.routine-coder.primary.v1"
+        }
+      ],
+      "requested_profile": "routine-coder-primary",
+      "requested_reasoning_effort": "medium",
+      "requested_role": "routine_coder",
+      "requested_route_id": "sakaan.routine-coder.primary.v1",
+      "selected_route": null,
+      "status": "HOLD",
+      "used_fallback": false
+    },
+    {
+      "candidate_attempts": [
+        {
+          "outcome": "HOLD",
+          "quota_headroom": null,
+          "reasons": [
+            {
+              "code": "AGY_SERVED_MODEL_MISMATCH",
+              "message": "AGY served model label does not match the requested canonical identity",
+              "route_id": "agy.gemini-3.1-pro-high.mismatch.v1"
+            }
+          ],
+          "route": {
+            "fallback_route_ids": [],
+            "model": "gemini-3.1-pro-high",
+            "profile": "agy-mismatch",
+            "provider": "agy",
+            "quota_scope": "gemini",
+            "rank": 500,
+            "reasoning_effort": "high",
+            "role": "builder",
+            "route_id": "agy.gemini-3.1-pro-high.mismatch.v1"
+          },
+          "route_identity": {
+            "configured_selector": "Gemini 3.1 Pro (High)",
+            "expected_label": "Gemini 3.1 Pro (High)",
+            "observed_label": "Gemini 3.6 Flash (High)",
+            "reason": "AGY_SERVED_MODEL_MISMATCH",
+            "requested_id": "gemini-3.1-pro-high"
+          }
+        }
+      ],
+      "quota_headroom": null,
+      "reasons": [
+        {
+          "code": "AGY_SERVED_MODEL_MISMATCH",
+          "message": "AGY served model label does not match the requested canonical identity",
+          "route_id": "agy.gemini-3.1-pro-high.mismatch.v1"
+        }
+      ],
+      "requested_profile": "agy-mismatch",
+      "requested_reasoning_effort": "high",
+      "requested_role": "builder",
+      "requested_route_id": "agy.gemini-3.1-pro-high.mismatch.v1",
+      "route_identity": {
+        "configured_selector": "Gemini 3.1 Pro (High)",
+        "expected_label": "Gemini 3.1 Pro (High)",
+        "observed_label": "Gemini 3.6 Flash (High)",
+        "reason": "AGY_SERVED_MODEL_MISMATCH",
+        "requested_id": "gemini-3.1-pro-high"
+      },
+      "selected_route": null,
+      "status": "HOLD",
+      "used_fallback": false
+    },
+    {
+      "candidate_attempts": [
+        {
+          "outcome": "HOLD",
+          "quota_headroom": null,
+          "reasons": [
+            {
+              "code": "ROUTE_DROPPED_BY_GOVERNANCE",
+              "message": "AGY route is dropped by governance and cannot be requalified",
+              "route_id": "agy.gemini-3.1-pro-high.dropped.v1"
+            }
+          ],
+          "route": {
+            "fallback_route_ids": [],
+            "model": "gemini-3.1-pro-high",
+            "profile": "agy-dropped",
+            "provider": "agy",
+            "quota_scope": "gemini",
+            "rank": 500,
+            "reasoning_effort": "high",
+            "role": "builder",
+            "route_id": "agy.gemini-3.1-pro-high.dropped.v1"
+          },
+          "route_identity": {
+            "configured_selector": "Gemini 3.1 Pro (High)",
+            "expected_label": "Gemini 3.1 Pro (High)",
+            "observed_label": "Gemini 3.1 Pro (High)",
+            "reason": "ROUTE_DROPPED_BY_GOVERNANCE",
+            "requested_id": "gemini-3.1-pro-high"
+          }
+        }
+      ],
+      "quota_headroom": null,
+      "reasons": [
+        {
+          "code": "ROUTE_DROPPED_BY_GOVERNANCE",
+          "message": "AGY route is dropped by governance and cannot be requalified",
+          "route_id": "agy.gemini-3.1-pro-high.dropped.v1"
+        }
+      ],
+      "requested_profile": "agy-dropped",
+      "requested_reasoning_effort": "high",
+      "requested_role": "builder",
+      "requested_route_id": "agy.gemini-3.1-pro-high.dropped.v1",
+      "route_identity": {
+        "configured_selector": "Gemini 3.1 Pro (High)",
+        "expected_label": "Gemini 3.1 Pro (High)",
+        "observed_label": "Gemini 3.1 Pro (High)",
+        "reason": "ROUTE_DROPPED_BY_GOVERNANCE",
+        "requested_id": "gemini-3.1-pro-high"
+      },
+      "selected_route": null,
+      "status": "HOLD",
+      "used_fallback": false
+    }
+  ],
+  "runtime_integration": false,
+  "status": "OK"
+}

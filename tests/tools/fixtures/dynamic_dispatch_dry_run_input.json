@@ -1,0 +1,133 @@
+{
+  "as_of": "2026-08-05T12:00:00Z",
+  "max_telemetry_age_seconds": 300,
+  "routes": [
+    {
+      "route_id": "sakaan.builder.primary.v1",
+      "role": "builder",
+      "profile": "builder-primary",
+      "provider": "fixture-provider-a",
+      "model": "fixture-builder-high",
+      "reasoning_effort": "high",
+      "rank": 400,
+      "quota_scope": "workers"
+    },
+    {
+      "route_id": "sakaan.reviewer.primary.v1",
+      "role": "reviewer",
+      "profile": "reviewer-primary",
+      "provider": "fixture-provider-b",
+      "model": "fixture-reviewer-high",
+      "reasoning_effort": "high",
+      "rank": 300,
+      "quota_scope": "workers"
+    },
+    {
+      "route_id": "sakaan.inspector.primary.v1",
+      "role": "inspector",
+      "profile": "inspector-primary",
+      "provider": "fixture-provider-c",
+      "model": "fixture-inspector-medium",
+      "reasoning_effort": "medium",
+      "rank": 200,
+      "quota_scope": "workers"
+    },
+    {
+      "route_id": "sakaan.routine-coder.primary.v1",
+      "role": "routine_coder",
+      "profile": "routine-coder-primary",
+      "provider": "fixture-provider-d",
+      "model": "fixture-routine-medium",
+      "reasoning_effort": "medium",
+      "rank": 100,
+      "quota_scope": "workers"
+    },
+    {
+      "route_id": "agy.gemini-3.1-pro-high.mismatch.v1",
+      "role": "builder",
+      "profile": "agy-mismatch",
+      "provider": "agy",
+      "model": "gemini-3.1-pro-high",
+      "reasoning_effort": "high",
+      "rank": 500,
+      "quota_scope": "gemini",
+      "agy_selector": "Gemini 3.1 Pro (High)",
+      "route_log": "AGY request completed successfully\nPropagating selected model override to backend: label=\"Gemini 3.6 Flash (High)\"",
+      "governance_status": "ACTIVE"
+    },
+    {
+      "route_id": "agy.gemini-3.1-pro-high.dropped.v1",
+      "role": "builder",
+      "profile": "agy-dropped",
+      "provider": "agy",
+      "model": "gemini-3.1-pro-high",
+      "reasoning_effort": "high",
+      "rank": 500,
+      "quota_scope": "gemini",
+      "agy_selector": "Gemini 3.1 Pro (High)",
+      "route_log": "Propagating selected model override to backend: label=\"Gemini 3.1 Pro (High)\"",
+      "governance_status": "DROPPED"
+    }
+  ],
+  "availability": [
+    {
+      "profile": "builder-primary",
+      "provider": "fixture-provider-a",
+      "model": "fixture-builder-high",
+      "available": true,
+      "captured_at": "2026-08-05T11:59:00Z",
+      "source": "supplied-fixture",
+      "state": "known",
+      "confidence": "high"
+    },
+    {
+      "profile": "routine-coder-primary",
+      "provider": "fixture-provider-d",
+      "model": "fixture-routine-medium",
+      "available": true,
+      "captured_at": "2026-08-05T11:59:00Z",
+      "source": "supplied-fixture",
+      "state": "known",
+      "confidence": "high"
+    }
+  ],
+  "quotas": [
+    {
+      "provider": "fixture-provider-d",
+      "scope": "workers",
+      "limit": 100,
+      "used": 75,
+      "remaining": 25,
+      "captured_at": "2026-08-05T11:59:00Z",
+      "source": "supplied-fixture",
+      "state": "known",
+      "confidence": "high"
+    }
+  ],
+  "requests": [
+    {
+      "route_id": "sakaan.builder.primary.v1",
+      "role": "builder",
+      "profile": "builder-primary",
+      "reasoning_effort": "high"
+    },
+    {
+      "route_id": "sakaan.routine-coder.primary.v1",
+      "role": "routine_coder",
+      "profile": "routine-coder-primary",
+      "reasoning_effort": "medium"
+    },
+    {
+      "route_id": "agy.gemini-3.1-pro-high.mismatch.v1",
+      "role": "builder",
+      "profile": "agy-mismatch",
+      "reasoning_effort": "high"
+    },
+    {
+      "route_id": "agy.gemini-3.1-pro-high.dropped.v1",
+      "role": "builder",
+      "profile": "agy-dropped",
+      "reasoning_effort": "high"
+    }
+  ]
+}
