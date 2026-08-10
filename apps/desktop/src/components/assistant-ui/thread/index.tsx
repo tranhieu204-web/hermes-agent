@@ -64,10 +64,10 @@ export const Thread = memo(function Thread({
       throw new Error('Restore is unavailable for this message.')
     }
 
-    const { messageId, text, userOrdinal } = restoreConfirmTarget
+    const { messageId, rewindId, text, userOrdinal } = restoreConfirmTarget
 
     closeRestoreConfirm()
-    void Promise.resolve(onRestoreToMessage(messageId, { text, userOrdinal })).catch((error: unknown) => {
+    void Promise.resolve(onRestoreToMessage(messageId, { rewindId, text, userOrdinal })).catch((error: unknown) => {
       notifyError(error, 'Restore failed')
     })
   }, [closeRestoreConfirm, onRestoreToMessage, restoreConfirmTarget])

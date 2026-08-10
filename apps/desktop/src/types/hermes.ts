@@ -561,6 +561,15 @@ export interface SessionMessage {
    */
   row_id?: number
   id?: number
+  /**
+   * Rewind identity for this user turn, minted by the gateway. Present only on
+   * messages that still map to a truncatable row in the live model history —
+   * absent on lineage the transcript can display but a rewind cannot reach
+   * (turns from before a compaction handoff, rows dropped by replay
+   * sanitisation). Its absence is the signal to hide the restore affordance;
+   * its presence is what `prompt.submit` truncates against.
+   */
+  rewind_id?: string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

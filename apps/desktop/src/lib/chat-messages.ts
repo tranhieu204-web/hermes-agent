@@ -27,6 +27,9 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Gateway rewind identity (`SessionMessage.rewind_id`). Absent when this
+   *  turn is displayable but not rewindable — see the field's doc comment. */
+  rewindId?: string
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
 }
@@ -1071,6 +1074,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    // Only the gateway can say whether a turn is still reachable by a rewind —
+    // it is the only side that sees the model history the cut applies to.
+    const rewindId = typeof message.rewind_id === 'string' ? message.rewind_id : undefined
 
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
@@ -1078,6 +1084,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       parts,
       timestamp: message.timestamp,
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(rewindId !== undefined ? { rewindId } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })

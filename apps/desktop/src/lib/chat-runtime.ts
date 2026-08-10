@@ -401,7 +401,14 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
+      metadata: {
+        custom: {
+          attachmentRefs: message.attachmentRefs ?? [],
+          // Gates the restore affordance: no id, no rewind (chat-messages.ts).
+          ...(message.rewindId !== undefined ? { rewindId: message.rewindId } : {}),
+          ...reactionMeta
+        }
+      }
     } as ThreadMessage
   }
 
