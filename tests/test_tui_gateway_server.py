@@ -14049,7 +14049,15 @@ def test_annotate_rewind_ids_matches_across_content_shapes():
     )
 
 
-def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
+def test_resolve_rewind_ordinal_accepts_only_exact_matches():
+    """Position drift must REFUSE, not re-target.
+
+    Truncation is destructive. A content-only match resolves to a different
+    position than the id encodes, and because the client confirms the
+    empty-truncation edge on the id path, a drifted match landing on ordinal 0
+    after a compaction would let replace_messages delete every durable row.
+    A 4018 the user clears by re-clicking costs nothing by comparison.
+    """
     history = [
         {"role": "user", "content": "alpha"},
         {"role": "assistant", "content": "a"},
@@ -14057,22 +14065,80 @@ def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
         {"role": "assistant", "content": "b"},
     ]
 
-    # Exact hit.
+    # Exact hit — position and content both agree.
     assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
 
-    # The turn is still there but has shifted position (a turn was inserted
-    # before it since the transcript was sent) — content still identifies it.
+    # The turn is still present but has shifted position. Refuse: the id names
+    # ordinal 1, and ordinal 1 is no longer that turn.
     shifted = [{"role": "user", "content": "zero"}, *history]
-    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) == 2
+    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) is None
 
-    # Drifted AND duplicated: refuse rather than guess which one was meant.
-    ambiguous = [*history, {"role": "user", "content": "beta"}]
-    assert server._resolve_rewind_ordinal(ambiguous, server._rewind_message_id(9, "beta")) is None
+    # The wipe path specifically: an id for a deep turn must never re-target
+    # ordinal 0 just because the text now lives there after a compaction.
+    compacted = [{"role": "user", "content": "beta"}, {"role": "assistant", "content": "b"}]
+    assert server._resolve_rewind_ordinal(compacted, server._rewind_message_id(5, "beta")) is None
+
+    # Duplicated text: the exact ordinal still disambiguates.
+    duplicated = [*history, {"role": "user", "content": "beta"}]
+    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(2, "beta")) == 2
+    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(9, "beta")) is None
 
     # Gone entirely (compacted away), and malformed ids.
     assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
     assert server._resolve_rewind_ordinal(history, "not-a-rewind-id") is None
     assert server._resolve_rewind_ordinal(history, "") is None
+
+
+def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
+    """The regression this guard exists for — end to end.
+
+    Sequence: the user clicks a turn deep in the conversation (ordinal 5), a
+    compaction rewrites session["history"] before the submit lands, and that
+    turn's text now sits at ordinal 0. The client confirms the empty-truncation
+    edge on the id path, so if resolution re-targeted by content the gateway
+    would compute history[:0] == [] and replace_messages would DELETE every
+    durable row. Exact-match-only turns that into a refusal.
+    """
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages):
+            replaced.append((key, list(messages)))
+
+    # Post-compaction history: the clicked text survives, but at ordinal 0.
+    history = [
+        {"role": "user", "content": "run the audit"},
+        {"role": "assistant", "content": "done"},
+    ]
+    server._sessions["wipe-race-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "wipe-race-sid",
+                    "text": "rerun",
+                    # Minted when that turn was the 6th user turn.
+                    "truncate_before_message_id": server._rewind_message_id(5, "run the audit"),
+                    # The client always sets this on the id path.
+                    "confirm_empty_truncate": True,
+                },
+            }
+        )
+        assert resp["error"]["code"] == 4018
+        assert server._sessions["wipe-race-sid"]["history"] == history
+        assert replaced == [], "the transcript must not have been deleted"
+    finally:
+        server._sessions.pop("wipe-race-sid", None)
 
 
 def test_prompt_submit_truncates_by_message_id(monkeypatch):
