@@ -37,11 +37,13 @@ from tui_gateway.turn_marker import (
 from tui_gateway.rewind_identity import (
     annotate_rewind_ids,
     coerce_message_text,
+    model_user_indices,
     model_user_texts,
     resolve_rewind_ordinal,
     REWIND_ID_PREFIX,
     rewind_digest,
     rewind_message_id,
+    rewind_prefix_hash,
 )
 from tui_gateway.transport import (
     StdioTransport,
@@ -6277,6 +6279,8 @@ _REWIND_ID_PREFIX = REWIND_ID_PREFIX
 _rewind_digest = rewind_digest
 _rewind_message_id = rewind_message_id
 _model_user_texts = model_user_texts
+_model_user_indices = model_user_indices
+_rewind_prefix_hash = rewind_prefix_hash
 _annotate_rewind_ids = annotate_rewind_ids
 _resolve_rewind_ordinal = resolve_rewind_ordinal
 
@@ -11008,7 +11012,12 @@ def _(rid, params: dict) -> dict:
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    # active_only: a rewind replaces the LIVE transcript and must
+                    # leave soft-archived rows (compaction/undo history) alone.
+                    # The default deletes every row for the session.
+                    db.replace_messages(
+                        session["session_key"], truncated, active_only=True
+                    )
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True

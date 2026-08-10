@@ -520,7 +520,7 @@ export interface SessionMessage {
    * sanitisation). Its absence is the signal to hide the restore affordance;
    * its presence is what `prompt.submit` truncates against.
    */
-  rewind_id?: string
+  rewind_id?: null | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string

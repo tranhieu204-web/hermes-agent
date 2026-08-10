@@ -25,9 +25,11 @@ export type ChatMessage = {
   interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
-  /** Gateway rewind identity (`SessionMessage.rewind_id`). Absent when this
-   *  turn is displayable but not rewindable — see the field's doc comment. */
-  rewindId?: string
+  /** Gateway rewind identity (`SessionMessage.rewind_id`), tri-state:
+   *  a string when the turn is rewindable, `null` when an id-capable gateway
+   *  says it is not, `undefined` when the gateway is too old to have an
+   *  opinion. Only `null` may hide the affordance; `undefined` must not. */
+  rewindId?: null | string
 }
 
 export type GatewayEventPayload = {
@@ -1039,7 +1041,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     // Only the gateway can say whether a turn is still reachable by a rewind —
     // it is the only side that sees the model history the cut applies to.
-    const rewindId = typeof message.rewind_id === 'string' ? message.rewind_id : undefined
+    // Key PRESENT with a null value is a deliberate "not rewindable"; key
+    // absent is a gateway that predates ids. Collapsing those two would either
+    // strip restore from every message on an old backend, or offer it on turns
+    // a new backend has already ruled out.
+    const rewindId = 'rewind_id' in message ? (message.rewind_id ?? null) : undefined
 
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,

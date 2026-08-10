@@ -29,9 +29,9 @@ This module is deliberately dependency-free so both the JSON-RPC gateway
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
-REWIND_ID_PREFIX = "r1"
+REWIND_ID_PREFIX = "r2"
 
 
 def coerce_message_text(content: Any) -> str:
@@ -129,9 +129,53 @@ def rewind_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def rewind_message_id(ordinal: int, text: str) -> str:
-    """Stable identity for the ``ordinal``-th user row of a model history."""
-    return f"{REWIND_ID_PREFIX}:{ordinal}:{rewind_digest(text)}"
+def _canonical(history: Sequence[dict], stop: int) -> str:
+    """Serialise history[:stop] for hashing: role + text, unambiguously framed."""
+    parts: list[str] = []
+    for m in history[:stop]:
+        if not isinstance(m, dict):
+            continue
+        parts.append(str(m.get("role") or ""))
+        parts.append(chr(0))
+        parts.append(coerce_message_text(m.get("content")))
+        parts.append(chr(1))
+    return "".join(parts)
+
+
+def rewind_prefix_hash(history: Sequence[dict], user_index: int, text: str) -> str:
+    """Hash the prefix a cut at ``user_index`` would KEEP, plus the turn itself.
+
+    This is the identity that matters. Truncation replaces the session with
+    ``history[:user_index]`` and re-runs ``text``, so binding the id to exactly
+    those two things makes it self-describing: if either has changed since the
+    transcript was rendered, resolution refuses instead of cutting somewhere
+    the user never saw.
+    """
+    payload = _canonical(history, user_index) + chr(2) + text
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def rewind_message_id(ordinal: int, prefix_hash: str) -> str:
+    """``r2:<ordinal>:<prefix hash>`` — position plus the state it assumes.
+
+    v1 was ``ordinal + digest(that turn's text alone)``, which is not occurrence
+    identity: the same text at the same ordinal mints the same id even when the
+    conversation before it is entirely different.
+    """
+    return f"{REWIND_ID_PREFIX}:{ordinal}:{prefix_hash}"
+
+
+def model_user_indices(history: Iterable[dict] | None) -> list[int]:
+    """Raw indices of the user rows, in the order ordinals count them.
+
+    Must enumerate exactly like ``prompt.submit``'s own ``user_indices`` or an
+    ordinal would name a different row on each side.
+    """
+    return [
+        i
+        for i, m in enumerate(history or [])
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
 
 
 def model_user_texts(history: Iterable[dict] | None) -> list[str]:
@@ -155,39 +199,86 @@ def _display_text(message: dict) -> str:
     return coerce_message_text(message.get("content"))
 
 
+# Roles that appear, comparably, in BOTH projections. Tool rows are reshaped by
+# _history_to_messages into {role, name, context} with no text, so they cannot
+# take part in the comparison and are skipped on both sides.
+_SPINE_ROLES = ("user", "assistant")
+
+
 def annotate_rewind_ids(
     messages: list[dict],
     history: Iterable[dict] | None,
     *,
     text_of: Callable[[dict], str] = _display_text,
 ) -> list[dict]:
-    """Stamp ``rewind_id`` on the display messages that map to a live user row.
+    """Stamp ``rewind_id`` on display rows PROVEN to be the same turn.
 
-    Aligns the display transcript against the model history from the TAIL and
-    stops at the first divergence, so every id that is handed out is backed by a
-    verbatim match reachable through an unbroken run of matches — an id can
-    never name a turn other than the bubble it rides on, even when the same
-    prompt text was sent more than once.
+    Alignment walks both projections from the tail and compares the full
+    user+assistant spine, not just the user rows. That distinction is the whole
+    fix: comparing user rows alone let the two sides slip past each other when
+    they diverged in between. After ``session.undo`` removes a turn from the
+    model history but not from the DB, a user-only walk paired a displayed
+    bubble with an EARLIER occurrence of the same text and stamped it with that
+    occurrence's id — so clicking one turn cut another.
 
-    Everything above the divergence (ancestor lineage, pre-compaction turns,
-    rows dropped by sanitisation) is deliberately left unstamped.  This is
-    conservative by construction: its failure mode is a hidden restore button,
-    never a wrong truncation.
+    Comparing the spine catches that: the assistant reply sitting between them
+    differs, alignment stops, and the ambiguous rows are left unstamped.
+
+    Every user row is given an explicit key: an id when it is provably
+    rewindable, otherwise ``None``. A row with ``rewind_id: None`` is this
+    gateway saying "not rewindable"; a row with no key at all is a gateway too
+    old to know. The client must be able to tell those apart, or it cannot know
+    whether silence means "no" or "unsupported".
     """
-    user_texts = model_user_texts(history)
-    ordinal = len(user_texts) - 1
+    hist = list(history or [])
+    user_indices = model_user_indices(hist)
+    ordinal_of = {idx: ordinal for ordinal, idx in enumerate(user_indices)}
 
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if not isinstance(message, dict) or message.get("role") != "user":
+    spine = [
+        (i, m.get("role"), coerce_message_text(m.get("content")))
+        for i, m in enumerate(hist)
+        if isinstance(m, dict) and m.get("role") in _SPINE_ROLES
+    ]
+    display_positions = [
+        k
+        for k, msg in enumerate(messages)
+        if isinstance(msg, dict) and msg.get("role") in _SPINE_ROLES
+    ]
+
+    matched: dict[int, int] = {}
+    cursor = len(spine) - 1
+    for k in reversed(display_positions):
+        if cursor < 0:
+            break
+        hist_index, role, text = spine[cursor]
+        message = messages[k]
+        if message.get("role") != role or text_of(message) != text:
+            break
+        matched[k] = hist_index
+        cursor -= 1
+
+    for k, hist_index in matched.items():
+        message = messages[k]
+        if message.get("role") != "user":
             continue
-        if ordinal < 0:
-            break
-        text = user_texts[ordinal]
-        if text_of(message) != text:
-            break
-        messages[index] = {**message, "rewind_id": rewind_message_id(ordinal, text)}
-        ordinal -= 1
+        ordinal = ordinal_of.get(hist_index)
+        if ordinal is None:
+            continue
+        text = coerce_message_text(hist[hist_index].get("content"))
+        messages[k] = {
+            **message,
+            "rewind_id": rewind_message_id(
+                ordinal, rewind_prefix_hash(hist, hist_index, text)
+            ),
+        }
+
+    for k, message in enumerate(messages):
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and "rewind_id" not in message
+        ):
+            messages[k] = {**message, "rewind_id": None}
 
     return messages
 
@@ -195,31 +286,38 @@ def annotate_rewind_ids(
 def resolve_rewind_ordinal(
     history: Iterable[dict] | None, message_id: str
 ) -> int | None:
-    """Map a ``rewind_id`` back to a user ordinal in the CURRENT model history.
+    """Resolve a ``rewind_id`` against the CURRENT model history, or refuse.
 
-    EXACT ``(ordinal, content)`` matches only.  Anything else resolves to
-    ``None`` and the caller refuses with 4018.
+    The ordinal locates a candidate; the prefix hash then has to reproduce
+    exactly. Any change to what the cut would keep — an undo, a compaction, a
+    turn landing in between, a different occurrence of the same text — changes
+    the hash and the answer is ``None``.
 
-    An earlier revision also accepted a *unique content* match when the position
-    had drifted, to keep a turn reachable after the history shifted underneath
-    it.  That was removed: truncation is destructive, and a content-only match
-    deliberately resolves to a DIFFERENT position than the id encodes.  Combined
-    with the client's confirmation on the id path, a drifted match could land on
-    ordinal 0 after a compaction and let ``replace_messages`` delete every
-    durable row for the session.
-
-    Refusing costs a 4018 the user can clear by re-clicking on a refreshed
-    transcript.  Guessing costs the transcript.  Callers may therefore treat a
-    successful resolution as proof of intent — see the empty-truncation guard in
-    ``prompt.submit``, which relies on it.
+    Refusing costs a 4018 the user clears by re-clicking on a refreshed
+    transcript. Guessing costs a turn, or the transcript.
     """
     if not isinstance(message_id, str) or not message_id.startswith(
         f"{REWIND_ID_PREFIX}:"
     ):
         return None
 
-    for ordinal, text in enumerate(model_user_texts(history)):
-        if rewind_message_id(ordinal, text) == message_id:
-            return ordinal
+    parts = message_id.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        ordinal = int(parts[1])
+    except ValueError:
+        return None
+    expected_hash = parts[2]
 
-    return None
+    hist = list(history or [])
+    user_indices = model_user_indices(hist)
+    if ordinal < 0 or ordinal >= len(user_indices):
+        return None
+
+    index = user_indices[ordinal]
+    text = coerce_message_text(hist[index].get("content"))
+    if rewind_prefix_hash(hist, index, text) != expected_hash:
+        return None
+
+    return ordinal

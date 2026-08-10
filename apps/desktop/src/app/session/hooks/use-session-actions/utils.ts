@@ -265,60 +265,6 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
 const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
 
-/**
- * Carry gateway rewind ids across a REST-sourced transcript reconcile.
- *
- * `/api/sessions/{id}/messages` is served by the web server, which reads the DB
- * and has no view of the gateway's in-memory model history — so its rows never
- * carry `rewind_id`. That transcript is the display authority for an idle
- * session, and taking it verbatim would strip the ids off every turn and leave
- * the restore gate with nothing to read.
- *
- * Absence in a REST payload is therefore NOT evidence that a turn stopped being
- * rewindable; only a gateway payload's absence is, which is why this is opt-in
- * per call site rather than folded into the general reconcile.
- *
- * Tail-aligned and stops at the first text divergence, mirroring the gateway's
- * own stamping: an id is only ever carried onto a turn that verbatim matches
- * the one it came from.
- */
-export function preserveRewindIds(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
-  const previousUsers = previousMessages.filter(message => message.role === 'user')
-
-  if (!previousUsers.some(message => message.rewindId !== undefined)) {
-    return nextMessages
-  }
-
-  const next = [...nextMessages]
-  let cursor = previousUsers.length - 1
-  let changed = false
-
-  for (let index = next.length - 1; index >= 0 && cursor >= 0; index -= 1) {
-    const message = next[index]
-
-    if (message.role !== 'user') {
-      continue
-    }
-
-    const previous = previousUsers[cursor]
-
-    if (chatMessageText(previous).trim() !== chatMessageText(message).trim()) {
-      break
-    }
-
-    cursor -= 1
-
-    if (message.rewindId !== undefined || previous.rewindId === undefined) {
-      continue
-    }
-
-    next[index] = { ...message, rewindId: previous.rewindId }
-    changed = true
-  }
-
-  return changed ? next : nextMessages
-}
-
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]

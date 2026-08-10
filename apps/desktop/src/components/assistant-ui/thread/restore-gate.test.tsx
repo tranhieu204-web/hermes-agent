@@ -27,14 +27,18 @@ vi.stubGlobal('CSS', { escape: (str: string) => str })
 
 Element.prototype.scrollTo = function scrollTo() {}
 
-function userMessage(id: string, text: string, rewindId?: string): ThreadMessage {
+function userMessage(id: string, text: string, rewindId?: null | string): ThreadMessage {
   return {
     id,
     role: 'user',
     content: [{ type: 'text', text }],
     attachments: [],
     createdAt,
-    metadata: { custom: { attachmentRefs: [], ...(rewindId ? { rewindId } : {}) } }
+    // `undefined` omits the key (legacy gateway); `null` sets it explicitly
+    // (an id-capable gateway saying this turn is not rewindable).
+    metadata: {
+      custom: { attachmentRefs: [], ...(rewindId === undefined ? {} : { rewindId }) }
+    }
   } as ThreadMessage
 }
 
@@ -69,18 +73,12 @@ afterEach(() => {
   cleanup()
 })
 
-describe('restore is withdrawn', () => {
-  // Restore is disabled until rewind identity is occurrence-bound. `rewind_id`
-  // is ordinal + content digest, which an audit showed can name a different
-  // turn than the bubble it rides on (session.undo divergence, ABA
-  // replacement). These pin the withdrawal so it cannot be undone by accident;
-  // the two gating cases they replace are kept below, skipped, ready to
-  // re-enable with the feature.
-  it('offers no restore button, even on a turn the gateway stamped', async () => {
+describe('restore button gating', () => {
+  it('offers restore on a stamped turn', async () => {
     render(
       <Harness
         messages={[
-          userMessage('u1', 'still in context', 'r1:0:deadbeefdeadbeef'),
+          userMessage('u1', 'still in context', 'r2:0:deadbeefdeadbeefdeadbeef'),
           assistantMessage('a1', 'reply')
         ]}
       />
@@ -88,58 +86,46 @@ describe('restore is withdrawn', () => {
 
     await screen.findByText('still in context')
 
+    expect(restoreButtons()).toHaveLength(1)
+  })
+
+  it('hides restore when the gateway explicitly says the turn is not rewindable', async () => {
+    // rewindId: null — an id-capable gateway ruling the turn out. Clicking here
+    // could only 4018, or worse, cut a turn the user did not choose.
+    render(<Harness messages={[userMessage('u1', 'compacted away', null), assistantMessage('a1', 'reply')]} />)
+
+    await screen.findByText('compacted away')
+
     expect(restoreButtons()).toHaveLength(0)
   })
 
-  it('offers no restore button when the gateway stamps nothing', async () => {
+  it('keeps restore when the gateway is too old to have an opinion', async () => {
+    // Key absent entirely. Gating on that would strip restore from every
+    // message against an older backend, so the positional path stays.
     render(<Harness messages={[userMessage('u1', 'first'), assistantMessage('a1', 'reply')]} />)
 
     await screen.findByText('first')
 
-    expect(restoreButtons()).toHaveLength(0)
+    expect(restoreButtons()).toHaveLength(1)
   })
-})
 
-describe.skip('restore button gating (re-enable with the feature)', () => {
-  it('offers restore only on the turns the gateway stamped', async () => {
+  it('does not infer capability from a thread where nothing is stamped', async () => {
+    // The old probe treated "no row carries an id" as "old gateway" and showed
+    // the button. A new gateway legitimately stamps nothing when every visible
+    // turn is ancestor lineage — each row now carries its own explicit null.
     render(
       <Harness
         messages={[
-          // Pre-compaction lineage: on screen, but not in the model history.
-          userMessage('u1', 'from before the compaction'),
-          assistantMessage('a1', 'old reply'),
-          userMessage('u2', 'still in context', 'r1:0:deadbeefdeadbeef'),
-          assistantMessage('a2', 'new reply')
-        ]}
-      />
-    )
-
-    await screen.findByText('from before the compaction')
-
-    // One stamped turn proves the gateway mints ids, so the unstamped bubble's
-    // silence is meaningful — exactly one button, on the reachable turn.
-    const buttons = restoreButtons()
-
-    expect(buttons).toHaveLength(1)
-    expect(buttons[0].closest('[data-slot="aui_user-bubble-actions"]')?.textContent).toContain('still in context')
-  })
-
-  it('keeps restore everywhere when the gateway stamps nothing', async () => {
-    // An older gateway sends no ids at all. Gating on absence there would strip
-    // restore from every message, so the positional path stays available.
-    render(
-      <Harness
-        messages={[
-          userMessage('u1', 'first'),
+          userMessage('u1', 'ancestor one', null),
           assistantMessage('a1', 'reply one'),
-          userMessage('u2', 'second'),
+          userMessage('u2', 'ancestor two', null),
           assistantMessage('a2', 'reply two')
         ]}
       />
     )
 
-    await screen.findByText('first')
+    await screen.findByText('ancestor one')
 
-    expect(restoreButtons()).toHaveLength(2)
+    expect(restoreButtons()).toHaveLength(0)
   })
 })
