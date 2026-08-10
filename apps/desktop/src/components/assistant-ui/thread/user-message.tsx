@@ -261,7 +261,34 @@ export const UserMessage: FC<{
   // displayable but not truncatable) has no rewind id, and offering the button
   // there only produces "target user message is no longer in session history".
   const restorable = rewindId !== null || !threadStampsRewindIds
-  const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody && restorable
+
+  // RESTORE IS DISABLED (2026-08-10) — it can cut a turn other than the one
+  // clicked, so it is withdrawn rather than shipped wrong.
+  //
+  // `rewind_id` is `ordinal + content digest`, which is not occurrence
+  // identity. An independent audit demonstrated two ways a valid-looking id
+  // names the wrong turn:
+  //   - session.undo drops a turn from the gateway's model history but not
+  //     from the DB, so tail alignment stamps a duplicate-text bubble with an
+  //     id belonging to an earlier occurrence;
+  //   - ABA replacement — undo a turn, resend the same text at the same
+  //     ordinal, and the replacement mints an identical id.
+  // The gateway now fails closed rather than emptying a transcript, so the
+  // catastrophic case is blocked, but a wrong-turn cut is still reachable.
+  //
+  // Re-enable by deleting this constant once identity is occurrence-bound —
+  // a durable messages.id, or a per-turn UUID plus a history generation —
+  // rather than ordinal + digest. The gating machinery below is left intact
+  // and still correct; only the affordance is withdrawn.
+  const RESTORE_DISABLED_PENDING_STABLE_IDENTITY = true
+
+  const showRestore =
+    !RESTORE_DISABLED_PENDING_STABLE_IDENTITY &&
+    !readOnly &&
+    !showStop &&
+    Boolean(onRequestRestoreConfirm) &&
+    hasBody &&
+    restorable
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
