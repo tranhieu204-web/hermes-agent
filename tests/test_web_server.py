@@ -249,7 +249,17 @@ class _FakeDb:
 
 
 def test_rest_transcript_stamps_rewind_ids_on_reachable_turns():
-    from tui_gateway.rewind_identity import rewind_message_id
+    from tui_gateway.rewind_identity import (
+        model_user_indices,
+        coerce_message_text,
+        rewind_message_id,
+        rewind_prefix_hash,
+    )
+
+    def _rid(history, ordinal):
+        index = model_user_indices(history)[ordinal]
+        text = coerce_message_text(history[index].get("content"))
+        return rewind_message_id(ordinal, rewind_prefix_hash(history, index, text))
 
     # The tip session's rows: two turns the gateway will still hold.
     model_history = [
@@ -267,9 +277,9 @@ def test_rest_transcript_stamps_rewind_ids_on_reachable_turns():
 
     out = web_server._with_rewind_ids(_FakeDb(model_history), "sid", rows, None, 0)
 
-    assert out[0]["rewind_id"] == rewind_message_id(0, "first")
-    assert out[2]["rewind_id"] == rewind_message_id(1, "second")
-    assert "rewind_id" not in out[1] and "rewind_id" not in out[3]
+    assert out[0]["rewind_id"] == _rid(model_history, 0)
+    assert out[2]["rewind_id"] == _rid(model_history, 1)
+    assert "rewind_id" not in out[1] and "rewind_id" not in out[3]  # assistants
 
 
 def test_rest_transcript_leaves_unreachable_turns_unstamped():
@@ -278,7 +288,17 @@ def test_rest_transcript_leaves_unreachable_turns_unstamped():
     That absence is what tells the client to hide the restore button instead of
     offering a rewind that can only answer 4018.
     """
-    from tui_gateway.rewind_identity import rewind_message_id
+    from tui_gateway.rewind_identity import (
+        model_user_indices,
+        coerce_message_text,
+        rewind_message_id,
+        rewind_prefix_hash,
+    )
+
+    def _rid(history, ordinal):
+        index = model_user_indices(history)[ordinal]
+        text = coerce_message_text(history[index].get("content"))
+        return rewind_message_id(ordinal, rewind_prefix_hash(history, index, text))
 
     rows = [
         {"id": 1, "role": "user", "content": "compacted away"},
@@ -290,8 +310,8 @@ def test_rest_transcript_leaves_unreachable_turns_unstamped():
         _FakeDb([{"role": "user", "content": "still here"}]), "sid", rows, None, 0
     )
 
-    assert "rewind_id" not in out[0]
-    assert out[2]["rewind_id"] == rewind_message_id(0, "still here")
+    assert out[0]["rewind_id"] is None
+    assert out[2]["rewind_id"] == _rid([{"role": "user", "content": "still here"}], 0)
 
 
 def test_rest_transcript_skips_paged_reads_and_survives_db_failure():

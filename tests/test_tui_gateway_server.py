@@ -1529,8 +1529,11 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
     )
 
+    # User rows carry the explicit rewind tri-state: an id when the turn is
+    # provably rewindable, None when this gateway says it is not. Absent means
+    # a gateway too old to know, which the client must distinguish.
     assert resp["result"]["messages"] == [
-        {"role": "user", "text": "root prompt"},
+        {"role": "user", "text": "root prompt", "rewind_id": None},
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
@@ -3092,6 +3095,19 @@ def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch
     assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
 
 
+def _rid(history, ordinal):
+    """The rewind id the gateway would mint for that user ordinal.
+
+    v2 ids bind to the prefix a cut would keep, so a test cannot hand-write one
+    from the turn's text alone — it has to be derived from the same history.
+    """
+    index = server._model_user_indices(history)[ordinal]
+    text = server._coerce_message_text(history[index].get("content"))
+    return server._rewind_message_id(
+        ordinal, server._rewind_prefix_hash(history, index, text)
+    )
+
+
 def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     """A negative truncate_before_user_ordinal must be rejected, not honoured.
 
@@ -3105,7 +3121,7 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, **_kwargs):
             replaced.append((key, list(messages)))
 
     history = [
@@ -3176,10 +3192,10 @@ def test_annotate_rewind_ids_stops_at_the_lineage_boundary():
 
     annotated = server._annotate_rewind_ids(list(display), model_history)
 
-    assert "rewind_id" not in annotated[0]
-    assert "rewind_id" not in annotated[2]
-    assert annotated[4]["rewind_id"] == server._rewind_message_id(0, "third")
-    assert annotated[6]["rewind_id"] == server._rewind_message_id(1, "fourth")
+    assert annotated[0]["rewind_id"] is None
+    assert annotated[2]["rewind_id"] is None
+    assert annotated[4]["rewind_id"] == _rid(model_history, 0)
+    assert annotated[6]["rewind_id"] == _rid(model_history, 1)
     # Assistant rows are never rewind targets.
     assert all("rewind_id" not in m for m in annotated if m["role"] != "user")
 
@@ -3205,8 +3221,8 @@ def test_annotate_rewind_ids_distinguishes_repeated_prompts():
 
     annotated = server._annotate_rewind_ids(list(display), model_history)
 
-    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "continue")
-    assert annotated[2]["rewind_id"] == server._rewind_message_id(1, "continue")
+    assert annotated[0]["rewind_id"] == _rid(model_history, 0)
+    assert annotated[2]["rewind_id"] == _rid(model_history, 1)
     assert annotated[0]["rewind_id"] != annotated[2]["rewind_id"]
 
 
@@ -3233,7 +3249,7 @@ def test_annotate_rewind_ids_matches_across_content_shapes():
 
     annotated = server._annotate_rewind_ids(display, model_history)
 
-    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "look at this")
+    assert annotated[0]["rewind_id"] == _rid(model_history, 0)
     assert (
         server._resolve_rewind_ordinal(model_history, annotated[0]["rewind_id"]) == 0
     )
@@ -3256,25 +3272,26 @@ def test_resolve_rewind_ordinal_accepts_only_exact_matches():
     ]
 
     # Exact hit — position and content both agree.
-    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
+    assert server._resolve_rewind_ordinal(history, _rid(history, 1)) == 1
 
     # The turn is still present but has shifted position. Refuse: the id names
     # ordinal 1, and ordinal 1 is no longer that turn.
     shifted = [{"role": "user", "content": "zero"}, *history]
-    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) is None
+    assert server._resolve_rewind_ordinal(shifted, _rid(history, 1)) is None
 
     # The wipe path specifically: an id for a deep turn must never re-target
     # ordinal 0 just because the text now lives there after a compaction.
     compacted = [{"role": "user", "content": "beta"}, {"role": "assistant", "content": "b"}]
-    assert server._resolve_rewind_ordinal(compacted, server._rewind_message_id(5, "beta")) is None
+    assert server._resolve_rewind_ordinal(compacted, _rid(history, 1)) is None
 
     # Duplicated text: the exact ordinal still disambiguates.
     duplicated = [*history, {"role": "user", "content": "beta"}]
-    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(2, "beta")) == 2
-    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(9, "beta")) is None
+    assert server._resolve_rewind_ordinal(duplicated, _rid(duplicated, 2)) == 2
+    # An id for a turn the shorter history does not have must refuse.
+    assert server._resolve_rewind_ordinal(history, _rid(duplicated, 2)) is None
 
     # Gone entirely (compacted away), and malformed ids.
-    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
+    assert server._resolve_rewind_ordinal(history, "r2:0:" + "0" * 24) is None
     assert server._resolve_rewind_ordinal(history, "not-a-rewind-id") is None
     assert server._resolve_rewind_ordinal(history, "") is None
 
@@ -3292,10 +3309,19 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, **_kwargs):
             replaced.append((key, list(messages)))
 
-    # Post-compaction history: the clicked text survives, but at ordinal 0.
+    # What the user clicked: "run the audit" as the SECOND user turn.
+    pre_undo_history = [
+        {"role": "user", "content": "set up"},
+        {"role": "assistant", "content": "ready"},
+        {"role": "user", "content": "run the audit"},
+        {"role": "assistant", "content": "done"},
+    ]
+    # What the gateway holds by the time the submit lands: the earlier turn is
+    # gone, so the clicked text now sits at ordinal 0 and a cut there empties
+    # the transcript.
     history = [
         {"role": "user", "content": "run the audit"},
         {"role": "assistant", "content": "done"},
@@ -3318,7 +3344,7 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
                     "session_id": "wipe-race-sid",
                     "text": "rerun",
                     # Minted when that turn was the 6th user turn.
-                    "truncate_before_message_id": server._rewind_message_id(5, "run the audit"),
+                    "truncate_before_message_id": _rid(pre_undo_history, 1),
                     # The client always sets this on the id path.
                     "confirm_empty_truncate": True,
                 },
@@ -3368,7 +3394,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, **_kwargs):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -3387,7 +3413,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
                 "params": {
                     "session_id": "sid",
                     "text": "redo second",
-                    "truncate_before_message_id": server._rewind_message_id(1, "second"),
+                    "truncate_before_message_id": _rid(original_history, 1),
                 },
             }
         )
@@ -3409,7 +3435,7 @@ def test_prompt_submit_rejects_a_stale_message_id(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, **_kwargs):
             replaced.append((key, list(messages)))
 
     history = [
@@ -3456,7 +3482,7 @@ def test_prompt_submit_refuses_to_wipe_the_transcript(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, **_kwargs):
             replaced.append((key, list(messages)))
 
     history = [
@@ -3515,7 +3541,7 @@ def test_prompt_submit_allows_confirmed_empty_truncation(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, **_kwargs):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -7495,7 +7521,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages):
+        def replace_messages(self, session_id, messages, **_kwargs):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -8996,7 +9022,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             {
                 "role": "user",
                 "text": "write a long answer",
-                "rewind_id": server._rewind_message_id(0, "write a long answer"),
+                "rewind_id": _rid([{"role": "user", "content": "write a long answer"}], 0),
             },
             {"role": "assistant", "text": "partial answer complete"},
         ]
@@ -9078,7 +9104,7 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
             {
                 "role": "user",
                 "text": "new prompt",
-                "rewind_id": server._rewind_message_id(0, "new prompt"),
+                "rewind_id": _rid([{"role": "user", "content": "new prompt"}], 0),
             },
             {"role": "assistant", "text": "new answer"},
         ]
