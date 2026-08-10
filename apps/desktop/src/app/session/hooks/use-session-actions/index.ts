@@ -82,7 +82,6 @@ import {
   isSessionGoneError,
   patchSessionWorkspace,
   preserveLocalPendingTurnMessages,
-  preserveRewindIds,
   reconcileResumeMessages,
   resolveSessionProfile,
   resolveStoredSession,
@@ -137,19 +136,13 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>,
-  // Set on REST-sourced transcripts, which never carry rewind ids — see
-  // preserveRewindIds. Never set it for a gateway payload: there, a missing id
-  // is the gateway telling us the turn is no longer rewindable.
-  options?: { restSourced?: boolean }
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
   const authoritative = toChatMessages(authoritativeMessages)
   const withLiveProjection = liveProjection ? appendLiveSessionProjection(authoritative, liveProjection) : authoritative
   const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
   const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
-  const withErrors = preserveLocalAssistantErrors(withPendingTurn, previousMessages)
-
-  return options?.restSourced ? preserveRewindIds(withErrors, previousMessages) : withErrors
+  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -768,9 +761,7 @@ export function useSessionActions({
                   persisted.session_id === activatedStoredSessionId
 
                 if (persisted && persistedMatchesActivatedSession) {
-                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages, undefined, {
-                    restSourced: true
-                  })
+                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
                 }
               }
 
@@ -914,9 +905,7 @@ export function useSessionActions({
             ? preserveLocalPendingTurnMessages($messages.get(), resumeStartMessages)
             : $messages.get()
 
-          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages, undefined, {
-            restSourced: true
-          })
+          localSnapshot = reconcileAuthoritativeMessages(prefetchedResult.messages, previousMessages)
           prefetchApplied = true
           prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
         }
@@ -1052,7 +1041,7 @@ export function useSessionActions({
           // only carrier of a crashed turn's progress on this path.
           const fallbackRecovery = recoverInFlightTurnJournal(
             storedSessionId,
-            reconcileAuthoritativeMessages(fallback.messages, previousMessages, undefined, { restSourced: true })
+            reconcileAuthoritativeMessages(fallback.messages, previousMessages)
           )
 
           setMessages(fallbackRecovery.messages)

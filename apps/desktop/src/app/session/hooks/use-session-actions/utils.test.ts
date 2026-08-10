@@ -16,7 +16,6 @@ import {
   chatPartsEquivalent,
   isSessionGoneError,
   preserveLocalPendingTurnMessages,
-  preserveRewindIds,
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -1191,50 +1190,5 @@ describe('appendLiveSessionProjection', () => {
       id: 'assistant-stream-runtime-1',
       pending: true
     })
-  })
-})
-
-describe('preserveRewindIds', () => {
-  // The REST transcript is the display authority for an idle session and its
-  // rows never carry rewind ids. Without this carry-forward, switching back to
-  // an idle chat strips every id and the restore gate goes blind.
-  it('carries gateway ids onto a REST transcript of the same turns', () => {
-    const previous = [
-      msg('u1', 'user', 'first', { rewindId: 'r1:0:aaa' }),
-      msg('a1', 'assistant', 'reply one'),
-      msg('u2', 'user', 'second', { rewindId: 'r1:1:bbb' })
-    ]
-
-    const restTranscript = [msg('r-u1', 'user', 'first'), msg('r-a1', 'assistant', 'reply one'), msg('r-u2', 'user', 'second')]
-
-    expect(preserveRewindIds(restTranscript, previous).map(m => m.rewindId)).toEqual([
-      'r1:0:aaa',
-      undefined,
-      'r1:1:bbb'
-    ])
-  })
-
-  // A turn the gateway never stamped (pre-compaction lineage) must stay
-  // unstamped — the carry-forward fills gaps, it does not invent reachability.
-  it('leaves turns the gateway never stamped alone', () => {
-    const previous = [msg('u1', 'user', 'ancient'), msg('a1', 'assistant', 'old'), msg('u2', 'user', 'recent', { rewindId: 'r1:0:bbb' })]
-    const restTranscript = [msg('r-u1', 'user', 'ancient'), msg('r-a1', 'assistant', 'old'), msg('r-u2', 'user', 'recent')]
-
-    expect(preserveRewindIds(restTranscript, previous).map(m => m.rewindId)).toEqual([undefined, undefined, 'r1:0:bbb'])
-  })
-
-  it('stops at the first divergence instead of sliding ids onto other turns', () => {
-    const previous = [msg('u1', 'user', 'first', { rewindId: 'r1:0:aaa' }), msg('u2', 'user', 'second', { rewindId: 'r1:1:bbb' })]
-    // A different conversation tail: only the verbatim-matching last turn may
-    // inherit, and the walk halts above it.
-    const restTranscript = [msg('r-u1', 'user', 'something else'), msg('r-u2', 'user', 'second')]
-
-    expect(preserveRewindIds(restTranscript, previous).map(m => m.rewindId)).toEqual([undefined, 'r1:1:bbb'])
-  })
-
-  it('returns the input untouched when there is nothing to carry', () => {
-    const restTranscript = [msg('r-u1', 'user', 'first')]
-
-    expect(preserveRewindIds(restTranscript, [msg('u1', 'user', 'first')])).toBe(restTranscript)
   })
 })

@@ -46,14 +46,12 @@ export interface TruncateTarget {
 /** Build `prompt.submit` truncation params, preferring identity over position. */
 export function truncateSubmitParams(target: TruncateTarget | undefined): Record<string, unknown> {
   if (target?.messageId) {
-    return {
-      truncate_before_message_id: target.messageId,
-      // The wipe guard exists because a bare ordinal can *drift* onto the first
-      // turn and empty the transcript. An id cannot: it only resolves there if
-      // that turn's content matched, which means the user clicked it. So an
-      // identified target carries its own confirmation.
-      confirm_empty_truncate: true
-    }
+    // Deliberately NO confirm_empty_truncate here. An earlier version sent it
+    // unconditionally, arguing an id only reaches the first turn if the user
+    // clicked it — which was wrong, and the gateway now refuses to honour a
+    // confirmation on the id path at all. Emptying a transcript needs an
+    // explicit act, not a flag riding along with every rewind.
+    return { truncate_before_message_id: target.messageId }
   }
 
   if (target?.ordinal === undefined) {
@@ -161,7 +159,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
   return {
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
     text,
-    truncateMessageId: userMessage.rewindId,
+    truncateMessageId: userMessage.rewindId ?? undefined,
     truncateOrdinal: visibleUserOrdinal(messages, userIndex),
     userIndex
   }
@@ -284,7 +282,7 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     isFailedTurn,
     sourceIndex,
     text,
-    truncateMessageId: isFailedTurn ? undefined : source.rewindId,
+    truncateMessageId: isFailedTurn ? undefined : (source.rewindId ?? undefined),
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex)
   }
 }

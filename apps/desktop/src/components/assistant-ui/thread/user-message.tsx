@@ -152,20 +152,12 @@ export const UserMessage: FC<{
   const rewindId = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { rewindId?: unknown }
 
+    if (!('rewindId' in custom)) {
+      return undefined // gateway too old to mint ids
+    }
+
     return typeof custom.rewindId === 'string' ? custom.rewindId : null
   })
-
-  // ...but "no id" only *means* "not rewindable" if this gateway mints ids at
-  // all. Against an older one nothing is stamped, and gating on that would
-  // remove restore from every message. Treat one stamped turn in the thread as
-  // proof the gateway is id-capable, and only then trust absence.
-  const threadStampsRewindIds = useAuiState(s =>
-    s.thread.messages.some(message => {
-      const custom = (message.metadata?.custom ?? {}) as { rewindId?: unknown }
-
-      return message.role === 'user' && typeof custom.rewindId === 'string'
-    })
-  )
 
   const attachmentRefs = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { attachmentRefs?: unknown }
@@ -260,35 +252,14 @@ export const UserMessage: FC<{
   // carries in its model history (compacted away, or ancestor lineage that is
   // displayable but not truncatable) has no rewind id, and offering the button
   // there only produces "target user message is no longer in session history".
-  const restorable = rewindId !== null || !threadStampsRewindIds
+  // The gateway declares rewindability per turn: a string id means yes, an
+  // explicit null means no, and an absent key means a backend too old to have
+  // an opinion (fall back to the positional path). Inferring capability from
+  // "no row carries an id" was wrong — a new gateway legitimately stamps
+  // nothing when every displayed turn is ancestor lineage.
+  const restorable = rewindId !== null
 
-  // RESTORE IS DISABLED (2026-08-10) — it can cut a turn other than the one
-  // clicked, so it is withdrawn rather than shipped wrong.
-  //
-  // `rewind_id` is `ordinal + content digest`, which is not occurrence
-  // identity. An independent audit demonstrated two ways a valid-looking id
-  // names the wrong turn:
-  //   - session.undo drops a turn from the gateway's model history but not
-  //     from the DB, so tail alignment stamps a duplicate-text bubble with an
-  //     id belonging to an earlier occurrence;
-  //   - ABA replacement — undo a turn, resend the same text at the same
-  //     ordinal, and the replacement mints an identical id.
-  // The gateway now fails closed rather than emptying a transcript, so the
-  // catastrophic case is blocked, but a wrong-turn cut is still reachable.
-  //
-  // Re-enable by deleting this constant once identity is occurrence-bound —
-  // a durable messages.id, or a per-turn UUID plus a history generation —
-  // rather than ordinal + digest. The gating machinery below is left intact
-  // and still correct; only the affordance is withdrawn.
-  const RESTORE_DISABLED_PENDING_STABLE_IDENTITY = true
-
-  const showRestore =
-    !RESTORE_DISABLED_PENDING_STABLE_IDENTITY &&
-    !readOnly &&
-    !showStop &&
-    Boolean(onRequestRestoreConfirm) &&
-    hasBody &&
-    restorable
+  const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody && restorable
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
@@ -433,7 +404,7 @@ export const UserMessage: FC<{
                           event.stopPropagation()
                           triggerHaptic('selection')
                           onRequestRestoreConfirm?.(messageId, {
-                            rewindId,
+                            rewindId: rewindId ?? null,
                             text: messageText,
                             userOrdinal: runtimeUserOrdinal
                           })

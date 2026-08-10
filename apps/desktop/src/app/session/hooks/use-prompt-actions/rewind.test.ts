@@ -23,10 +23,12 @@ describe('truncateSubmitParams', () => {
     expect(truncateSubmitParams({})).toEqual({})
   })
 
-  it('sends the rewind id when the gateway gave us one', () => {
-    expect(truncateSubmitParams({ messageId: 'r1:3:abc', ordinal: 7 })).toEqual({
-      truncate_before_message_id: 'r1:3:abc',
-      confirm_empty_truncate: true
+  it('sends the rewind id alone, never a blanket wipe confirmation', () => {
+    // Emptying a transcript must be an explicit act. Sending
+    // confirm_empty_truncate alongside every id-addressed rewind is what let a
+    // misattached id delete a session.
+    expect(truncateSubmitParams({ messageId: 'r2:3:abc', ordinal: 7 })).toEqual({
+      truncate_before_message_id: 'r2:3:abc'
     })
   })
 
