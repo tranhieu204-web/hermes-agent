@@ -41,6 +41,8 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
 export interface TruncateTarget {
   messageId?: string
   ordinal?: number
+  /** The cut would empty the transcript and the user confirmed THAT act. */
+  wipesTranscript?: boolean
 }
 
 /** Build `prompt.submit` truncation params, preferring identity over position. */
@@ -51,7 +53,12 @@ export function truncateSubmitParams(target: TruncateTarget | undefined): Record
     // clicked it — which was wrong, and the gateway now refuses to honour a
     // confirmation on the id path at all. Emptying a transcript needs an
     // explicit act, not a flag riding along with every rewind.
-    return { truncate_before_message_id: target.messageId }
+    return {
+      truncate_before_message_id: target.messageId,
+      // Only after the client's own "this deletes the whole conversation"
+      // dialog. The gateway ignores the generic confirm on the id path.
+      ...(target.wipesTranscript ? { confirm_delete_entire_transcript: true } : {})
+    }
   }
 
   if (target?.ordinal === undefined) {
@@ -130,6 +137,11 @@ export interface ReloadPlan {
   truncateMessageId?: string
   truncateOrdinal: number
   userIndex: number
+  /** Re-running the FIRST turn empties the transcript. Editing or rerunning
+   *  your opening prompt is a normal act aimed at that specific turn, so the
+   *  dedicated confirmation rides with it — but it must be sent deliberately,
+   *  not as a blanket flag on every rewind. */
+  wipesTranscript: boolean
 }
 
 /** The user turn to re-run for a reload from `parentId` (or the last turn). */
@@ -161,7 +173,8 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     text,
     truncateMessageId: userMessage.rewindId ?? undefined,
     truncateOrdinal: visibleUserOrdinal(messages, userIndex),
-    userIndex
+    userIndex,
+    wipesTranscript: visibleUserOrdinal(messages, userIndex) === 0
   }
 }
 
@@ -192,6 +205,7 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
 
 export interface RestoreTarget {
   rewindId?: null | string
+  wipesTranscript?: boolean
   text?: string
   userOrdinal?: null | number
 }
@@ -200,6 +214,7 @@ export interface RestorePlan {
   sourceIndex: number
   text: string
   truncateMessageId?: string
+  wipesTranscript?: boolean
   truncateOrdinal: number
 }
 
@@ -239,7 +254,8 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
     sourceIndex,
     text,
     truncateMessageId: source.rewindId ?? target?.rewindId ?? undefined,
-    truncateOrdinal
+    truncateOrdinal,
+    wipesTranscript: target?.wipesTranscript === true
   }
 }
 
@@ -254,6 +270,9 @@ export interface EditPlan {
   text: string
   truncateMessageId?: string
   truncateOrdinal: number | undefined
+  /** See ReloadPlan.wipesTranscript — editing the opening prompt replaces the
+   *  whole conversation. */
+  wipesTranscript: boolean
 }
 
 /** Resolve the edited user turn, or null when nothing changed / invalid. */
@@ -283,7 +302,8 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     sourceIndex,
     text,
     truncateMessageId: isFailedTurn ? undefined : (source.rewindId ?? undefined),
-    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex)
+    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
+    wipesTranscript: !isFailedTurn && visibleUserOrdinal(messages, sourceIndex) === 0
   }
 }
 

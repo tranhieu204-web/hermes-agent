@@ -64,12 +64,14 @@ export const Thread = memo(function Thread({
       throw new Error('Restore is unavailable for this message.')
     }
 
-    const { messageId, rewindId, text, userOrdinal } = restoreConfirmTarget
+    const { messageId, rewindId, text, userOrdinal, wipesTranscript } = restoreConfirmTarget
 
     closeRestoreConfirm()
-    void Promise.resolve(onRestoreToMessage(messageId, { rewindId, text, userOrdinal })).catch((error: unknown) => {
-      notifyError(error, 'Restore failed')
-    })
+    void Promise.resolve(onRestoreToMessage(messageId, { rewindId, text, userOrdinal, wipesTranscript })).catch(
+      (error: unknown) => {
+        notifyError(error, 'Restore failed')
+      }
+    )
   }, [closeRestoreConfirm, onRestoreToMessage, restoreConfirmTarget])
 
   const requestRestoreConfirm = useCallback((messageId: string, target: RestoreMessageTarget) => {
@@ -158,7 +160,7 @@ export const Thread = memo(function Thread({
       <ThreadTimeline />
       <ConfirmDialog
         confirmLabel={copy.restoreConfirm}
-        description={copy.restoreBody}
+        description={restoreConfirmTarget?.wipesTranscript ? copy.restoreBodyWipes : copy.restoreBody}
         destructive
         onClose={closeRestoreConfirm}
         onConfirm={confirmRestore}

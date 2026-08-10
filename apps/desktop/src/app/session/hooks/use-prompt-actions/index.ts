@@ -213,6 +213,7 @@ interface RestoreMessageTarget {
   rewindId?: null | string
   text?: string
   userOrdinal?: number | null
+  wipesTranscript?: boolean
 }
 
 export function usePromptActions({
@@ -795,7 +796,7 @@ export function usePromptActions({
           {
             session_id: sessionId,
             text: plan.text,
-            ...truncateSubmitParams({ messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal })
+            ...truncateSubmitParams({ messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript })
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
@@ -856,7 +857,7 @@ export function usePromptActions({
         await submitRewindPrompt(
           sessionId,
           plan.text,
-          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal },
+          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript },
           busyRef.current || $busy.get()
         )
       } catch (err) {
@@ -912,7 +913,7 @@ export function usePromptActions({
         await submitRewindPrompt(
           sessionId,
           plan.text,
-          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal },
+          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript },
           busyRef.current || $busy.get()
         )
       } catch (err) {

@@ -405,6 +405,7 @@ export const UserMessage: FC<{
                           triggerHaptic('selection')
                           onRequestRestoreConfirm?.(messageId, {
                             rewindId: rewindId ?? null,
+                            wipesTranscript: runtimeUserOrdinal === 0,
                             text: messageText,
                             userOrdinal: runtimeUserOrdinal
                           })

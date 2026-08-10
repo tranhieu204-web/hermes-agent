@@ -384,7 +384,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           {
             session_id: runtimeIdRef.current,
             text: plan.text,
-            ...truncateSubmitParams({ messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal })
+            ...truncateSubmitParams({ messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript })
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
@@ -397,7 +397,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   )
 
   const restoreToMessage = useCallback(
-    async (messageId: string, target?: { rewindId?: null | string; text?: string; userOrdinal?: number | null }) => {
+    async (messageId: string, target?: { rewindId?: null | string; text?: string; userOrdinal?: number | null; wipesTranscript?: boolean }) => {
       const sessionId = runtimeIdRef.current
       const messages = readMessages()
       const plan = planRestore(messages, messageId, target)
@@ -411,7 +411,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewind(plan.text, { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal }, wasBusy)
+        await submitRewind(plan.text, { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript }, wasBusy)
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         throw err
@@ -440,7 +440,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       try {
-        await submitRewind(plan.text, { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal }, wasBusy)
+        await submitRewind(plan.text, { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal, wipesTranscript: plan.wipesTranscript }, wasBusy)
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(err, copy.editFailed)

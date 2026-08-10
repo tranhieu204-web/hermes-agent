@@ -2340,6 +2340,7 @@ export interface Translations {
       restoreFromHere: string
       restoreTitle: string
       restoreBody: string
+      restoreBodyWipes: string
       restoreConfirm: string
       restoreNext: string
       goForward: string

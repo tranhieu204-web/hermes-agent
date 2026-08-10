@@ -32,6 +32,19 @@ describe('truncateSubmitParams', () => {
     })
   })
 
+  it('sends the dedicated wipe confirmation only when the cut empties the transcript', () => {
+    // The generic confirm is deliberately never sent on the id path — a blanket
+    // one is what let a misattached id delete a session. This flag is separate,
+    // and only rides along when the user acted on the opening turn.
+    expect(truncateSubmitParams({ messageId: 'r2:0:abc', wipesTranscript: true })).toEqual({
+      truncate_before_message_id: 'r2:0:abc',
+      confirm_delete_entire_transcript: true
+    })
+    expect(truncateSubmitParams({ messageId: 'r2:3:abc', wipesTranscript: false })).toEqual({
+      truncate_before_message_id: 'r2:3:abc'
+    })
+  })
+
   it('falls back to the ordinal only when no id is available', () => {
     expect(truncateSubmitParams({ ordinal: 1 })).toEqual({
       truncate_before_user_ordinal: 1
@@ -100,5 +113,32 @@ describe('rewind planners carry the gateway identity', () => {
     expect(failedPlan?.isFailedTurn).toBe(true)
     expect(failedPlan?.truncateMessageId).toBeUndefined()
     expect(failedPlan?.truncateOrdinal).toBeUndefined()
+  })
+})
+
+describe('the opening turn is marked as a transcript wipe', () => {
+  const opening = [
+    userMessage('u1', 'first', 'r2:0:aaa'),
+    assistantMessage('a1', 'reply one'),
+    userMessage('u2', 'second', 'r2:1:bbb'),
+    assistantMessage('a2', 'reply two')
+  ]
+
+  it('planReload marks it for the first turn only', () => {
+    expect(planReload(opening, 'a1')?.wipesTranscript).toBe(true)
+    expect(planReload(opening, 'a2')?.wipesTranscript).toBe(false)
+  })
+
+  it('planEdit marks it for the first turn only', () => {
+    const edit = (sourceId: string, text: string) =>
+      planEdit(opening, { role: 'user' as const, sourceId, parentId: sourceId, content: [{ type: 'text' as const, text }] } as never)
+
+    expect(edit('u1', 'first, revised')?.wipesTranscript).toBe(true)
+    expect(edit('u2', 'second, revised')?.wipesTranscript).toBe(false)
+  })
+
+  it('planRestore takes it from the clicked bubble, not from position', () => {
+    expect(planRestore(opening, 'u1', { rewindId: 'r2:0:aaa', wipesTranscript: true }).wipesTranscript).toBe(true)
+    expect(planRestore(opening, 'u2', { rewindId: 'r2:1:bbb', wipesTranscript: false }).wipesTranscript).toBe(false)
   })
 })

@@ -2924,6 +2924,7 @@ export const zh: Translations = {
       restoreFromHere: '恢复检查点 — 从此提示重新运行',
       restoreTitle: '恢复到此检查点？',
       restoreBody: '此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。',
+      restoreBodyWipes: '这是第一条提示，因此整个对话都会被删除，只保留这条提示。此操作无法撤销。',
       restoreConfirm: '恢复并重新运行',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
