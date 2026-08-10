@@ -9642,10 +9642,21 @@ def _(rid, params: dict) -> dict:
             # So the id path may never auto-confirm emptying a transcript. It
             # fails closed until the client can express a real second
             # confirmation for that specific act.
+            # Emptying a transcript needs intent about THAT act, not a flag
+            # riding along with every rewind. The id path therefore ignores the
+            # generic confirm_empty_truncate (a blanket one is what let a
+            # misattached id delete a session) and honours only the dedicated
+            # confirm_delete_entire_transcript, which the client sends solely
+            # after its own "this deletes the whole conversation" dialog.
+            #
+            # Safe to honour now that ids are occurrence-bound: an r2 id only
+            # resolves at ordinal 0 when the retained prefix really is empty AND
+            # the turn's text matches, so the turn named is the turn clicked.
             id_addressed = truncate_message_id is not None
             empty_truncation_confirmed = (
-                not id_addressed
-                and is_truthy_value(params.get("confirm_empty_truncate"))
+                is_truthy_value(params.get("confirm_delete_entire_transcript"))
+                if id_addressed
+                else is_truthy_value(params.get("confirm_empty_truncate"))
             )
             if not truncated and history and not empty_truncation_confirmed:
                 logger.warning(
@@ -9658,8 +9669,9 @@ def _(rid, params: dict) -> dict:
                 return _err(
                     rid,
                     4028,
-                    "truncation would erase the entire session transcript; "
-                    "resubmit with confirm_empty_truncate=true if this is intended",
+                    "truncation would erase the entire session transcript; resubmit "
+                    "with confirm_delete_entire_transcript=true (id) or "
+                    "confirm_empty_truncate=true (ordinal) if this is intended",
                 )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
