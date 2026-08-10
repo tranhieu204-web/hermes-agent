@@ -267,7 +267,7 @@ Automatically falls back to the specified model when the default is overloaded (
 | `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
 | `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `max`, `auto` | Both |
 | `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway) |
-| `--max-budget-usd <n>` | Cap API spend in dollars (print mode only) |
+| `--max-budget-usd <n>` | **Do not use for this account**; the user uses plan usage, not a per-run dollar cap |
 | `--fallback-model <model>` | Auto-fallback when default model is overloaded (print mode only) |
 | `--betas <betas...>` | Beta headers to include in API requests (API key users only) |
 
@@ -705,7 +705,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 ## Cost & Performance Tips
 
 1. **Use `--max-turns`** in print mode to prevent runaway loops. Start with 5-10 for most tasks.
-2. **Use `--max-budget-usd`** for cost caps. Note: minimum ~$0.05 for system prompt cache creation.
+2. **Do not use `--max-budget-usd`** for this account. Use explicit mission scope, semantic progress checks, `--max-turns` only when required, and wall-clock watchdogs; provider cost fields are telemetry only.
 3. **Use `--effort low`** for simple tasks (faster, cheaper). `high` or `max` for complex reasoning.
 4. **Use `--bare`** for CI/scripting to skip plugin/hook discovery overhead.
 5. **Use `--allowedTools`** to restrict to only what's needed (e.g., `Read` only for reviews).
@@ -720,7 +720,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 1. **Interactive mode REQUIRES tmux** — Claude Code is a full TUI app. Using `pty=true` alone in Hermes terminal works but tmux gives you `capture-pane` for monitoring and `send-keys` for input, which is essential for orchestration.
 2. **`--dangerously-skip-permissions` dialog defaults to "No, exit"** — you must send Down then Enter to accept. Print mode (`-p`) skips this entirely.
-3. **`--max-budget-usd` minimum is ~$0.05** — system prompt cache creation alone costs this much. Setting lower will error immediately.
+3. **Dollar caps are disabled by policy for this account** — never add `--max-budget-usd` to an agent invocation. A CLI error mentioning `error_max_budget_usd` means an invocation supplied an unwanted local cap and must be corrected, not treated as provider-quota exhaustion.
 4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
 5. **Claude may use `python` instead of `python3`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
 6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
