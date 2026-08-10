@@ -3431,6 +3431,91 @@ def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
     assert stub.replaced == [("session-key", [])]
 
 
+def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
+    """A rewind replaces the LIVE transcript and must leave archived rows alone.
+
+    replace_messages defaults to active_only=False, which DELETEs every row for
+    the session — including the ``active = 0`` rows compaction and undo
+    deliberately keep on disk for durability. An independent audit flagged that
+    a rewind was taking that history with it.
+
+    Behavioural, against a real SessionDB: the archived row has to still be
+    there afterwards, not merely "we passed the right keyword".
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("arch-sid", source="tui")
+    db.append_message("arch-sid", role="user", content="archived question")
+    db.append_message("arch-sid", role="assistant", content="archived answer")
+    # Soft-archive that exchange, as compaction/undo would.
+    with db._lock:  # noqa: SLF001 - no public API to archive an arbitrary row
+        db._conn.execute("UPDATE messages SET active = 0 WHERE session_id = ?", ("arch-sid",))
+        db._conn.commit()
+    db.append_message("arch-sid", role="user", content="first")
+    db.append_message("arch-sid", role="assistant", content="reply")
+
+    assert db.has_archived_messages("arch-sid") is True
+    live_before = [m for m in db.get_messages("arch-sid")]
+    assert [m["content"] for m in live_before] == ["first", "reply"]
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {
+                "final_response": "redone",
+                "messages": [*(conversation_history or []), {"role": "user", "content": prompt}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["arch-sid"] = _session(
+        agent=_Agent(), history=list(history), session_key="arch-sid"
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+    monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "arch-sid",
+                    "text": "redo second",
+                    "truncate_before_message_id": _rid(history, 1),
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # The archived exchange survives the rewind.
+        assert db.has_archived_messages("arch-sid") is True
+        archived = [
+            row
+            for row in db.get_messages("arch-sid", include_inactive=True)
+            if row.get("active") == 0
+        ]
+        assert [row["content"] for row in archived] == ["archived question", "archived answer"]
+    finally:
+        server._sessions.pop("arch-sid", None)
+        db.close()
+
+
 def test_prompt_submit_truncates_by_message_id(monkeypatch):
     """A rewind addressed by id cuts at the turn that id names."""
 
