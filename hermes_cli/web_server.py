@@ -11773,6 +11773,42 @@ async def get_session_latest_descendant(
         "changed": bool(path and latest != path[0]),
     }
 
+def _with_rewind_ids(db, sid: str, messages: list, limit, offset: int) -> list:
+    """Stamp ``rewind_id`` on the user turns a rewind could still cut at.
+
+    This endpoint is the Desktop's transcript authority — the gateway resume is
+    called with ``omit_messages`` — so without this, a cold-opened session
+    arrives with no rewind identity at all and the client falls back to counting
+    bubbles, which is the positional bug the ids exist to remove.
+
+    We are a different process from the gateway and cannot see its in-memory
+    ``session["history"]``.  We can reproduce it exactly for the case that
+    matters: a session being opened cold is not live yet, and its resume sets
+    ``history = sanitize_replay_history(model_history)`` from these same rows.
+    For a session that IS already live the projection can lag mid-turn, in which
+    case the gateway's own resolution falls back to a unique content match and,
+    failing that, refuses — never a wrong cut.
+
+    Paged reads are skipped: tail alignment is only meaningful against a window
+    that ends where the transcript ends.  Any failure degrades to unstamped rows
+    (the client then keeps its legacy behaviour), never to a broken transcript.
+    """
+    if limit is not None or offset:
+        return messages
+
+    try:
+        from agent.replay_cleanup import sanitize_replay_history
+        from tui_gateway.rewind_identity import annotate_rewind_ids
+
+        model_history, _display = db.get_resume_conversations(sid)
+
+        return annotate_rewind_ids(messages, sanitize_replay_history(model_history))
+    except Exception:
+        _log.debug("rewind id annotation failed for %s", sid, exc_info=True)
+
+        return messages
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(
     session_id: str,
@@ -11789,7 +11825,8 @@ async def get_session_messages(
             sid = db.resolve_resume_session_id(sid)
             # Clamp limit to prevent abuse (max 500 per page)
             _limit = min(limit, 500) if limit is not None else None
-            return sid, _limit, db.get_messages(sid, limit=_limit, offset=offset)
+            messages = db.get_messages(sid, limit=_limit, offset=offset)
+            return sid, _limit, _with_rewind_ids(db, sid, messages, _limit, offset)
         finally:
             db.close()
 

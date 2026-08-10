@@ -10519,8 +10519,14 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             }
         )
         assert completed["result"].get("inflight") is None
+        # The live user turn is still in the model history, so it carries a
+        # rewind id — that is what makes it restorable from this projection.
         assert completed["result"]["messages"] == [
-            {"role": "user", "text": "write a long answer"},
+            {
+                "role": "user",
+                "text": "write a long answer",
+                "rewind_id": server._rewind_message_id(0, "write a long answer"),
+            },
             {"role": "assistant", "text": "partial answer complete"},
         ]
     finally:
@@ -10598,7 +10604,11 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         assert resp["result"]["status"] == "working"
         assert resp["result"]["info"] == {"model": "model-b"}
         assert resp["result"]["messages"] == [
-            {"role": "user", "text": "new prompt"},
+            {
+                "role": "user",
+                "text": "new prompt",
+                "rewind_id": server._rewind_message_id(0, "new prompt"),
+            },
             {"role": "assistant", "text": "new answer"},
         ]
     finally:
@@ -13944,3 +13954,239 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_annotate_rewind_ids_stops_at_the_lineage_boundary():
+    """Only the turns a rewind can actually reach may carry a rewind id.
+
+    The rendered transcript is the display projection — ancestor lineage from
+    before a compaction handoff included — while truncation can only cut inside
+    the live model history. Stamping ids on the reachable tail and nothing else
+    is what lets the client hide a restore button it cannot honour, instead of
+    offering one that dies on 4018.
+    """
+    # Two turns survive in the model history; the two above them exist only in
+    # the displayed lineage (their session was compacted away).
+    model_history = [
+        {"role": "user", "content": "third"},
+        {"role": "assistant", "content": "3"},
+        {"role": "user", "content": "fourth"},
+        {"role": "assistant", "content": "4"},
+    ]
+    display = [
+        {"role": "user", "text": "first"},
+        {"role": "assistant", "text": "1"},
+        {"role": "user", "text": "second"},
+        {"role": "assistant", "text": "2"},
+        {"role": "user", "text": "third"},
+        {"role": "assistant", "text": "3"},
+        {"role": "user", "text": "fourth"},
+        {"role": "assistant", "text": "4"},
+    ]
+
+    annotated = server._annotate_rewind_ids(list(display), model_history)
+
+    assert "rewind_id" not in annotated[0]
+    assert "rewind_id" not in annotated[2]
+    assert annotated[4]["rewind_id"] == server._rewind_message_id(0, "third")
+    assert annotated[6]["rewind_id"] == server._rewind_message_id(1, "fourth")
+    # Assistant rows are never rewind targets.
+    assert all("rewind_id" not in m for m in annotated if m["role"] != "user")
+
+
+def test_annotate_rewind_ids_distinguishes_repeated_prompts():
+    """Identical prompt text must not collapse to one identity.
+
+    Tail alignment pins each id to a position, so re-sending the same prompt
+    still yields distinct, correctly-ordered ids.
+    """
+    model_history = [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "b"},
+    ]
+    display = [
+        {"role": "user", "text": "continue"},
+        {"role": "assistant", "text": "a"},
+        {"role": "user", "text": "continue"},
+        {"role": "assistant", "text": "b"},
+    ]
+
+    annotated = server._annotate_rewind_ids(list(display), model_history)
+
+    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "continue")
+    assert annotated[2]["rewind_id"] == server._rewind_message_id(1, "continue")
+    assert annotated[0]["rewind_id"] != annotated[2]["rewind_id"]
+
+
+def test_annotate_rewind_ids_matches_across_content_shapes():
+    """Model rows hold structured content; the display projection holds text.
+
+    Both sides normalise through _coerce_message_text, so a multimodal user turn
+    must still align — otherwise every session with an attachment would silently
+    lose its restore buttons from that turn upward.
+    """
+    model_history = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "look at this"}],
+        },
+        {"role": "assistant", "content": "sure"},
+    ]
+    display = server._history_to_messages(
+        [
+            {"role": "user", "content": [{"type": "text", "text": "look at this"}]},
+            {"role": "assistant", "content": "sure"},
+        ]
+    )
+
+    annotated = server._annotate_rewind_ids(display, model_history)
+
+    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "look at this")
+    assert (
+        server._resolve_rewind_ordinal(model_history, annotated[0]["rewind_id"]) == 0
+    )
+
+
+def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
+    history = [
+        {"role": "user", "content": "alpha"},
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "beta"},
+        {"role": "assistant", "content": "b"},
+    ]
+
+    # Exact hit.
+    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
+
+    # The turn is still there but has shifted position (a turn was inserted
+    # before it since the transcript was sent) — content still identifies it.
+    shifted = [{"role": "user", "content": "zero"}, *history]
+    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) == 2
+
+    # Drifted AND duplicated: refuse rather than guess which one was meant.
+    ambiguous = [*history, {"role": "user", "content": "beta"}]
+    assert server._resolve_rewind_ordinal(ambiguous, server._rewind_message_id(9, "beta")) is None
+
+    # Gone entirely (compacted away), and malformed ids.
+    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
+    assert server._resolve_rewind_ordinal(history, "not-a-rewind-id") is None
+    assert server._resolve_rewind_ordinal(history, "") is None
+
+
+def test_prompt_submit_truncates_by_message_id(monkeypatch):
+    """A rewind addressed by id cuts at the turn that id names."""
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "redo",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "redo"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    original_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=list(original_history))
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "redo second",
+                    "truncate_before_message_id": server._rewind_message_id(1, "second"),
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["history"] == original_history[:2]
+        assert stub_db.replaced == [("session-key", original_history[:2])]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_rejects_a_stale_message_id(monkeypatch):
+    """An id for a turn that is no longer truncatable must not cut anything.
+
+    This is the compaction case: the bubble is still on screen (it lives in the
+    display lineage) but the model history it named is gone. Refusing is the
+    whole point — the old positional ordinal would have indexed *some* other
+    turn and cut there.
+    """
+    replaced = []
+
+    class _FakeDB:
+        def replace_messages(self, key, messages):
+            replaced.append((key, list(messages)))
+
+    history = [
+        {"role": "user", "content": "still here"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    server._sessions["stale-sid"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "stale-sid",
+                    "text": "next",
+                    "truncate_before_message_id": server._rewind_message_id(
+                        0, "compacted away"
+                    ),
+                },
+            }
+        )
+        assert resp["error"]["code"] == 4018
+        assert server._sessions["stale-sid"]["history"] == history
+        assert server._sessions["stale-sid"]["running"] is False
+        assert replaced == []
+    finally:
+        server._sessions.pop("stale-sid", None)
+
