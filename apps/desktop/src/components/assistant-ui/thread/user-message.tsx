@@ -138,6 +138,26 @@ export const UserMessage: FC<{
     return null
   })
 
+  // The gateway stamps this only on turns a rewind can still reach — see
+  // SessionMessage.rewind_id. No id, no restore.
+  const rewindId = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { rewindId?: unknown }
+
+    return typeof custom.rewindId === 'string' ? custom.rewindId : null
+  })
+
+  // ...but "no id" only *means* "not rewindable" if this gateway mints ids at
+  // all. Against an older one nothing is stamped, and gating on that would
+  // remove restore from every message. Treat one stamped turn in the thread as
+  // proof the gateway is id-capable, and only then trust absence.
+  const threadStampsRewindIds = useAuiState(s =>
+    s.thread.messages.some(message => {
+      const custom = (message.metadata?.custom ?? {}) as { rewindId?: unknown }
+
+      return message.role === 'user' && typeof custom.rewindId === 'string'
+    })
+  )
+
   const attachmentRefs = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { attachmentRefs?: unknown }
 
@@ -215,7 +235,13 @@ export const UserMessage: FC<{
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
-  const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody
+  //
+  // Except where the rewind provably cannot land: a turn the gateway no longer
+  // carries in its model history (compacted away, or ancestor lineage that is
+  // displayable but not truncatable) has no rewind id, and offering the button
+  // there only produces "target user message is no longer in session history".
+  const restorable = rewindId !== null || !threadStampsRewindIds
+  const showRestore = !readOnly && !showStop && Boolean(onRequestRestoreConfirm) && hasBody && restorable
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
@@ -318,6 +344,7 @@ export const UserMessage: FC<{
                         event.stopPropagation()
                         triggerHaptic('selection')
                         onRequestRestoreConfirm?.(messageId, {
+                          rewindId,
                           text: messageText,
                           userOrdinal: runtimeUserOrdinal
                         })

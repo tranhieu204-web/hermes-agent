@@ -26,19 +26,43 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
- * Build `prompt.submit` truncation params. Ordinal 0 truncates to an empty
- * transcript (restore/regenerate the first user turn) — the gateway refuses
- * that edge unless `confirm_empty_truncate` is set, so stale clients cannot
- * silently wipe a session via a leftover ordinal.
+ * How a rewind names the turn it cuts at.
+ *
+ * `messageId` is the gateway's `rewind_id` for that turn and is what we send
+ * whenever we have it. The ordinal is a *position* in the transcript this
+ * window happens to be rendering, and that transcript is not the list the
+ * gateway truncates: it carries ancestor lineage from before a compaction
+ * handoff and rows the model history collapses out. Counting bubbles therefore
+ * overshoots (4018 "no longer in session history") or, when the gateway's own
+ * injected `[System: …]` rows pad its side, quietly cuts an earlier turn than
+ * the one that was clicked. The ordinal survives only as a fallback for a
+ * gateway too old to stamp ids.
  */
-export function truncateSubmitParams(truncateOrdinal: number | undefined): Record<string, unknown> {
-  if (truncateOrdinal === undefined) {
+export interface TruncateTarget {
+  messageId?: string
+  ordinal?: number
+}
+
+/** Build `prompt.submit` truncation params, preferring identity over position. */
+export function truncateSubmitParams(target: TruncateTarget | undefined): Record<string, unknown> {
+  if (target?.messageId) {
+    return {
+      truncate_before_message_id: target.messageId,
+      // The wipe guard exists because a bare ordinal can *drift* onto the first
+      // turn and empty the transcript. An id cannot: it only resolves there if
+      // that turn's content matched, which means the user clicked it. So an
+      // identified target carries its own confirmation.
+      confirm_empty_truncate: true
+    }
+  }
+
+  if (target?.ordinal === undefined) {
     return {}
   }
 
   return {
-    truncate_before_user_ordinal: truncateOrdinal,
-    ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
+    truncate_before_user_ordinal: target.ordinal,
+    ...(target.ordinal === 0 ? { confirm_empty_truncate: true } : {})
   }
 }
 
@@ -53,7 +77,7 @@ export async function runRewindSubmit(
   requestGateway: RequestGateway,
   sessionId: string,
   text: string,
-  truncateOrdinal: number | undefined,
+  truncateTarget: TruncateTarget | undefined,
   interruptFirst: boolean
 ): Promise<void> {
   const interrupt = async () => {
@@ -70,7 +94,7 @@ export async function runRewindSubmit(
       {
         session_id: sessionId,
         text,
-        ...truncateSubmitParams(truncateOrdinal)
+        ...truncateSubmitParams(truncateTarget)
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
@@ -105,6 +129,7 @@ export function finalizeInterruptedMessages(messages: ChatMessage[], streamId?: 
 export interface ReloadPlan {
   branchGroupId: string
   text: string
+  truncateMessageId?: string
   truncateOrdinal: number
   userIndex: number
 }
@@ -136,6 +161,7 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
   return {
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
     text,
+    truncateMessageId: userMessage.rewindId,
     truncateOrdinal: visibleUserOrdinal(messages, userIndex),
     userIndex
   }
@@ -167,6 +193,7 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
 // ---------------------------------------------------------------------------
 
 export interface RestoreTarget {
+  rewindId?: null | string
   text?: string
   userOrdinal?: null | number
 }
@@ -174,6 +201,7 @@ export interface RestoreTarget {
 export interface RestorePlan {
   sourceIndex: number
   text: string
+  truncateMessageId?: string
   truncateOrdinal: number
 }
 
@@ -204,7 +232,17 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
       ? visibleUserOrdinal(messages, sourceIndex)
       : target.userOrdinal
 
-  return { sourceIndex, text, truncateOrdinal }
+  // Prefer the id on the row as state has it now; fall back to the one the
+  // click captured. If a refresh dropped the id in between (the turn just fell
+  // out of the model history), sending the captured id is still the safer move:
+  // the gateway re-resolves it and refuses cleanly when it is gone, whereas
+  // dropping to the positional ordinal would cut *something* regardless.
+  return {
+    sourceIndex,
+    text,
+    truncateMessageId: source.rewindId ?? target?.rewindId ?? undefined,
+    truncateOrdinal
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +254,7 @@ export interface EditPlan {
   isFailedTurn: boolean
   sourceIndex: number
   text: string
+  truncateMessageId?: string
   truncateOrdinal: number | undefined
 }
 
@@ -245,6 +284,7 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     isFailedTurn,
     sourceIndex,
     text,
+    truncateMessageId: isFailedTurn ? undefined : source.rewindId,
     truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex)
   }
 }
