@@ -25,6 +25,9 @@ export type ChatMessage = {
   interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Gateway rewind identity (`SessionMessage.rewind_id`). Absent when this
+   *  turn is displayable but not rewindable — see the field's doc comment. */
+  rewindId?: string
 }
 
 export type GatewayEventPayload = {
@@ -1034,11 +1037,16 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    // Only the gateway can say whether a turn is still reachable by a rewind —
+    // it is the only side that sees the model history the cut applies to.
+    const rewindId = typeof message.rewind_id === 'string' ? message.rewind_id : undefined
+
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
       timestamp: message.timestamp,
+      ...(rewindId !== undefined ? { rewindId } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 

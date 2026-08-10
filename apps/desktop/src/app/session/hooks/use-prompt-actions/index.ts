@@ -54,7 +54,8 @@ import {
   planReload,
   planRestore,
   runRewindSubmit,
-  truncateSubmitParams
+  truncateSubmitParams,
+  type TruncateTarget
 } from './rewind'
 import { useSlashCommand } from './slash'
 import { useSubmitPrompt } from './submit'
@@ -195,6 +196,7 @@ interface PromptActionsOptions {
 /** Everything a slash handler needs about the invocation it's serving. */
 
 interface RestoreMessageTarget {
+  rewindId?: null | string
   text?: string
   userOrdinal?: number | null
 }
@@ -760,7 +762,7 @@ export function usePromptActions({
           {
             session_id: activeSessionId,
             text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
+            ...truncateSubmitParams({ messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal })
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
@@ -786,8 +788,8 @@ export function usePromptActions({
   // fresh turn. Live/stuck turns interrupt first, and a raced "session busy"
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
-    (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst),
+    (sessionId: string, text: string, truncateTarget: TruncateTarget | undefined, interruptFirst: boolean) =>
+      runRewindSubmit(requestGateway, sessionId, text, truncateTarget, interruptFirst),
     [requestGateway]
   )
 
@@ -816,7 +818,12 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          plan.text,
+          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal },
+          busyRef.current || $busy.get()
+        )
       } catch (err) {
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
@@ -865,7 +872,12 @@ export function usePromptActions({
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          plan.text,
+          { messageId: plan.truncateMessageId, ordinal: plan.truncateOrdinal },
+          busyRef.current || $busy.get()
+        )
       } catch (err) {
         let surfaced = err
 

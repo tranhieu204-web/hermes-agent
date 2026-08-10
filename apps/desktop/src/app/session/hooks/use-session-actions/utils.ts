@@ -70,6 +70,12 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
 //   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //
+// rewindId is COMPARED, not ignored: it gates whether the restore affordance
+// renders, so losing it (the turn was compacted out of the model history) has
+// to reach the UI. A stale button is a click that can only fail. Note it is
+// deliberately NOT in the carry-forward list below either — rewindability is
+// the gateway's call, so the authoritative row's absence has to win.
+//
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
 // IGNORED.
@@ -77,7 +83,7 @@ const _chatMessageFieldsExhaustive: {
   [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
-const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim'] as const
+const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId', 'interim', 'rewindId'] as const
 const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
@@ -258,6 +264,60 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
  */
 const isGatewaySystemMarker = (message: ChatMessage): boolean =>
   message.role === 'user' && chatMessageText(message).trimStart().startsWith('[System:')
+
+/**
+ * Carry gateway rewind ids across a REST-sourced transcript reconcile.
+ *
+ * `/api/sessions/{id}/messages` is served by the web server, which reads the DB
+ * and has no view of the gateway's in-memory model history — so its rows never
+ * carry `rewind_id`. That transcript is the display authority for an idle
+ * session, and taking it verbatim would strip the ids off every turn and leave
+ * the restore gate with nothing to read.
+ *
+ * Absence in a REST payload is therefore NOT evidence that a turn stopped being
+ * rewindable; only a gateway payload's absence is, which is why this is opt-in
+ * per call site rather than folded into the general reconcile.
+ *
+ * Tail-aligned and stops at the first text divergence, mirroring the gateway's
+ * own stamping: an id is only ever carried onto a turn that verbatim matches
+ * the one it came from.
+ */
+export function preserveRewindIds(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
+  const previousUsers = previousMessages.filter(message => message.role === 'user')
+
+  if (!previousUsers.some(message => message.rewindId !== undefined)) {
+    return nextMessages
+  }
+
+  const next = [...nextMessages]
+  let cursor = previousUsers.length - 1
+  let changed = false
+
+  for (let index = next.length - 1; index >= 0 && cursor >= 0; index -= 1) {
+    const message = next[index]
+
+    if (message.role !== 'user') {
+      continue
+    }
+
+    const previous = previousUsers[cursor]
+
+    if (chatMessageText(previous).trim() !== chatMessageText(message).trim()) {
+      break
+    }
+
+    cursor -= 1
+
+    if (message.rewindId !== undefined || previous.rewindId === undefined) {
+      continue
+    }
+
+    next[index] = { ...message, rewindId: previous.rewindId }
+    changed = true
+  }
+
+  return changed ? next : nextMessages
+}
 
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
