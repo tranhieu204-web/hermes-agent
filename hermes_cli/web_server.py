@@ -11221,9 +11221,10 @@ def _with_rewind_ids(db, sid: str, messages: list, limit, offset: int) -> list:
     ``session["history"]``.  We can reproduce it exactly for the case that
     matters: a session being opened cold is not live yet, and its resume sets
     ``history = sanitize_replay_history(model_history)`` from these same rows.
-    For a session that IS already live the projection can lag mid-turn, in which
-    case the gateway's own resolution falls back to a unique content match and,
-    failing that, refuses — never a wrong cut.
+    For a session that IS already live the projection can lag mid-turn.  The
+    gateway resolves ids by EXACT (ordinal, content) match only, so a stale id
+    minted here is refused with 4018 rather than applied to a shifted turn — the
+    user re-clicks on a refreshed transcript.  Never a wrong cut.
 
     Paged reads are skipped: tail alignment is only meaningful against a window
     that ends where the transcript ends.  Any failure degrades to unstamped rows

@@ -197,27 +197,29 @@ def resolve_rewind_ordinal(
 ) -> int | None:
     """Map a ``rewind_id`` back to a user ordinal in the CURRENT model history.
 
-    Exact ``(ordinal, content)`` match first.  If the position drifted since the
-    transcript was sent — a turn landed, an undo ran, or the id was minted by
-    the REST endpoint against the DB projection — fall back to a *unique*
-    content match so the intended turn is still reachable.  An ambiguous or
-    absent match resolves to ``None`` and the caller refuses: guessing here is
-    exactly the silent-wrong-cut this identity exists to prevent.
+    EXACT ``(ordinal, content)`` matches only.  Anything else resolves to
+    ``None`` and the caller refuses with 4018.
+
+    An earlier revision also accepted a *unique content* match when the position
+    had drifted, to keep a turn reachable after the history shifted underneath
+    it.  That was removed: truncation is destructive, and a content-only match
+    deliberately resolves to a DIFFERENT position than the id encodes.  Combined
+    with the client's confirmation on the id path, a drifted match could land on
+    ordinal 0 after a compaction and let ``replace_messages`` delete every
+    durable row for the session.
+
+    Refusing costs a 4018 the user can clear by re-clicking on a refreshed
+    transcript.  Guessing costs the transcript.  Callers may therefore treat a
+    successful resolution as proof of intent — see the empty-truncation guard in
+    ``prompt.submit``, which relies on it.
     """
     if not isinstance(message_id, str) or not message_id.startswith(
         f"{REWIND_ID_PREFIX}:"
     ):
         return None
 
-    user_texts = model_user_texts(history)
-    for ordinal, text in enumerate(user_texts):
+    for ordinal, text in enumerate(model_user_texts(history)):
         if rewind_message_id(ordinal, text) == message_id:
             return ordinal
 
-    digest = message_id.rsplit(":", 1)[-1]
-    matches = [
-        ordinal
-        for ordinal, text in enumerate(user_texts)
-        if rewind_digest(text) == digest
-    ]
-    return matches[0] if len(matches) == 1 else None
+    return None
