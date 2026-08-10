@@ -1,0 +1,164 @@
+MUTATION=M07_SUFFIX_TARGET_INCLUSION
+SOURCE_BASE_SHA256=6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94
+COMMAND=HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py -q -k 'archives_suffix_repairs_counters_and_preserves_exact_rows'
+EXIT=1
+
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~449 tests) under ['tests\\test_hermes_state.py', 'tests\\gateway\\test_dedupe_user_turns.py']; running with -j 64
+[  1.8% |     8/~449 | ✓0 | ✗0] ✓ tests\gateway\test_dedupe_user_turns.py (8 tests, 0.9s)
+[100.0% |   449/~449 | ✓0 | ✗1] ✗ tests\test_hermes_state.py (1✗, 1.1s)
+
+  ╔╍ Failed: tests\test_hermes_state.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║     
+  ║         result = db.rewind_active_history(
+  ║             sid,
+  ║             expected_history=history,
+  ║             truncate_before_user_ordinal=1,
+  ║         )
+  ║     
+  ║ >       assert result == {
+  ║             "rewound_count": 2,
+  ║             "target_message": {
+  ║                 **before[active_ids[2]],
+  ║                 "content": "second",
+  ║             },
+  ║             "new_head_id": active_ids[1],
+  ║             "message_count": 2,
+  ║             "tool_call_count": 2,
+  ║         }
+  ║ E       AssertionError: assert {'message_cou...ne, ...}, ...} == {'message_cou...ne, ...}, ...}
+  ║ E         
+  ║ E         Omitting 2 identical items, use -vv to show
+  ║ E         Differing items:
+  ║ E         {'rewound_count': 1} != {'rewound_count': 2}
+  ║ E         {'message_count': 3} != {'message_count': 2}
+  ║ E         {'new_head_id': 4} != {'new_head_id': 3}
+  ║ E         Use -v to get more diff
+  ║ 
+  ║ tests\test_hermes_state.py:7783: AssertionError
+  ║ =========================== short test summary info ===========================
+  ║ FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows
+  ║ 1 failed, 472 deselected in 0.48s
+  ║
+  ║  Repro: python -m pytest tests\test_hermes_state.py -q -k archives_suffix_repairs_counters_and_preserves_exact_rows
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 2 files, 0 tests passed, 1 failed (100% complete) in 1.1s (64 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 1.9s  (runner wall: 1.1s, parallelism: 64x)
+  P50: 1.08s  P90: 1.08s  P95: 1.08s  P99: 1.08s  Max: 1.08s
+  <1s: 1 files (50%)  <2s: 2 files (100%)
+  Top 10 slowest:
+      1.08s  tests\test_hermes_state.py
+      0.86s  tests\gateway\test_dedupe_user_turns.py
+
+=== Failure output ===
+
+--- tests\test_hermes_state.py ---
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_archives_suffix_repairs_counters_and_preserves_exact_rows _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x0000022B4A114A50>
+db = <hermes_state.SessionDB object at 0x0000022B49F912B0>
+
+    def test_archives_suffix_repairs_counters_and_preserves_exact_rows(self, db):
+        sid = "rewind-rich"
+        db.create_session(sid, source="cli")
+        old_id = db.append_message(sid, "user", "pre-existing inactive")
+        db.rewind_to_message(sid, old_id)
+    
+        history = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "first"}],
+                "message_id": "platform-first",
+                "observed": True,
+                "token_count": 3,
+                "effect_disposition": "kept",
+                "api_content": "first-api",
+                "display_kind": "event",
+                "display_metadata": {"z": 1, "a": [2, 3]},
+            },
+            {
+                "role": "assistant",
+                "content": "first reply",
+                "tool_calls": [
+                    {"id": "call-1", "function": {"name": "one"}},
+                    {"id": "call-2", "function": {"name": "two"}},
+                ],
+                "tool_name": "batch",
+                "finish_reason": "tool_calls",
+                "reasoning": "reason",
+                "reasoning_content": "reason-content",
+                "reasoning_details": [{"kind": "summary", "text": "r"}],
+                "codex_reasoning_items": [{"type": "reasoning", "id": "r1"}],
+                "codex_message_items": [{"type": "message", "id": "m1"}],
+                "token_count": 7,
+            },
+            {
+                "role": "user",
+                "content": "second",
+                "platform_message_id": "platform-second",
+            },
+            {"role": "assistant", "content": "second reply"},
+        ]
+        active_ids = [_append_rewind_expected(db, sid, message) for message in history]
+        late_compacted_id = db.append_message(sid, "user", "late compacted archive")
+    
+        def _archive_late_row(conn):
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1 WHERE id = ?",
+                (late_compacted_id,),
+            )
+    
+        db._execute_write(_archive_late_row)
+    
+        with db._lock:
+            before = {
+                row["id"]: dict(row)
+                for row in db._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+            }
+    
+        result = db.rewind_active_history(
+            sid,
+            expected_history=history,
+            truncate_before_user_ordinal=1,
+        )
+    
+>       assert result == {
+            "rewound_count": 2,
+            "target_message": {
+                **before[active_ids[2]],
+                "content": "second",
+            },
+            "new_head_id": active_ids[1],
+            "message_count": 2,
+            "tool_call_count": 2,
+        }
+E       AssertionError: assert {'message_cou...ne, ...}, ...} == {'message_cou...ne, ...}, ...}
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing items:
+E         {'rewound_count': 1} != {'rewound_count': 2}
+E         {'message_count': 3} != {'message_count': 2}
+E         {'new_head_id': 4} != {'new_head_id': 3}
+E         Use -v to get more diff
+
+tests\test_hermes_state.py:7783: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows
+1 failed, 472 deselected in 0.48s
+
+=== 1 file with test failures (1 test failed) ===
+  tests\test_hermes_state.py  (1 test failed)

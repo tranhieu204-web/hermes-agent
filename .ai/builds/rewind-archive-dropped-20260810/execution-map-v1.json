@@ -1,0 +1,248 @@
+{
+  "schema": "sakaan.execution-map.v1",
+  "buildId": "rewind-archive-dropped-20260810",
+  "state": "FROZEN_PENDING_PLAN_REVIEW",
+  "frozenAt": "2026-08-10T17:01:52+07:00",
+  "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+  "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
+  "intakeSha256": "ad08d3458d97a25f2daf7976b5dd0746c35945b5ebb204c464ff4313f4e2992e",
+  "form": "HIGH_RISK_DECOMPOSED",
+  "objective": "Preserve only the active suffix dropped by Desktop rewind or gateway /retry as inactive, non-compacted rows; keep legitimate hard-rewrite callers destructive; expose read-only recovery.",
+  "frozenInterfaces": [
+    {
+      "id": "I1",
+      "provider": "SessionDB",
+      "contract": "rewind_active_history(session_id, *, expected_history, truncate_before_user_ordinal) -> dict",
+      "semantics": "Within one SQLite write transaction, compare the current active persisted conversation with expected_history, resolve the active user row at the exact ordinal, set that row and its active suffix to active=0, update rewind_count plus active message/tool counters, and return target/new-head metadata. A mismatch raises before mutation. The retained prefix is never deleted or reinserted."
+    },
+    {
+      "id": "I2",
+      "provider": "TUI gateway prompt.submit",
+      "contract": "An r2 id remains the external identity. Existing r2 resolution and opening-turn confirmation run first; I1 is the canonical persistence commit. session.history changes only after I1 succeeds. Identity or persisted-history mismatch returns existing stale-rewind error 4018 with no turn launch and no state mutation."
+    },
+    {
+      "id": "I3",
+      "provider": "gateway SessionStore/AsyncSessionStore",
+      "contract": "rewind_transcript(session_id, expected_history, truncate_before_user_ordinal) -> bool",
+      "semantics": "Wrap I1 for gateway callers. /retry must check False/exception and must not resend on persistence failure. rewrite_transcript remains a destructive full-replacement primitive for redaction and other explicit callers."
+    },
+    {
+      "id": "I4",
+      "provider": "SessionDB export",
+      "contract": "export_session(session_id, *, include_rewound=False)",
+      "semantics": "Default output is unchanged and active-only. include_rewound=True returns active rows plus rows where active=0 and compacted=0, preserving row content and state fields while excluding compaction archives."
+    },
+    {
+      "id": "I5",
+      "provider": "Hermes sessions CLI",
+      "contract": "hermes sessions export <output|-> --session-id <id> --format jsonl --include-rewound",
+      "semantics": "Read-only recovery. --include-rewound is restricted to one session and JSONL and is incompatible with --only, logical-lineage aggregation, and --delete-after-verified. No default export changes."
+    },
+    {
+      "id": "I6",
+      "provider": "Retention",
+      "contract": "No new configuration or message-level TTL",
+      "semantics": "Rewound rows remain with the session and are deleted only when the existing authorized whole-session pruning/deletion contract removes that session."
+    }
+  ],
+  "l1Packages": [
+    {
+      "id": "P1",
+      "name": "Atomic suffix archive and Desktop rewind",
+      "consumerValue": "Desktop Restore/Edit/Re-run no longer hard-deletes the selected turn and later turns; a failed write leaves the visible and persisted session unchanged.",
+      "dependsOn": [],
+      "writer": "Hermes gpt-5.6-sol HIGH, sole builder-finalizer",
+      "files": [
+        "hermes_state.py",
+        "tui_gateway/server.py",
+        "tests/test_hermes_state.py",
+        "tests/test_tui_gateway_server.py",
+        "apps/desktop/src/app/session/hooks/use-prompt-actions/rewind.ts",
+        "apps/desktop/src/components/assistant-ui/thread/types.ts",
+        "apps/desktop/src/i18n/ar.ts",
+        "apps/desktop/src/i18n/en.ts",
+        "apps/desktop/src/i18n/ja.ts",
+        "apps/desktop/src/i18n/zh-hant.ts",
+        "apps/desktop/src/i18n/zh.ts"
+      ],
+      "l2Checkpoints": [
+        {
+          "id": "P1.C1",
+          "stage": "RED",
+          "deliverable": "Behavioral regression on exact base: persist a full multi-turn transcript plus a pre-existing inactive row, invoke prompt.submit rewind by r2 identity, and require the dropped sentinel to survive as active=0, compacted=0 while the prefix stays single and active.",
+          "pass": "The new assertion fails on 872c341302 for the missing archived sentinel and does not fail earlier for harness/setup reasons.",
+          "rollback": "Delete only the uncommitted RED assertion/test edit. No production state."
+        },
+        {
+          "id": "P1.C2",
+          "stage": "BUILD",
+          "deliverable": "Implement I1, direct transaction tests, exact mismatch refusal, active counter repair, pre-existing inactive preservation, and non-rewind replace_messages regression coverage.",
+          "pass": "P1.C1 turns GREEN; direct state tests prove suffix-only archival, no prefix duplication, rollback on injected write failure, and unchanged destructive replacement defaults.",
+          "rollback": "Revert P1 storage/test changes. No schema rollback; any inactive rows created during isolated tests are disposable."
+        },
+        {
+          "id": "P1.C3",
+          "stage": "BUILD",
+          "deliverable": "Route prompt.submit through I1/I2, reorder in-memory commit after DB success, update opening-turn comments/copy in every shipped Desktop locale, and retain all rewind-identity guards.",
+          "pass": "Focused TUI gateway and Desktop Vitest/type checks pass; forced DB failure returns without history mutation or turn start.",
+          "rollback": "Revert the P1 gateway/Desktop source set as one package; the old destructive Desktop rewind is restored and must be reported as unsafe."
+        }
+      ],
+      "rollbackBoundary": "P1 is reverted as one semantic package. It has no migration. Archived rows already written remain inert and readable; code rollback reintroduces future data loss and is containment only."
+    },
+    {
+      "id": "P2",
+      "name": "Gateway /retry parity",
+      "consumerValue": "Retrying the latest gateway turn preserves the replaced turn for recovery and never sends a replacement when persistence failed.",
+      "dependsOn": ["P1.C2"],
+      "writer": "Hermes gpt-5.6-sol HIGH, sole builder-finalizer",
+      "files": [
+        "gateway/session.py",
+        "gateway/slash_commands.py",
+        "tests/gateway/test_session.py",
+        "tests/gateway/test_retry_response.py"
+      ],
+      "l2Checkpoints": [
+        {
+          "id": "P2.C1",
+          "stage": "RED",
+          "deliverable": "Gateway /retry regression requires the dropped last user/assistant turn to become rewind-inactive and requires retry to abort when persistence returns false.",
+          "pass": "On exact base, the archive assertion fails because rewrite_transcript hard-deletes; the failure-abort assertion exposes the ignored write result.",
+          "rollback": "Delete only the uncommitted gateway RED assertions."
+        },
+        {
+          "id": "P2.C2",
+          "stage": "BUILD",
+          "deliverable": "Add I3 and move /retry from destructive rewrite_transcript to validated soft rewind without changing redaction or compression callers.",
+          "pass": "P2 RED tests turn GREEN; existing gateway session, retry, redaction, and compression tests remain green.",
+          "rollback": "Revert P2 files only. P1 remains valid for Desktop; /retry returns to destructive behavior and cannot ship as accepted scope."
+        }
+      ],
+      "rollbackBoundary": "P2 is isolated from redaction and compression contracts; no global rewrite_transcript default changes."
+    },
+    {
+      "id": "P3",
+      "name": "Read-only recovery export and frozen canary",
+      "consumerValue": "A user can recover byte-exact rewound rows without mutating or restoring a branch, while ordinary export/search/replay behavior remains unchanged.",
+      "dependsOn": ["P1.C2", "P2.C2"],
+      "writer": "Hermes gpt-5.6-sol HIGH, sole builder-finalizer",
+      "files": [
+        "hermes_cli/main.py",
+        "tests/hermes_cli/test_sessions_export_rewound.py",
+        ".ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py"
+      ],
+      "l2Checkpoints": [
+        {
+          "id": "P3.C1",
+          "stage": "RED",
+          "deliverable": "CLI regression requires --include-rewound to export only live plus active=0/compacted=0 rows for one session and reject destructive/incompatible option combinations.",
+          "pass": "Exact base fails because the option/interface does not exist; ordinary export controls stay green.",
+          "rollback": "Delete the uncommitted new CLI test/canary files."
+        },
+        {
+          "id": "P3.C2",
+          "stage": "BUILD",
+          "deliverable": "Implement I4/I5 and the isolated real-state.db restart/reopen canary with unique sentinel, pre-existing inactive row, live replay/search isolation, byte-exact recovery, and hard-rewrite control.",
+          "pass": "CLI tests and frozen canary pass twice against disposable HERMES_HOME roots; no production profile is opened or changed.",
+          "rollback": "Revert P3 files. P1/P2 archives remain internal but the build cannot be accepted because supported recovery is absent."
+        }
+      ],
+      "rollbackBoundary": "P3 adds no write path and no migration. Reverting it removes only the supported recovery surface and canary."
+    }
+  ],
+  "dependencyEdges": [
+    {
+      "id": "E1",
+      "class": "transport_identity",
+      "from": "Desktop renderer Restore/Edit/Re-run",
+      "to": "tui_gateway prompt.submit",
+      "contract": "Existing r2 rewind_id plus dedicated opening-turn confirmation; no positional fallback when an id is present."
+    },
+    {
+      "id": "E2",
+      "class": "semantic_identity",
+      "from": "prompt.submit r2 resolver",
+      "to": "session model history",
+      "contract": "Exact occurrence/ordinal/content binding; stale or shifted identity returns 4018 before persistence."
+    },
+    {
+      "id": "E3",
+      "class": "call_persistence",
+      "from": "prompt.submit truncation branch",
+      "to": "I1 SessionDB transaction",
+      "contract": "Pass the full expected active history and exact target user ordinal; never pass only a retained prefix to replace_messages."
+    },
+    {
+      "id": "E4",
+      "class": "persistence",
+      "from": "I1",
+      "to": "SQLite messages/sessions",
+      "contract": "Single write transaction archives exact active suffix and updates rewind/message/tool counters; retained prefix and old inactive rows are untouched."
+    },
+    {
+      "id": "E5",
+      "class": "runtime_authority",
+      "from": "I1 commit result",
+      "to": "session.history and turn launch",
+      "contract": "DB is authoritative; memory truncation and turn launch occur only after successful commit. Failure preserves pre-call state."
+    },
+    {
+      "id": "E6",
+      "class": "call_semantic",
+      "from": "gateway /retry",
+      "to": "I3 SessionStore wrapper",
+      "contract": "Archive the latest retry target through I1 and check success; rewrite_transcript remains destructive for explicit hard-rewrite callers."
+    },
+    {
+      "id": "E7",
+      "class": "read_capability",
+      "from": "CLI --include-rewound",
+      "to": "I4 SessionDB export",
+      "contract": "Read one resolved session; include active plus inactive non-compacted rows; expose row-state fields; no mutation."
+    },
+    {
+      "id": "E8",
+      "class": "read_isolation",
+      "from": "live replay and ordinary search",
+      "to": "messages active/compacted filters",
+      "contract": "Live replay stays active-only. Ordinary search continues active=1 OR compacted=1 and therefore hides rewind rows while retaining compaction behavior."
+    },
+    {
+      "id": "E9",
+      "class": "authority",
+      "from": "candidate branch commit",
+      "to": "main/release refs",
+      "contract": "No direct main commit, merge, push, deploy, or clearance. Only COO-transported reland receipt and later Sakaan authority can advance lifecycle."
+    },
+    {
+      "id": "E10",
+      "class": "integration_transport",
+      "from": "backend accepted source candidate",
+      "to": "Desktop repository port",
+      "contract": "Port the accepted diff onto exact Desktop base, exclude apps/desktop/electron/main.ts, run the same semantic tests, and obtain a separate reland-gate receipt."
+    }
+  ],
+  "fileOwnershipRule": "Every listed file has exactly one L1 package and one writer. A discovered need to touch a file owned by another package requires map v2 and plan re-audit before editing.",
+  "controls": {
+    "credentials": "No new credential, provider, network, or environment-variable reach.",
+    "configuration": "No config.yaml or schema change.",
+    "dependencies": "No new dependency or licence surface.",
+    "testIsolation": "All canaries use disposable HERMES_HOME and state.db; no production Desktop/runtime verification before deployment authority.",
+    "review": "Fresh Claude Code claude-opus-5 HIGH, COO-transported, read-only. Builder is excluded from every assurance claim.",
+    "reland": "Use only pwsh -File C:\\Users\\HieuKa\\AppData\\Local\\hermes\\reland-gate\\reland-gate.ps1 verify -Repo <repo>. Backend floor: 434 modules and only known hermes_cli.pty_bridge failure.",
+    "stopConditions": [
+      "Any staged/moved/unexpected change in either original dirty worktree",
+      "Base or fork/main differs from 872c341302b5ed8941f280c3b7939cabba930b5a",
+      "Plan reviewer identity/effort/freshness cannot be attested",
+      "Plan review is HOLD/UNKNOWN or requests an interface/scope change",
+      "A RED test fails for setup/harness reasons rather than the intended missing archive behavior",
+      "Any new import failure or backend module count below 434",
+      "Any requirement to modify the two unrelated dirty files, canonical governance sources, or credentials"
+    ]
+  },
+  "freshnessBudgets": {
+    "builderCheckpoint": "Freeze evidence after every L2 checkpoint or 60 minutes/35k estimated tokens, whichever comes first.",
+    "reviewer": "One fresh plan-review invocation and one fresh final-inspection invocation; no context reuse from COO or builder.",
+    "recollection": "A fresh worker reads only INTAKE.md, this execution map, the latest checkpoint receipt, and exact assigned files."
+  }
+}

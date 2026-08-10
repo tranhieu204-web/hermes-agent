@@ -14433,3 +14433,138 @@ def test_prompt_submit_rejects_a_stale_message_id(monkeypatch):
     finally:
         server._sessions.pop("stale-sid", None)
 
+
+def test_prompt_submit_rewind_archives_newly_dropped_suffix(tmp_path, monkeypatch):
+    """The live rewind path must soft-archive the suffix it drops."""
+    from hermes_state import SessionDB
+
+    sid = "prompt-red-archives-suffix"
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    retained = history[:2]
+    dropped = history[2:]
+
+    db = SessionDB(db_path=tmp_path / "prompt-red-state.db")
+    db.create_session(sid, source="tui")
+    for message in history:
+        db.append_message(sid, role=message["role"], content=message["content"])
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {
+                "final_response": "redone",
+                "messages": [*(conversation_history or []), {"role": "user", "content": prompt}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions[sid] = _session(agent=_Agent(), history=list(history), session_key=sid)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+    monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "prompt-red",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "redo second",
+                    "truncate_before_message_id": _rid(history, 1),
+                },
+            }
+        )
+        assert response.get("result"), f"rewind was refused: {response.get('error')}"
+
+        all_rows = db.get_messages(sid, include_inactive=True)
+        rewound = [
+            row
+            for row in all_rows
+            if row.get("active") == 0 and row.get("compacted") == 0
+        ]
+        assert [row["content"] for row in rewound] == [m["content"] for m in dropped], (
+            "base hard-deleted the newly dropped prompt.submit suffix instead of preserving it "
+            "as active=0, compacted=0"
+        )
+        assert [row["content"] for row in db.get_messages(sid)] == [
+            m["content"] for m in retained
+        ]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix(
+    tmp_path, monkeypatch
+):
+    """TUI /retry must convert coordinates and durably archive before sending."""
+    from hermes_state import SessionDB
+
+    sid = "retry-red-coordinate"
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "calling tool"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "retry me"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    user_indices = [i for i, message in enumerate(history) if message.get("role") == "user"]
+    last_user_array_index = user_indices[-1]
+    last_user_ordinal = len(user_indices) - 1
+
+    # Total discriminator: passing the array index as an ordinal is necessarily
+    # out of range, so wrong wiring can only refuse and can never cut another turn.
+    assert user_indices == [0, 4]
+    assert last_user_array_index != last_user_ordinal
+    assert last_user_array_index >= len(user_indices)
+
+    db = SessionDB(db_path=tmp_path / "retry-red-state.db")
+    db.create_session(sid, source="tui")
+    for message in history:
+        db.append_message(sid, role=message["role"], content=message["content"])
+
+    server._sessions[sid] = _session(history=list(history), session_key=sid)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "retry-red",
+                "method": "command.dispatch",
+                "params": {"session_id": sid, "name": "retry", "arg": ""},
+            }
+        )
+        assert response.get("result") == {"type": "send", "message": "retry me"}, (
+            "wrong array-index-to-user-ordinal wiring refused the retry"
+        )
+        assert server._sessions[sid]["history"] == history[:last_user_array_index]
+
+        all_rows = db.get_messages(sid, include_inactive=True)
+        rewound = [
+            row
+            for row in all_rows
+            if row.get("active") == 0 and row.get("compacted") == 0
+        ]
+        assert [row["content"] for row in rewound] == ["retry me", "old answer"], (
+            "base /retry changed only memory; its dropped suffix has no durable rewind archive"
+        )
+        assert [row["content"] for row in db.get_messages(sid)] == [
+            message["content"] for message in history[:last_user_array_index]
+        ]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+

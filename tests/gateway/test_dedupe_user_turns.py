@@ -61,6 +61,49 @@ class TestHasPlatformMessageId:
         assert store.has_platform_message_id("s1", "msg-456")
         assert not store.has_platform_message_id("s1", "msg-000")
 
+    def test_rewound_platform_id_allows_one_live_resurrection(self, tmp_path):
+        """Rewind-only rows cannot suppress a legitimate redelivery."""
+        db = self._make_db(tmp_path)
+        history = [{"role": "user", "content": "hello", "message_id": "msg-x"}]
+        old_id = db.append_message(
+            session_id="s1",
+            role="user",
+            content="hello",
+            platform_message_id="msg-x",
+        )
+        assert db.has_platform_message_id("s1", "msg-x")
+
+        db.rewind_active_history(
+            "s1",
+            expected_history=history,
+            truncate_before_user_ordinal=0,
+        )
+        assert not db.has_platform_message_id("s1", "msg-x")
+
+        new_id = db.append_message(
+            session_id="s1",
+            role="user",
+            content="hello redelivered",
+            platform_message_id="msg-x",
+        )
+        assert new_id != old_id
+        assert db.has_platform_message_id("s1", "msg-x")
+        rows = [
+            row
+            for row in db.get_messages("s1", include_inactive=True)
+            if row["platform_message_id"] == "msg-x"
+        ]
+        assert [(row["id"], row["active"], row["compacted"]) for row in rows] == [
+            (old_id, 0, 0),
+            (new_id, 1, 0),
+        ]
+
+        # A compacted row still counts as a durable dedupe hit.
+        db.archive_and_compact(
+            "s1", [{"role": "user", "content": "summary"}]
+        )
+        assert db.has_platform_message_id("s1", "msg-x")
+
 
 class TestDedupeOnTransientFailure:
     """The gateway's transient-failure path must not persist duplicates."""

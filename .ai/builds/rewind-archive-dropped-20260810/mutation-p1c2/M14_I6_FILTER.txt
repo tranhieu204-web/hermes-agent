@@ -1,0 +1,101 @@
+MUTATION=M14_I6_FILTER
+SOURCE_BASE_SHA256=6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94
+COMMAND=HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py -q -k 'rewound_platform_id_allows_one_live_resurrection'
+EXIT=1
+
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~449 tests) under ['tests\\test_hermes_state.py', 'tests\\gateway\\test_dedupe_user_turns.py']; running with -j 64
+[ 98.2% |   441/~449 | ✓0 | ✗0] ✓ tests\test_hermes_state.py (441 tests, 0.7s)
+[100.0% |   449/~449 | ✓0 | ✗1] ✗ tests\gateway\test_dedupe_user_turns.py (1✗, 1.1s)
+
+  ╔╍ Failed: tests\gateway\test_dedupe_user_turns.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ 
+  ║ self = <tests.gateway.test_dedupe_user_turns.TestHasPlatformMessageId object at 0x00000238A0BBB020>
+  ║ tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-unknown/pytest-35779/test_rewound_platform_id_allow0')
+  ║ 
+  ║     def test_rewound_platform_id_allows_one_live_resurrection(self, tmp_path):
+  ║         """Rewind-only rows cannot suppress a legitimate redelivery."""
+  ║         db = self._make_db(tmp_path)
+  ║         history = [{"role": "user", "content": "hello", "message_id": "msg-x"}]
+  ║         old_id = db.append_message(
+  ║             session_id="s1",
+  ║             role="user",
+  ║             content="hello",
+  ║             platform_message_id="msg-x",
+  ║         )
+  ║         assert db.has_platform_message_id("s1", "msg-x")
+  ║     
+  ║         db.rewind_active_history(
+  ║             "s1",
+  ║             expected_history=history,
+  ║             truncate_before_user_ordinal=0,
+  ║         )
+  ║ >       assert not db.has_platform_message_id("s1", "msg-x")
+  ║ E       AssertionError: assert not True
+  ║ E        +  where True = has_platform_message_id('s1', 'msg-x')
+  ║ E        +    where has_platform_message_id = <hermes_state.SessionDB object at 0x00000238A0E51550>.has_platform_message_id
+  ║ 
+  ║ tests\gateway\test_dedupe_user_turns.py:81: AssertionError
+  ║ =========================== short test summary info ===========================
+  ║ FAILED tests/gateway/test_dedupe_user_turns.py::TestHasPlatformMessageId::test_rewound_platform_id_allows_one_live_resurrection
+  ║ 1 failed, 7 deselected in 0.46s
+  ║
+  ║  Repro: python -m pytest tests\gateway\test_dedupe_user_turns.py -q -k rewound_platform_id_allows_one_live_resurrection
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 2 files, 0 tests passed, 1 failed (100% complete) in 1.1s (64 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 1.8s  (runner wall: 1.1s, parallelism: 64x)
+  P50: 1.06s  P90: 1.06s  P95: 1.06s  P99: 1.06s  Max: 1.06s
+  <1s: 1 files (50%)  <2s: 2 files (100%)
+  Top 10 slowest:
+      1.06s  tests\gateway\test_dedupe_user_turns.py
+      0.75s  tests\test_hermes_state.py
+
+=== Failure output ===
+
+--- tests\gateway\test_dedupe_user_turns.py ---
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestHasPlatformMessageId.test_rewound_platform_id_allows_one_live_resurrection _
+
+self = <tests.gateway.test_dedupe_user_turns.TestHasPlatformMessageId object at 0x00000238A0BBB020>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-unknown/pytest-35779/test_rewound_platform_id_allow0')
+
+    def test_rewound_platform_id_allows_one_live_resurrection(self, tmp_path):
+        """Rewind-only rows cannot suppress a legitimate redelivery."""
+        db = self._make_db(tmp_path)
+        history = [{"role": "user", "content": "hello", "message_id": "msg-x"}]
+        old_id = db.append_message(
+            session_id="s1",
+            role="user",
+            content="hello",
+            platform_message_id="msg-x",
+        )
+        assert db.has_platform_message_id("s1", "msg-x")
+    
+        db.rewind_active_history(
+            "s1",
+            expected_history=history,
+            truncate_before_user_ordinal=0,
+        )
+>       assert not db.has_platform_message_id("s1", "msg-x")
+E       AssertionError: assert not True
+E        +  where True = has_platform_message_id('s1', 'msg-x')
+E        +    where has_platform_message_id = <hermes_state.SessionDB object at 0x00000238A0E51550>.has_platform_message_id
+
+tests\gateway\test_dedupe_user_turns.py:81: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_dedupe_user_turns.py::TestHasPlatformMessageId::test_rewound_platform_id_allows_one_live_resurrection
+1 failed, 7 deselected in 0.46s
+
+=== 1 file with test failures (1 test failed) ===
+  tests\gateway\test_dedupe_user_turns.py  (1 test failed)

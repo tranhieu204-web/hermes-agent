@@ -7651,3 +7651,274 @@ class TestDisplayMetadataReadPaths:
         )
         assert db.get_messages_as_conversation("s1")[0]["display_metadata"] == self.META
 
+
+# =========================================================================
+# Atomic active-history rewind (I1 / I4)
+# =========================================================================
+
+def _rewind_raw_snapshot(db, session_id):
+    """Exact persisted rows, counters, rewind count and active head."""
+    with db._lock:
+        rows = [
+            tuple(row)
+            for row in db._conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        ]
+        counters = tuple(
+            db._conn.execute(
+                "SELECT message_count, tool_call_count, rewind_count "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        )
+        head = db._conn.execute(
+            "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchone()[0]
+    return rows, counters, head
+
+
+def _append_rewind_expected(db, session_id, message):
+    values = dict(message)
+    if "message_id" in values:
+        values["platform_message_id"] = values.pop("message_id")
+    return db.append_message(session_id=session_id, **values)
+
+
+def _seed_simple_rewind_history(db, session_id="rewind-atomic"):
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+    db.create_session(session_id, source="cli")
+    ids = [_append_rewind_expected(db, session_id, message) for message in history]
+    return history, ids
+
+
+class TestRewindActiveHistory:
+    def test_normalizer_is_complete_partition_of_messages_schema(self, db):
+        with db._lock:
+            columns = {
+                row[1]
+                for row in db._conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+        semantic = set(SessionDB._REWIND_SEMANTIC_FIELDS)
+        excluded = set(SessionDB._REWIND_EXCLUDED_DB_FIELDS)
+        assert len(columns) == 23
+        assert len(semantic) == 18
+        assert excluded == {"id", "session_id", "timestamp", "active", "compacted"}
+        assert semantic.isdisjoint(excluded)
+        assert semantic | excluded == columns
+
+    def test_archives_suffix_repairs_counters_and_preserves_exact_rows(self, db):
+        sid = "rewind-rich"
+        db.create_session(sid, source="cli")
+        old_id = db.append_message(sid, "user", "pre-existing inactive")
+        db.rewind_to_message(sid, old_id)
+
+        history = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "first"}],
+                "message_id": "platform-first",
+                "observed": True,
+                "token_count": 3,
+                "effect_disposition": "kept",
+                "api_content": "first-api",
+                "display_kind": "event",
+                "display_metadata": {"z": 1, "a": [2, 3]},
+            },
+            {
+                "role": "assistant",
+                "content": "first reply",
+                "tool_calls": [
+                    {"id": "call-1", "function": {"name": "one"}},
+                    {"id": "call-2", "function": {"name": "two"}},
+                ],
+                "tool_name": "batch",
+                "finish_reason": "tool_calls",
+                "reasoning": "reason",
+                "reasoning_content": "reason-content",
+                "reasoning_details": [{"kind": "summary", "text": "r"}],
+                "codex_reasoning_items": [{"type": "reasoning", "id": "r1"}],
+                "codex_message_items": [{"type": "message", "id": "m1"}],
+                "token_count": 7,
+            },
+            {
+                "role": "user",
+                "content": "second",
+                "platform_message_id": "platform-second",
+            },
+            {"role": "assistant", "content": "second reply"},
+        ]
+        active_ids = [_append_rewind_expected(db, sid, message) for message in history]
+        late_compacted_id = db.append_message(sid, "user", "late compacted archive")
+
+        def _archive_late_row(conn):
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1 WHERE id = ?",
+                (late_compacted_id,),
+            )
+
+        db._execute_write(_archive_late_row)
+
+        with db._lock:
+            before = {
+                row["id"]: dict(row)
+                for row in db._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+            }
+
+        result = db.rewind_active_history(
+            sid,
+            expected_history=history,
+            truncate_before_user_ordinal=1,
+        )
+
+        assert result == {
+            "rewound_count": 2,
+            "target_message": {
+                **before[active_ids[2]],
+                "content": "second",
+            },
+            "new_head_id": active_ids[1],
+            "message_count": 2,
+            "tool_call_count": 2,
+        }
+        # JSON-valued target fields are null here, so the decoded target is
+        # byte-identical to the raw row except for the already-text content.
+        with db._lock:
+            after = {
+                row["id"]: dict(row)
+                for row in db._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+            }
+        assert after[old_id] == before[old_id]
+        assert after[late_compacted_id] == before[late_compacted_id]
+        for message_id in active_ids[:2]:
+            assert after[message_id] == before[message_id]
+        for message_id in active_ids[2:]:
+            expected_row = dict(before[message_id])
+            expected_row["active"] = 0
+            expected_row["compacted"] = 0
+            assert after[message_id] == expected_row
+        session = db.get_session(sid)
+        assert (session["message_count"], session["tool_call_count"], session["rewind_count"]) == (2, 2, 2)
+
+    def test_rejects_semantic_mismatch_without_mutation(self, db):
+        history, _ids = _seed_simple_rewind_history(db)
+        stale = [dict(message) for message in history]
+        stale[1]["content"] = "changed"
+        before = _rewind_raw_snapshot(db, "rewind-atomic")
+        with pytest.raises(hermes_state.RewindHistoryConflict):
+            db.rewind_active_history(
+                "rewind-atomic",
+                expected_history=stale,
+                truncate_before_user_ordinal=1,
+            )
+        assert _rewind_raw_snapshot(db, "rewind-atomic") == before
+
+    def test_rejects_nonserializable_expected_value_without_mutation(self, db):
+        history, _ids = _seed_simple_rewind_history(db)
+        unsupported = [dict(message) for message in history]
+        unsupported[0]["content"] = {"not-json-serializable"}
+        before = _rewind_raw_snapshot(db, "rewind-atomic")
+        with pytest.raises(hermes_state.RewindHistoryConflict):
+            db.rewind_active_history(
+                "rewind-atomic",
+                expected_history=unsupported,
+                truncate_before_user_ordinal=1,
+            )
+        assert _rewind_raw_snapshot(db, "rewind-atomic") == before
+
+    @pytest.mark.parametrize("bad_ordinal", [-1, 2, 9, "1", True])
+    def test_rejects_invalid_ordinal_without_any_mutation(self, db, bad_ordinal):
+        history, _ids = _seed_simple_rewind_history(db)
+        before = _rewind_raw_snapshot(db, "rewind-atomic")
+        with pytest.raises(hermes_state.RewindHistoryConflict):
+            db.rewind_active_history(
+                "rewind-atomic",
+                expected_history=history,
+                truncate_before_user_ordinal=bad_ordinal,
+            )
+        assert _rewind_raw_snapshot(db, "rewind-atomic") == before
+
+    def test_rejects_compression_closed_session_without_mutation(self, db):
+        history, _ids = _seed_simple_rewind_history(db)
+        db.end_session("rewind-atomic", end_reason="compression")
+        before = _rewind_raw_snapshot(db, "rewind-atomic")
+        with pytest.raises(hermes_state.CompressionSessionClosedError):
+            db.rewind_active_history(
+                "rewind-atomic",
+                expected_history=history,
+                truncate_before_user_ordinal=1,
+            )
+        assert _rewind_raw_snapshot(db, "rewind-atomic") == before
+
+    def test_compare_and_mutate_hold_begin_immediate_lock(self, db, monkeypatch):
+        history, _ids = _seed_simple_rewind_history(db)
+        original = db._canonicalize_rewind_history
+        observed_lock = []
+
+        def _probe(session_id, candidate, *, persisted):
+            if persisted and not observed_lock:
+                contender = sqlite3.connect(db.db_path, timeout=0, isolation_level=None)
+                try:
+                    with pytest.raises(sqlite3.OperationalError, match="locked"):
+                        contender.execute("BEGIN IMMEDIATE")
+                    observed_lock.append(True)
+                finally:
+                    contender.close()
+            return original(session_id, candidate, persisted=persisted)
+
+        monkeypatch.setattr(db, "_canonicalize_rewind_history", _probe)
+        result = db.rewind_active_history(
+            "rewind-atomic",
+            expected_history=history,
+            truncate_before_user_ordinal=1,
+        )
+        assert observed_lock == [True]
+        assert result["rewound_count"] == 2
+
+    def test_export_include_rewound_excludes_compaction_archives_and_is_read_only(self, db):
+        sid = "rewind-export"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "compaction archive")
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "second reply"},
+        ]
+        db.archive_and_compact(sid, history)
+        db.rewind_active_history(
+            sid,
+            expected_history=history,
+            truncate_before_user_ordinal=1,
+        )
+        before = _rewind_raw_snapshot(db, sid)
+
+        default = db.export_session(sid)
+        recovery = db.export_session(sid, include_rewound=True)
+
+        assert [m["content"] for m in default["messages"]] == ["first", "first reply"]
+        assert [m["content"] for m in recovery["messages"]] == [
+            "first",
+            "first reply",
+            "second",
+            "second reply",
+        ]
+        assert [(m["active"], m["compacted"]) for m in recovery["messages"]] == [
+            (1, 0),
+            (1, 0),
+            (0, 0),
+            (0, 0),
+        ]
+        assert _rewind_raw_snapshot(db, sid) == before
+

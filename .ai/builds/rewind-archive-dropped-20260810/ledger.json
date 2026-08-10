@@ -1,0 +1,597 @@
+{
+  "schemaVersion": 1,
+  "standardId": "sakaan-development-pipeline-v1",
+  "buildId": "rewind-archive-dropped-20260810",
+  "project": {
+    "name": "Hermes Agent recoverable rewind archive",
+    "repoRoot": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
+    "taskType": "software-build",
+    "risk": "HIGH"
+  },
+  "releaseLine": {
+    "remoteName": "fork",
+    "remoteUrl": "https://github.com/NousResearch/hermes-agent.git",
+    "ref": "refs/heads/main",
+    "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a"
+  },
+  "identities": {
+    "planner": "Hermes openai-codex gpt-5.6-sol HIGH — builder-authored execution map",
+    "builder": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer; assurance-excluded",
+    "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH — builder meta-audit; not assurance",
+    "finalInspector": "PENDING fresh-epoch recheck by the same independent Claude Code claude-opus-5 HIGH reviewer",
+    "reviewers": [
+      "PENDING one fresh COO-transported Claude Code claude-opus-5 HIGH reviewer"
+    ]
+  },
+  "requirements": [
+    {
+      "id": "R1",
+      "status": "PENDING",
+      "evidence": "Frozen requirement: INTAKE.md acceptance 1-7; no build evidence yet"
+    },
+    {
+      "id": "R2",
+      "status": "PENDING",
+      "evidence": "Frozen requirement: Desktop prompt.submit and r2 invariants; no build evidence yet"
+    },
+    {
+      "id": "R3",
+      "status": "PENDING",
+      "evidence": "Frozen requirement: gateway /retry parity and hard-rewrite controls; no build evidence yet"
+    },
+    {
+      "id": "R4",
+      "status": "PENDING",
+      "evidence": "Frozen requirement: read-only one-session JSONL rewind recovery; no build evidence yet"
+    },
+    {
+      "id": "R5",
+      "status": "PENDING",
+      "evidence": "Frozen requirement: no schema/config/dependency change and session-level retention; no build evidence yet"
+    }
+  ],
+  "tests": [
+    {
+      "id": "T1",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_tui_gateway_server.py -q",
+      "output": "VALID_RED actual runner: 473 passed, 2 intended failed in 87.36s; failures are exactly the two named P1.C1 assertions, both showing empty inactive archive versus the expected dropped suffix.",
+      "discovered": 475,
+      "passed": 473,
+      "failed": 2,
+      "receipt": "STAGE-3-RED-RECEIPT.md sha256 f55c4b4b19a75c84a5c103622f32f315a35b51078fed56f31f7cda8f295abe5b",
+      "candidateTestFileSha256": "985ff64021be21bf1d72ceece9e134117086cb6a38eb07bbaabcf278ec8ed81c"
+    },
+    {
+      "id": "T1b",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/cli/test_cli_retry.py -q",
+      "output": "VALID_RED actual runner: 2 passed, 1 intended failed in 1.02s; named CLI companion reached the durable archive assertion and found no inactive dropped suffix.",
+      "discovered": 3,
+      "passed": 2,
+      "failed": 1,
+      "receipt": "STAGE-3-RED-RECEIPT.md sha256 f55c4b4b19a75c84a5c103622f32f315a35b51078fed56f31f7cda8f295abe5b",
+      "candidateTestFileSha256": "3f76263ed3d0d9b6f6186897da9588ed9303f2a62162edf164fb2200b9a59434"
+    },
+    {
+      "id": "T2",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py tests/gateway/test_session.py tests/gateway/test_retry_response.py -q",
+      "output": "PENDING build GREEN",
+      "discovered": null,
+      "passed": null,
+      "failed": null
+    },
+    {
+      "id": "T3",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py -q",
+      "output": "PENDING recovery export build",
+      "discovered": null,
+      "passed": null,
+      "failed": null
+    },
+    {
+      "id": "T4",
+      "command": "'/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' .ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py",
+      "output": "PENDING isolated state.db canary",
+      "discovered": null,
+      "passed": null,
+      "failed": null
+    },
+    {
+      "id": "T3b",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/acp/test_session.py -q",
+      "output": "PENDING P3 control: normal ACP non-owner guarded fallback preserves active=0,compacted=0; does not clear fail-open/TOCTOU residual.",
+      "discovered": null,
+      "passed": null,
+      "failed": null
+    }
+  ],
+  "mutation": [
+    {
+      "id": "M1",
+      "mutatedResult": "PENDING",
+      "restoredResult": "PENDING",
+      "output": "Planned: disable active-suffix predicate and prove the archive regression fails"
+    },
+    {
+      "id": "M2",
+      "mutatedResult": "PENDING",
+      "restoredResult": "PENDING",
+      "output": "Planned: force persistence failure and prove memory/turn launch do not advance"
+    }
+  ],
+  "candidate": {
+    "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "sourceSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "reverifiedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "state": "PRE_BUILD_BASE"
+  },
+  "submission": {
+    "verdict": "PENDING",
+    "exactSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "receipt": "No builder submission yet"
+  },
+  "push": {
+    "status": "PENDING",
+    "expectedRemoteSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "remoteReadbackSha": null,
+    "source": "git-ls-remote",
+    "authority": "No push authority"
+  },
+  "ci": {
+    "required": true,
+    "status": "PENDING",
+    "exactSha": null,
+    "triggerCoversReleaseRef": null,
+    "url": "PENDING"
+  },
+  "artifact": {
+    "required": false,
+    "status": "PENDING",
+    "rationale": "Current authorized lifecycle is source candidate and dual-repository port only; no deploy or packaged artifact authority"
+  },
+  "finalInspection": {
+    "status": "PENDING",
+    "exactSha": null,
+    "artifactSha256": "NOT_APPLICABLE",
+    "receipt": "PENDING fresh assurance invocation"
+  },
+  "clearance": {
+    "status": "PENDING",
+    "exactSha": null,
+    "receipt": "PENDING Sakaan clearance"
+  },
+  "deployment": {
+    "required": false,
+    "status": "PENDING",
+    "rationale": "No deploy authority in this build order",
+    "consumerTest": "PENDING",
+    "offMachineDurability": "PENDING"
+  },
+  "liveVerification": {
+    "required": false,
+    "status": "PENDING",
+    "rationale": "No deployment or activation authority; isolated consumer canary is still required",
+    "consumerTest": "PENDING"
+  },
+  "rollback": {
+    "command": "PENDING exact candidate-specific revert/port rollback command",
+    "testStatus": "PENDING",
+    "priorIdentity": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "postRollbackReadback": "PENDING",
+    "receipt": "PENDING"
+  },
+  "preservation": [
+    {
+      "item": "Backend unrelated dirty file skills/autonomous-ai-agents/claude-code/SKILL.md",
+      "state": "INTENTIONAL_LOCAL",
+      "blocking": false,
+      "evidence": "Original backend worktree status at intake: unstaged only; excluded from candidate worktree and file map"
+    },
+    {
+      "item": "Desktop unrelated dirty file apps/desktop/electron/main.ts",
+      "state": "INTENTIONAL_LOCAL",
+      "blocking": false,
+      "evidence": "Original Desktop worktree status at intake: unstaged only; excluded from candidate file map"
+    }
+  ],
+  "remainder": [
+    {
+      "id": "F-R3",
+      "state": "P1_C3_HORIZON",
+      "evidence": "server.py pre-I1 non-integer ordinal currently maps 4004; P1.C3 must pin it or explicitly collapse to 4018."
+    },
+    {
+      "id": "P1.C3",
+      "state": "NOT_AUTHORIZED",
+      "evidence": "P1.C1 routing REDs remain exactly RED after P1.C2."
+    }
+  ],
+  "stages": {
+    "intake": {
+      "sequence": 1,
+      "status": "PASS",
+      "receipt": "INTAKE.md sha256 ad08d3458d97a25f2daf7976b5dd0746c35945b5ebb204c464ff4313f4e2992e"
+    },
+    "preserve": {
+      "sequence": 2,
+      "status": "PASS",
+      "receipt": "Isolated worktree from exact base; original dirty files unstaged and untouched"
+    },
+    "red": {
+      "sequence": 3,
+      "status": "PASS",
+      "receipt": "VALID_RED on exact base: TUI 475=473+2 and CLI 3=2+1; STAGE-3-RED-RECEIPT.md sha256 f55c4b4b19a75c84a5c103622f32f315a35b51078fed56f31f7cda8f295abe5b; STOP before P1.C2"
+    },
+    "buildGreen": {
+      "sequence": 4,
+      "status": "HOLD",
+      "receipt": "P1.C2 candidate verified; P1.C3 not authorized and not started"
+    },
+    "adversarial": {
+      "sequence": 5,
+      "status": "PENDING",
+      "receipt": "P1.C2 guard mutations PASS; whole-build adversarial stage remains pending. mutation manifest ffbbb3ac207ad3025fde70b3312f5f1617c0680cb5d0c39bf5962e3aad1fde5c"
+    },
+    "independentReview": {
+      "sequence": 6,
+      "status": "PENDING"
+    },
+    "metaAudit": {
+      "sequence": 7,
+      "status": "PENDING"
+    },
+    "submission": {
+      "sequence": 8,
+      "status": "PENDING"
+    },
+    "integration": {
+      "sequence": 9,
+      "status": "PENDING"
+    },
+    "push": {
+      "sequence": 10,
+      "status": "PENDING"
+    },
+    "ci": {
+      "sequence": 11,
+      "status": "PENDING"
+    },
+    "artifact": {
+      "sequence": 12,
+      "status": "PENDING"
+    },
+    "finalInspection": {
+      "sequence": 13,
+      "status": "PENDING"
+    },
+    "clearance": {
+      "sequence": 14,
+      "status": "PENDING"
+    },
+    "deployment": {
+      "sequence": 15,
+      "status": "PENDING"
+    },
+    "liveVerification": {
+      "sequence": 16,
+      "status": "PENDING"
+    },
+    "close": {
+      "sequence": 17,
+      "status": "PENDING"
+    }
+  },
+  "closure": {
+    "status": "OPEN",
+    "exactSha": "872c341302b5ed8941f280c3b7939cabba930b5a"
+  },
+  "bindings": {
+    "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
+    "intakeSha256": "ad08d3458d97a25f2daf7976b5dd0746c35945b5ebb204c464ff4313f4e2992e",
+    "executionMapPath": ".ai/builds/rewind-archive-dropped-20260810/execution-map-v3.2.json",
+    "mapStructureRoot": "f9797c045646be5349f0a9b70f88770414f14cef606fc8efa200b24736a118a7",
+    "canonicalOrder": "C:/Users/HieuKa/Desktop/SakaanFleetGovernance/build-orders/BUILD-ORDER-20260810-rewind-archive-dropped.md",
+    "previousExecutionMapPath": ".ai/builds/rewind-archive-dropped-20260810/execution-map-v3.1.json",
+    "previousMapStructureRoot": "171b74978d53f9edbd03c9dff1bc67d2b871c4a7c3e6827bd1224487435d80d3",
+    "executionMapArtifactSha256": "a29b4219580ee4fb8f9713c91a457b08f80c383fcdaca8e80ce649ce9b0dbca5",
+    "previousExecutionMapArtifactSha256": "7d23ffbe410111c6a8db680ccbe1b520c7b7b16f5128585119c4c549dcdcc653"
+  },
+  "updatedAt": "2026-08-10T22:33:40+07:00",
+  "planReview": {
+    "epoch1": {
+      "status": "HOLD",
+      "reviewer": "fresh top-level Claude Code claude-opus-5 xhigh",
+      "cooVerified": true,
+      "reviewerTokenSpend": "UNKNOWN_NOT_PROVIDED",
+      "mapRoot": "69e41064cbcf0b602a4c75569c7d9c6ac17040e60f7df991a1f8062490e1121c"
+    },
+    "repairEpoch": {
+      "status": "SUPERSEDED_BY_ADDITIVE_SCOPE_ADJUDICATION_EPOCH",
+      "mapRoot": "a53e73093e0ade6ffc6bdb4b03dae88e4aa22e5464bde8d7dbde6f1b8299adc0",
+      "artifactSha256": "ea74e6b0a707edc408dacb3c5a335e038562246e300aa6b1255e7fb89486f9e2",
+      "requiredChanges": [
+        {
+          "id": "F01",
+          "severity": "CRITICAL",
+          "title": "RED identity",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "P1.C1 names a new sentinel-archive test and exact base failure; old passing test is control only."
+        },
+        {
+          "id": "F02",
+          "severity": "HIGH",
+          "title": "Harness binding",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "Candidate Windows venv is pinned through HERMES_PYTHON; file paths only; node ids forbidden; discovery/count and --file-retries 0 bound."
+        },
+        {
+          "id": "F03",
+          "severity": "BLOCKING",
+          "title": "I1 normalizer undefined",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "I1 freezes rewind-active-history-v1 fields, JSON canonicalization, exclusions and fail-closed unsupported values."
+        },
+        {
+          "id": "F04",
+          "severity": "HIGH",
+          "title": "I1 compare/mutate TOCTOU",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "All validation, selection, mutation, counters and result occur inside one _execute_write BEGIN IMMEDIATE closure."
+        },
+        {
+          "id": "F05",
+          "severity": "HIGH",
+          "title": "CompressionSessionClosedError guard loss",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "I1 repeats replace_messages compression-closed guard inside the transaction before reads/mutation and tests byte-identical refusal."
+        },
+        {
+          "id": "F06",
+          "severity": "HIGH",
+          "title": "DB/memory ordering",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "I2 freezes DB commit before history/history_version/running/launch; every failure has zero state/turn side effect."
+        },
+        {
+          "id": "F07",
+          "severity": "HIGH",
+          "title": "Session counter/result consistency",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "I1 recomputes active message/tool counts, increments rewind_count and resolves new head in the same transaction."
+        },
+        {
+          "id": "F08",
+          "severity": "HIGH",
+          "title": "/retry ignores persistence result",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "I3/P2 require no token reset or resend on False/exception and preserve hard rewrites elsewhere."
+        },
+        {
+          "id": "F09",
+          "severity": "MEDIUM",
+          "title": "platform_message_id exposure",
+          "disposition": "PARTIALLY_REFUTED_NARROW_CASE_REMEDIATED",
+          "change": "/retry-specific claim refuted by COO evidence; I6 changes real-id dedupe to active OR compacted so rewind-only rows do not suppress legitimate live persistence."
+        },
+        {
+          "id": "F10",
+          "severity": "CONFORMANCE",
+          "title": "gateway/run.py scope",
+          "disposition": "NOT_APPLICABLE_PROVEN",
+          "change": "File excluded; _hyg_rotated evidence and INTAKE rotated-compression hard-rewrite requirement recorded."
+        },
+        {
+          "id": "F11",
+          "severity": "BLOCKING_CONFORMANCE",
+          "title": "Invalid edge taxonomy/fields",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "Graph uses only eight registry types and every edge binds immutable endpoints, direction, predicate, trigger, strength, epoch and evidence."
+        },
+        {
+          "id": "F12",
+          "severity": "CONFORMANCE",
+          "title": "Incomplete L1/L2 records",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "Every package/checkpoint now binds required purpose/scope, criteria, risk, inputs/outputs/interfaces, writer, predecessors, fail-capable gate, forbidden touches, evidence, budget, integration position, caller and rollback/terminal boundaries."
+        },
+        {
+          "id": "F13",
+          "severity": "MEDIUM",
+          "title": "Recovery/control evidence incomplete",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "P3 binds byte-exact read-only export, option refusals, restart canary, default isolation and destructive replace controls."
+        },
+        {
+          "id": "F14",
+          "severity": "RECORD_KEEPING",
+          "title": "Epoch/root/findings/counters",
+          "disposition": "REMEDIATED_IN_MAP",
+          "change": "v1 remains immutable and superseded; v2 has a canonical structure-only root, ledger binding, all 14 dispositions, plan-review HOLD and unchanged semantic attempt counters."
+        }
+      ]
+    },
+    "rescan": {
+      "status": "PASS",
+      "reviewer": "epoch-4 fresh Claude Code claude-opus-5 xhigh; COO independently verified before relay",
+      "mapRoot": "f9797c045646be5349f0a9b70f88770414f14cef606fc8efa200b24736a118a7",
+      "tokenSpend": "UNKNOWN_NOT_PROVIDED"
+    },
+    "scopeAdjudicationEpoch": {
+      "status": "REVIEWED_HOLD",
+      "mapPath": "execution-map-v2.1.json",
+      "mapRoot": "fe1ae82cfa830da45d01ff9df51491c922efe2e34515a9753300176ee49d7028",
+      "artifactSha256": "102e06ef861c6bdf587f8d79dca8ae5b636148c480b707e1d3fa4d898554e83d",
+      "supersedesMapRoot": "a53e73093e0ade6ffc6bdb4b03dae88e4aa22e5464bde8d7dbde6f1b8299adc0",
+      "adjudications": [
+        {
+          "id": "S02_ACP_SESSION_491",
+          "path": "acp_adapter/session.py",
+          "line": 491,
+          "status": "NOT_APPLICABLE",
+          "surface": "ACP post-turn transcript persistence fallback",
+          "reason": "This is not a user-selected rewind/truncate and has no target ordinal or dropped suffix. The agent normally appends and preserves compaction archives itself. Only when that agent does not own this SessionDB does the adapter rewrite the complete current live history; has_archived_messages selects active_only=True so existing inactive/compacted rows survive.",
+          "gatingCondition": "Remains out of scope only while the caller persists the complete current live history, runs solely in the non-owner fallback, and active_only is selected whenever archived rows exist. Any user-triggered subset/truncate, existing-row loss, or target-session mismatch requires a new map revision before source work.",
+          "evidence": [
+            "base 872c341302 acp_adapter/session.py:455-468 — normal agent persistence and archive_and_compact rationale",
+            "base 872c341302 acp_adapter/session.py:469-486 — non-owner fallback and archived-row guard",
+            "base 872c341302 acp_adapter/session.py:487-493 — has_archived_messages then replace_messages(... active_only=has_archived)"
+          ]
+        },
+        {
+          "id": "S03_API_SERVER_3263",
+          "path": "gateway/platforms/api_server.py",
+          "line": 3263,
+          "status": "NOT_APPLICABLE",
+          "surface": "API session fork initialization",
+          "reason": "The endpoint creates a new, previously non-existent child session, marks the source branched, reads the source's default active messages, and initializes the empty child with that complete live transcript. It neither truncates nor rewrites the source and has no dropped suffix to archive.",
+          "gatingCondition": "Remains out of scope only while fork_id is proven absent before create_session, replace_messages targets only that newly created empty child, and source messages are copied without subset truncation. Reusing an existing child, mutating the source, or copying only a suffix/prefix requires a new map revision.",
+          "evidence": [
+            "base 872c341302 gateway/platforms/api_server.py:3231-3248 — fork endpoint and non-existing fork_id check",
+            "base 872c341302 gateway/platforms/api_server.py:3250-3261 — source marked branched and new child created",
+            "base 872c341302 gateway/platforms/api_server.py:3262-3263 — source active messages copied into fork_id"
+          ]
+        },
+        {
+          "id": "S04_TUI_RETRY_15360",
+          "path": "tui_gateway/server.py",
+          "line": 15360,
+          "status": "IN_SCOPE_EXISTING_P1_OWNER",
+          "surface": "TUI gateway user-facing /retry in-memory truncate",
+          "reason": "This is a third user-facing retry/truncate surface. It finds the last user turn and currently replaces session.history with the retained prefix while incrementing history_version, but performs no durable rewind at that point. The broad INTAKE goal therefore governs it even though choice 2b named Desktop prompt.submit and gateway /retry explicitly.",
+          "implementationBinding": "Already owned by P1 through tui_gateway/server.py. P1.C3 must cover this command under I1/I2: durable compare-and-mutate commits before in-memory truncation/send; conflict, compression-closed, or storage failure leaves history/history_version unchanged and emits no send. No new file ownership, edge, or interface is introduced by this adjudication.",
+          "gatingCondition": "It is accepted only when an executable P1 test proves the command archives the last active user/assistant suffix and fails closed before memory/send on every I1 failure. Treating it as memory-only or leaving durable state divergent is a P1 HOLD.",
+          "evidence": [
+            "base 872c341302 tui_gateway/server.py:15360-15377 — user-facing /retry and last-user resolution",
+            "base 872c341302 tui_gateway/server.py:15378-15386 — message recovery/validation",
+            "base 872c341302 tui_gateway/server.py:15387-15392 — in-memory truncate/history_version increment and send with no persistence call",
+            "execution-map-v2 P1 already solely owns tui_gateway/server.py"
+          ]
+        },
+        {
+          "id": "S05_I18N_TYPES",
+          "path": "apps/desktop/src/i18n/types.ts",
+          "status": "NOT_APPLICABLE",
+          "surface": "Desktop translation type contract",
+          "reason": "The opening-turn correction rewords the existing restoreBody and restoreBodyWipes values in the five already-owned locale files. Both keys already exist in Translations; no new translation key or type-contract change is required.",
+          "gatingCondition": "Remains out of scope only if implementation changes values of the existing restoreBody/restoreBodyWipes keys. If any new key, renamed key, or type shape is proposed, stop before editing and issue a map revision that pre-authorizes types.ts.",
+          "evidence": [
+            "base 872c341302 apps/desktop/src/i18n/types.ts:2287-2294 — existing restore keys, including restoreBodyWipes and restoreBody",
+            "base 872c341302 apps/desktop/src/i18n/en.ts:2704-2708 — existing opening-turn and ordinary restore copy values",
+            "git grep at base 872c341302 confirms restoreBody and restoreBodyWipes in ar/en/ja/zh-hant/zh locale files"
+          ]
+        }
+      ],
+      "verdict": "S04_IN_SCOPE_SURFACE_WITHOUT_FAIL_CAPABLE_RED"
+    },
+    "v3RepairEpoch": {
+      "status": "SUPERSEDED_BEFORE_RESCAN_BY_V3_1",
+      "mapPath": "execution-map-v3.json",
+      "mapRoot": "898741e5925f00e6bc4da949877c98709f9ee02f3bb6fc79c317a2b09f7ace12",
+      "artifactSha256": "9e46a8590caf081630bdeca2e2014d9f1719be14da544a16a8e72e37e4b11ded",
+      "repairs": [
+        {
+          "id": "M-3a",
+          "rank": "CRITICAL",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "Named S04 RED in P1.C1; corrected TUI arithmetic to 475/473/2; added separate CLI retry RED 3/2/1 from complete sweep."
+        },
+        {
+          "id": "M-3b",
+          "rank": "CRITICAL",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "Added I2b exact array-index -> user-ordinal conversion, expected_history binding, DB-before-memory ordering and error contracts."
+        },
+        {
+          "id": "M-1",
+          "rank": "MEDIUM",
+          "status": "ADJUDICATED_RESIDUAL_CONTROL_ONLY",
+          "record": "ACP probe is fail-open/TOCTOU; production fix excluded as disproportionate pre-existing fallback redesign; P3 preservation control required; residual not cleared."
+        },
+        {
+          "id": "M-5",
+          "rank": "MEDIUM",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "Owned/gated tests/gateway/test_dedupe_user_turns.py and made rewound-id resurrection explicit in I6."
+        },
+        {
+          "id": "M-6",
+          "rank": "MEDIUM",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "Complete exact-base sweep method and 22 per-site dispositions recorded, including indirect asyncio.to_thread and sweep-found CLI /retry."
+        },
+        {
+          "id": "M-2",
+          "rank": "RECORD",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "S03 gate now distinguishes allowed source session metadata mutation from prohibited source transcript-row mutation."
+        },
+        {
+          "id": "M-4",
+          "rank": "RECORD",
+          "status": "REMEDIATED_IN_LEDGER",
+          "record": "RED receipt will bind current v3 and record v2.1 HOLD."
+        },
+        {
+          "id": "M-7",
+          "rank": "RECORD",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "I1 explicitly excludes row id, session_id, active, compacted and timestamp only."
+        },
+        {
+          "id": "M-8",
+          "rank": "INFO",
+          "status": "REMEDIATED_IN_MAP",
+          "record": "S01 assigned to gateway/run.py; S02-S05 preserved."
+        }
+      ]
+    },
+    "v3_1RepairEpoch": {
+      "status": "REVIEWED_PASS_SUPERSEDED_BY_V3_2",
+      "mapPath": "execution-map-v3.1.json",
+      "mapRoot": "171b74978d53f9edbd03c9dff1bc67d2b871c4a7c3e6827bd1224487435d80d3",
+      "artifactSha256": "7d23ffbe410111c6a8db680ccbe1b520c7b7b16f5128585119c4c549dcdcc653",
+      "supersedesMapRoot": "898741e5925f00e6bc4da949877c98709f9ee02f3bb6fc79c317a2b09f7ace12",
+      "change": "E11 predicate and evidence[2] only inside structure; required binding/receipt updates outside structure",
+      "reviewer": "fresh epoch-3 Claude Code claude-opus-5 xhigh; COO independently verified"
+    },
+    "v3_2RepairEpoch": {
+      "status": "REVIEWED_PASS",
+      "mapPath": "execution-map-v3.2.json",
+      "mapRoot": "f9797c045646be5349f0a9b70f88770414f14cef606fc8efa200b24736a118a7",
+      "artifactSha256": "a29b4219580ee4fb8f9713c91a457b08f80c383fcdaca8e80ce649ce9b0dbca5",
+      "supersedesMapRoot": "171b74978d53f9edbd03c9dff1bc67d2b871c4a7c3e6827bd1224487435d80d3",
+      "scope": "F-M1 contract discharge plus F-L1/F-L2/F-I1/F-I3/M-1 pure wording/record closure only"
+    }
+  },
+  "attemptCounters": {
+    "planReviewSemanticAttemptsConsumed": 2,
+    "buildSemanticAttemptsConsumed": 1,
+    "transportRetries": 0,
+    "redSemanticExecutionsConsumed": 1
+  },
+  "checkpoints": {
+    "P1.C2": {
+      "status": "CANDIDATE_VERIFIED",
+      "receipt": "P1-C2-RECEIPT.md sha256 d1453c6a13315cfae63467c13e2e4dbdfa8c67f919e55d67cfcd76e3ae069fbf",
+      "gate": {
+        "discovered": 481,
+        "passed": 481,
+        "failed": 0
+      },
+      "mutationManifest": "mutation-p1c2/manifest.json sha256 ffbbb3ac207ad3025fde70b3312f5f1617c0680cb5d0c39bf5962e3aad1fde5c",
+      "sourceSha256": "6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94",
+      "p1c1Boundary": {
+        "tui": [
+          475,
+          473,
+          2
+        ],
+        "cli": [
+          3,
+          2,
+          1
+        ]
+      }
+    }
+  }
+}

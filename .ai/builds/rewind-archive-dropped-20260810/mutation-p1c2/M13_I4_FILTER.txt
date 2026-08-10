@@ -1,0 +1,10 @@
+MUTATION=M13_I4_FILTER
+SOURCE_BASE_SHA256=6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94
+COMMAND=HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py -q -k 'export_include_rewound_excludes_compaction_archives_and_is_read_only'
+EXIT=1
+
+ACTUAL RUNNER EXCERPT
+Discovered 2 test files (~449 tests) under [tests\test_hermes_state.py, tests\gateway\test_dedupe_user_turns.py]
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_export_include_rewound_excludes_compaction_archives_and_is_read_only
+=== Summary: 2 files, 0 tests passed, 1 failed (100% complete) in 1.1s (64 workers) ===
+Classification: ANTI_VACUITY_FAIL_OK. The automated loop reached its 50-tool-call cap after this runner result and before restoration/receipt write. The I4 mutation was then restored manually and source SHA-256 re-read exactly; M14 and the final 481-test GREEN gate ran only after exact restoration.

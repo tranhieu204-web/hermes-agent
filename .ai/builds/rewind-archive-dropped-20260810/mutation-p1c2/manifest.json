@@ -1,0 +1,96 @@
+{
+  "source_restored_sha256": "6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94",
+  "mutation_count": 14,
+  "all_mutations_failed_named_tests": true,
+  "restored_gate": {
+    "discovered": 481,
+    "passed": 481,
+    "failed": 0
+  },
+  "mutations": [
+    {
+      "id": "M01_SCHEMA_PARTITION",
+      "receipt": "M01_SCHEMA_PARTITION.txt",
+      "sha256": "754c6f325e688c9124ed34e520b22246e92ceafdf25497fd02c045c6cec220c0",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M02_NORMALIZER_COMPARE",
+      "receipt": "M02_NORMALIZER_COMPARE.txt",
+      "sha256": "7f7eafbf329ed0d5561bbcb158030e07239d405bb24742a4e13c70534cee71f0",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M03_ORDINAL_TYPE_BOOL",
+      "receipt": "M03_ORDINAL_TYPE_BOOL.txt",
+      "sha256": "f399fd55138abd13beee3e643cfcf5976e33efdd84c1602d2cf27f02fee7cc39",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M04_ORDINAL_NEGATIVE",
+      "receipt": "M04_ORDINAL_NEGATIVE.txt",
+      "sha256": "7bc17dbc7193096936af1c95a1ef81957d3aa4d524eb13fa9fd147af40b631f4",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M05_COMPRESSION_GUARD",
+      "receipt": "M05_COMPRESSION_GUARD.txt",
+      "sha256": "6002391c49c6285fd6da7da4301df0bdc83e5a553f4e5dcc0431157ea39a4202",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M06_BEGIN_IMMEDIATE",
+      "receipt": "M06_BEGIN_IMMEDIATE.txt",
+      "sha256": "81b72b89b0231a2549fab78507e6d33d3f9f3b304c3f5144a5391e0f49d8a6f6",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M07_SUFFIX_TARGET_INCLUSION",
+      "receipt": "M07_SUFFIX_TARGET_INCLUSION.txt",
+      "sha256": "8aa1e4bec8dcd36f49f747a4e9974fde692f53d6617ff8792ac08d0b15568f1a",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M08_INACTIVE_PRESERVATION",
+      "receipt": "M08_INACTIVE_PRESERVATION.txt",
+      "sha256": "b409936b4dab023dbf183ef63848df0fc27f9c7deb939174a6efe55baafe2850",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M09_REWIND_STATE",
+      "receipt": "M09_REWIND_STATE.txt",
+      "sha256": "0cf0718ad7594550bd6f64db43d6735dca7fad295f7e04ffa191aaf85eaf0d19",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M10_COUNTER_REPAIR",
+      "receipt": "M10_COUNTER_REPAIR.txt",
+      "sha256": "a77872285667677f3d1b7d0033e3224d328891e1fa05994fede90a5634b42cfe",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M11_REWIND_COUNT",
+      "receipt": "M11_REWIND_COUNT.txt",
+      "sha256": "c4143db034f53bc9b9dea70defccc71f5db3f5ea9f1ce6f73c51e1139bc6051c",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M12_NEW_HEAD",
+      "receipt": "M12_NEW_HEAD.txt",
+      "sha256": "1eec126a2355e3a2e7c187fe1659af71814bd9b567d74a346dd3590a314a0466",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M13_I4_FILTER",
+      "receipt": "M13_I4_FILTER.txt",
+      "sha256": "e9101c5dd45626a0a58d17acedaabbe99007efe4d3dd507ebcf14c7420813d96",
+      "expected_failure_observed": true
+    },
+    {
+      "id": "M14_I6_FILTER",
+      "receipt": "M14_I6_FILTER.txt",
+      "sha256": "989ff086a3adfade26c46c167f5259cc0f6c9e51839bf54b4bf77a9b609bf7a8",
+      "expected_failure_observed": true
+    }
+  ]
+}

@@ -1579,6 +1579,15 @@ class CompressionSessionClosedError(RuntimeError):
         )
 
 
+class RewindHistoryConflict(RuntimeError):
+    """A requested rewind did not match the active durable transcript."""
+
+    def __init__(self, session_id: str, reason: str):
+        self.session_id = session_id
+        self.reason = reason
+        super().__init__(f"Rewind conflict for session {session_id!r}: {reason}")
+
+
 class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 
@@ -7237,6 +7246,270 @@ class SessionDB:
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
 
+    # Complete partition of the 23-column messages schema for rewind identity.
+    # The five excluded columns are database identity/scoping state; every other
+    # column is semantic and participates in the fail-closed comparison.
+    _REWIND_SEMANTIC_FIELDS = (
+        "role",
+        "content",
+        "tool_call_id",
+        "tool_calls",
+        "tool_name",
+        "effect_disposition",
+        "token_count",
+        "finish_reason",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+        "platform_message_id",
+        "observed",
+        "api_content",
+        "display_kind",
+        "display_metadata",
+    )
+    _REWIND_EXCLUDED_DB_FIELDS = frozenset(
+        {"id", "session_id", "timestamp", "active", "compacted"}
+    )
+    _REWIND_JSON_FIELDS = frozenset(
+        {
+            "tool_calls",
+            "reasoning_details",
+            "codex_reasoning_items",
+            "codex_message_items",
+            "display_metadata",
+        }
+    )
+    _REWIND_MISSING = object()
+
+    @classmethod
+    def _normalize_rewind_message(
+        cls,
+        session_id: str,
+        message: Any,
+        *,
+        persisted: bool,
+    ) -> Dict[str, Any]:
+        """Return one message's exact semantic projection for rewind identity."""
+        if not hasattr(message, "keys"):
+            raise RewindHistoryConflict(session_id, "history entries must be mappings")
+
+        message = dict(message)
+        keys = set(message)
+        if not persisted:
+            allowed = (
+                set(cls._REWIND_SEMANTIC_FIELDS)
+                | cls._REWIND_EXCLUDED_DB_FIELDS
+                | {"message_id"}
+            )
+            unknown = sorted(keys - allowed)
+            if unknown:
+                raise RewindHistoryConflict(
+                    session_id,
+                    f"unsupported expected-history field(s): {', '.join(unknown)}",
+                )
+
+        normalized: Dict[str, Any] = {}
+        for field in cls._REWIND_SEMANTIC_FIELDS:
+            if field == "platform_message_id":
+                platform_id = message.get("platform_message_id", cls._REWIND_MISSING)
+                alias_id = message.get("message_id", cls._REWIND_MISSING)
+                if (
+                    platform_id is not cls._REWIND_MISSING
+                    and alias_id is not cls._REWIND_MISSING
+                    and platform_id != alias_id
+                ):
+                    raise RewindHistoryConflict(
+                        session_id, "platform_message_id/message_id aliases disagree"
+                    )
+                value = platform_id
+                if value is cls._REWIND_MISSING:
+                    value = alias_id
+                if value is cls._REWIND_MISSING:
+                    value = None
+            else:
+                value = message.get(field, cls._REWIND_MISSING)
+
+            if field == "content" and persisted and value is not cls._REWIND_MISSING:
+                value = cls._decode_content(value)
+
+            if field == "observed":
+                # Persisted rows use INTEGER 0/1 while replay dictionaries omit
+                # the key for the ordinary False case. Canonicalize that one
+                # schema default without weakening any other field.
+                if value is cls._REWIND_MISSING:
+                    value = False
+                elif value is None:
+                    value = None
+                elif isinstance(value, bool):
+                    pass
+                elif type(value) is int and value in (0, 1):
+                    value = bool(value)
+                else:
+                    raise RewindHistoryConflict(
+                        session_id, "observed must be boolean, 0, 1, or null"
+                    )
+            elif value is cls._REWIND_MISSING:
+                value = None
+
+            if field in cls._REWIND_JSON_FIELDS and value is not None:
+                if isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        raise RewindHistoryConflict(
+                            session_id, f"{field} is not valid JSON"
+                        ) from exc
+
+            normalized[field] = value
+
+        return normalized
+
+    @classmethod
+    def _canonicalize_rewind_history(
+        cls,
+        session_id: str,
+        history: Any,
+        *,
+        persisted: bool,
+    ) -> bytes:
+        """Canonical UTF-8 JSON for the ordered rewind semantic projection."""
+        if not isinstance(history, list):
+            raise RewindHistoryConflict(session_id, "expected_history must be a list")
+        projected = [
+            cls._normalize_rewind_message(
+                session_id, message, persisted=persisted
+            )
+            for message in history
+        ]
+        try:
+            return json.dumps(
+                projected,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise RewindHistoryConflict(
+                session_id, "history contains a non-serializable semantic value"
+            ) from exc
+
+    @classmethod
+    def _decode_rewind_target_row(cls, row: Any) -> Dict[str, Any]:
+        target = dict(row)
+        target["content"] = cls._decode_content(target.get("content"))
+        for field in cls._REWIND_JSON_FIELDS:
+            raw = target.get(field)
+            if raw is not None and isinstance(raw, str):
+                target[field] = json.loads(raw)
+        return target
+
+    @staticmethod
+    def _rewind_tool_call_count(rows: List[Any]) -> int:
+        total = 0
+        for row in rows:
+            raw = row["tool_calls"]
+            if raw is None:
+                continue
+            value = json.loads(raw) if isinstance(raw, str) else raw
+            total += len(value) if isinstance(value, list) else 1
+        return total
+
+    def rewind_active_history(
+        self,
+        session_id: str,
+        *,
+        expected_history: List[Dict[str, Any]],
+        truncate_before_user_ordinal: int,
+    ) -> Dict[str, Any]:
+        """Atomically validate and soft-archive an active transcript suffix.
+
+        The expected transcript comparison, ordinal validation, archive update,
+        counter repair, rewind count and head lookup all execute under the same
+        BEGIN IMMEDIATE transaction. Every conflict rolls back without mutation.
+        """
+
+        def _do(conn):
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
+
+            active_rows = conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            persisted_bytes = self._canonicalize_rewind_history(
+                session_id, list(active_rows), persisted=True
+            )
+            expected_bytes = self._canonicalize_rewind_history(
+                session_id, expected_history, persisted=False
+            )
+            if persisted_bytes != expected_bytes:
+                raise RewindHistoryConflict(
+                    session_id, "expected history does not match active durable rows"
+                )
+
+            active_user_rows = [row for row in active_rows if row["role"] == "user"]
+            if (
+                type(truncate_before_user_ordinal) is not int
+                or truncate_before_user_ordinal < 0
+                or truncate_before_user_ordinal >= len(active_user_rows)
+            ):
+                raise RewindHistoryConflict(
+                    session_id,
+                    "truncate_before_user_ordinal is outside the active user-turn range",
+                )
+
+            target_row = active_user_rows[truncate_before_user_ordinal]
+            target_message = self._decode_rewind_target_row(target_row)
+            archive_cursor = conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 "
+                "WHERE session_id = ? AND active = 1 AND id >= ?",
+                (session_id, target_row["id"]),
+            )
+
+            remaining_rows = conn.execute(
+                "SELECT id, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            message_count = len(remaining_rows)
+            tool_call_count = self._rewind_tool_call_count(list(remaining_rows))
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                "rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
+            head_row = conn.execute(
+                "SELECT MAX(id) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+            new_head_id = (
+                head_row[0]
+                if head_row is not None and head_row[0] is not None
+                else None
+            )
+            return {
+                "rewound_count": archive_cursor.rowcount,
+                "target_message": target_message,
+                "new_head_id": new_head_id,
+                "message_count": message_count,
+                "tool_call_count": tool_call_count,
+            }
+
+        return self._execute_write(_do)
+
     def rewind_to_message(
         self, session_id: str, target_message_id: int
     ) -> Dict[str, Any]:
@@ -8497,7 +8770,8 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT 1 FROM messages "
-                "WHERE session_id = ? AND platform_message_id = ? LIMIT 1",
+                "WHERE session_id = ? AND platform_message_id = ? "
+                "AND (active = 1 OR compacted = 1) LIMIT 1",
                 (session_id, platform_message_id),
             )
             return cursor.fetchone() is not None
@@ -8568,12 +8842,33 @@ class SessionDB:
                 continue
         return lineage if session_id in lineage else [session_id]
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a single session with all its messages as a dict."""
+    def export_session(
+        self,
+        session_id: str,
+        *,
+        include_rewound: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Export a session, optionally including rewind-only inactive rows.
+
+        The default remains active-only. ``include_rewound=True`` adds rows
+        whose state is ``active=0, compacted=0`` while excluding inactive
+        compaction archives. Row order and state fields are preserved.
+        """
         session = self.get_session(session_id)
         if not session:
             return None
-        messages = self.get_messages(session_id)
+        if include_rewound:
+            messages = [
+                message
+                for message in self.get_messages(session_id, include_inactive=True)
+                if message.get("active") == 1
+                or (
+                    message.get("active") == 0
+                    and message.get("compacted") == 0
+                )
+            ]
+        else:
+            messages = self.get_messages(session_id)
         return {**session, "messages": messages}
 
     def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:

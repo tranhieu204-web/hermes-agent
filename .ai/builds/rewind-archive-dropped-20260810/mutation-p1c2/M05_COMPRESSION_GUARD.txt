@@ -1,0 +1,76 @@
+MUTATION=M05_COMPRESSION_GUARD
+SOURCE_BASE_SHA256=6f8ead07a5e53d040ca1112c9040584f97d6b465e6d178f3a3ce5e5b381d3d94
+COMMAND=HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py -q -k 'rejects_compression_closed_session_without_mutation'
+EXIT=1
+
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: /c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 2 test files (~449 tests) under ['tests\\test_hermes_state.py', 'tests\\gateway\\test_dedupe_user_turns.py']; running with -j 64
+[  1.8% |     8/~449 | ✓0 | ✗0] ✓ tests\gateway\test_dedupe_user_turns.py (8 tests, 0.9s)
+[100.0% |   449/~449 | ✓0 | ✗1] ✗ tests\test_hermes_state.py (1✗, 1.1s)
+
+  ╔╍ Failed: tests\test_hermes_state.py ╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+  ║ F                                                                        [100%]
+  ║ ================================== FAILURES ===================================
+  ║ _ TestRewindActiveHistory.test_rejects_compression_closed_session_without_mutation _
+  ║ 
+  ║ self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x0000021CF08ED6D0>
+  ║ db = <hermes_state.SessionDB object at 0x0000021CF1AF12B0>
+  ║ 
+  ║     def test_rejects_compression_closed_session_without_mutation(self, db):
+  ║         history, _ids = _seed_simple_rewind_history(db)
+  ║         db.end_session("rewind-atomic", end_reason="compression")
+  ║         before = _rewind_raw_snapshot(db, "rewind-atomic")
+  ║ >       with pytest.raises(hermes_state.CompressionSessionClosedError):
+  ║              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  ║ E       Failed: DID NOT RAISE <class 'hermes_state.CompressionSessionClosedError'>
+  ║ 
+  ║ tests\test_hermes_state.py:7856: Failed
+  ║ =========================== short test summary info ===========================
+  ║ FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_rejects_compression_closed_session_without_mutation
+  ║ 1 failed, 472 deselected in 0.48s
+  ║
+  ║  Repro: python -m pytest tests\test_hermes_state.py -q -k rejects_compression_closed_session_without_mutation
+  ╚╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍╍
+
+
+=== Summary: 2 files, 0 tests passed, 1 failed (100% complete) in 1.1s (64 workers) ===
+  Durations cached to test_durations.json (2 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   2
+  Total subprocess CPU-wall: 1.9s  (runner wall: 1.1s, parallelism: 64x)
+  P50: 1.07s  P90: 1.07s  P95: 1.07s  P99: 1.07s  Max: 1.07s
+  <1s: 1 files (50%)  <2s: 2 files (100%)
+  Top 10 slowest:
+      1.07s  tests\test_hermes_state.py
+      0.85s  tests\gateway\test_dedupe_user_turns.py
+
+=== Failure output ===
+
+--- tests\test_hermes_state.py ---
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_rejects_compression_closed_session_without_mutation _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x0000021CF08ED6D0>
+db = <hermes_state.SessionDB object at 0x0000021CF1AF12B0>
+
+    def test_rejects_compression_closed_session_without_mutation(self, db):
+        history, _ids = _seed_simple_rewind_history(db)
+        db.end_session("rewind-atomic", end_reason="compression")
+        before = _rewind_raw_snapshot(db, "rewind-atomic")
+>       with pytest.raises(hermes_state.CompressionSessionClosedError):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'hermes_state.CompressionSessionClosedError'>
+
+tests\test_hermes_state.py:7856: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_rejects_compression_closed_session_without_mutation
+1 failed, 472 deselected in 0.48s
+
+=== 1 file with test failures (1 test failed) ===
+  tests\test_hermes_state.py  (1 test failed)

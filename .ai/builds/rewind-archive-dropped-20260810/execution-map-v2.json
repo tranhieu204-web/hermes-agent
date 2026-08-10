@@ -1,0 +1,993 @@
+{
+  "schema": "sakaan.execution-map.v2",
+  "buildId": "rewind-archive-dropped-20260810",
+  "state": "FROZEN_PENDING_PLAN_RESCAN",
+  "frozenAt": "2026-08-10T19:43:47+07:00",
+  "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+  "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
+  "intakeSha256": "ad08d3458d97a25f2daf7976b5dd0746c35945b5ebb204c464ff4313f4e2992e",
+  "supersedes": {
+    "path": "execution-map-v1.json",
+    "mapStructureRoot": "69e41064cbcf0b602a4c75569c7d9c6ac17040e60f7df991a1f8062490e1121c",
+    "state": "SUPERSEDED_BY_PLAN_REPAIR_EPOCH"
+  },
+  "structureCanonicalizer": "SHA-256 of UTF-8 json.dumps(structure, ensure_ascii=False, sort_keys=True, separators=(',', ':')); outcomes, candidate bytes, receipts and this root field are excluded.",
+  "mapStructureRoot": "a53e73093e0ade6ffc6bdb4b03dae88e4aa22e5464bde8d7dbde6f1b8299adc0",
+  "structure": {
+    "schema": "sakaan.execution-map.structure.v2",
+    "epoch": "map-v2-plan-repair-20260810T194347+0700",
+    "form": "DECOMPOSED",
+    "risk": "HIGH_RISK",
+    "objective": "Preserve the exact active suffix dropped by Desktop rewind or gateway /retry as inactive non-compacted rows, retain explicit hard-rewrite callers, and expose bounded read-only recovery.",
+    "interfaces": [
+      {
+        "id": "I1",
+        "provider": "SessionDB",
+        "contract": "rewind_active_history(session_id, *, expected_history, truncate_before_user_ordinal) -> RewindResult",
+        "normalizer": {
+          "id": "rewind-active-history-v1",
+          "algorithm": "Inside the same BEGIN IMMEDIATE transaction, canonicalize both expected_history and the active persisted rows as UTF-8 JSON with sorted keys and compact separators. Preserve ordered rows and the persisted semantic fields role, content, tool_call_id, tool_calls, tool_name, effect_disposition, token_count, finish_reason, reasoning, reasoning_content, reasoning_details, codex_reasoning_items, codex_message_items, platform_message_id/message_id alias, observed, api_content, display_kind and display_metadata. Canonicalize JSON-valued fields recursively; map absent and database NULL to one null representation; do not sanitize, strip or flatten content; exclude generated row id and timestamp only. Any unsupported/non-serializable value or byte mismatch is a conflict, never a lossy coercion.",
+          "mismatch": "Raise RewindHistoryConflict before any UPDATE; caller maps it to stale rewind/no resend."
+        },
+        "transaction": "One SessionDB._execute_write BEGIN IMMEDIATE closure performs compression-closed guard, active-row SELECT, normalizer compare, target-user resolution, suffix UPDATE, active message/tool counter recomputation, rewind_count increment and new-head SELECT. No validation or target lookup occurs outside the write transaction.",
+        "compressionGuard": "Before comparison or mutation, apply the same ended_at/end_reason=compression guard as replace_messages and raise CompressionSessionClosedError.",
+        "result": "Return rewound_count, target_message, new_head_id and active counters from the committed transaction. Retained prefix and pre-existing inactive rows are not deleted or reinserted."
+      },
+      {
+        "id": "I2",
+        "provider": "TUI gateway prompt.submit",
+        "contract": "Existing r2 identity and opening-turn confirmation resolve against the current in-memory history; pass that full expected history plus target user ordinal to I1. Mutate session.history/history_version, set running and launch a turn only after I1 commits. RewindHistoryConflict maps to 4018; CompressionSessionClosedError or storage failure returns a persistence error with no memory/DB/turn side effect."
+      },
+      {
+        "id": "I3",
+        "provider": "gateway SessionStore/AsyncSessionStore",
+        "contract": "rewind_transcript(session_id, expected_history, truncate_before_user_ordinal) -> bool",
+        "semantics": "Wrap I1 and clear dirty transcript state only as part of successful rewind semantics. /retry checks the result and must not zero token state or resend on False/exception. rewrite_transcript remains deliberately destructive for redaction and rotated-compression/new-session callers."
+      },
+      {
+        "id": "I4",
+        "provider": "SessionDB export_session",
+        "contract": "export_session(session_id, *, include_rewound=False)",
+        "semantics": "Default remains active-only. include_rewound=True returns active rows plus active=0,compacted=0 rewind rows in insertion order with content and row-state fields, excluding compacted=1 archives. It is read-only."
+      },
+      {
+        "id": "I5",
+        "provider": "Hermes sessions CLI",
+        "contract": "hermes sessions export <output|-> --session-id <id> --format jsonl --include-rewound",
+        "semantics": "Read-only, one resolved session, JSONL only. Reject --only, logical lineage, --delete-after-verified, upload, trace and bulk/filter combinations. Default exports are unchanged."
+      },
+      {
+        "id": "I6",
+        "provider": "SessionDB dedupe lookup",
+        "contract": "has_platform_message_id(session_id, platform_message_id) considers active=1 OR compacted=1 rows, not active=0 AND compacted=0 rewind rows.",
+        "semantics": "Preserves transient-failure and compaction dedupe while preventing a rewound row with a real platform id from suppressing a later legitimate live persistence. /retry is explicitly NOT a consumer because its synthetic MessageEvent has message_id=None and short-circuits before lookup."
+      },
+      {
+        "id": "I7",
+        "provider": "Retention",
+        "contract": "No schema, configuration, dependency or rewind-specific TTL",
+        "semantics": "Rewound rows remain with the session and are deleted only by existing authorized whole-session deletion/pruning."
+      }
+    ],
+    "packages": [
+      {
+        "id": "P1",
+        "name": "Atomic suffix archive, Desktop rewind and storage read boundary",
+        "purpose": "Close the destructive Desktop rewind gap with a transactionally exact archive operation and expose the storage boundary consumed by recovery.",
+        "acceptanceCriteria": [
+          "new dropped suffix becomes active=0,compacted=0",
+          "retained prefix remains one active copy",
+          "comparison and mutation share one BEGIN IMMEDIATE",
+          "compression-closed parent refuses",
+          "memory advances only after commit",
+          "active counters exact",
+          "real platform-id dedupe ignores rewind-only rows",
+          "five locale warnings truthful"
+        ],
+        "risks": [
+          "TOCTOU between r2/model/DB",
+          "lossy normalizer false-match",
+          "compression-closed write regression",
+          "memory/DB split",
+          "platform dedupe suppression",
+          "data loss"
+        ],
+        "inputs": [
+          "INTAKE",
+          "base 872c341302",
+          "existing r2 identity",
+          "active persisted rows",
+          "expected in-memory history"
+        ],
+        "outputs": [
+          "I1",
+          "I2",
+          "I4",
+          "I6",
+          "P1 tests",
+          "five corrected locale values"
+        ],
+        "interfaces": [
+          "I1",
+          "I2",
+          "I4",
+          "I6",
+          "I7"
+        ],
+        "effect": "Future Desktop rewinds preserve exact dropped rows without schema change; default live/read behavior stays unchanged.",
+        "rollbackBoundary": "Revert P1 as one semantic package. No migration. Existing archived rows remain inert/recoverable; rollback only contains code and reintroduces future destructive rewind.",
+        "builderFinalizer": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+        "predecessors": [],
+        "integrationGate": "P1.C1-C3 all GREEN, mutations fail, production caller proof recorded, no source outside listed files.",
+        "forbiddenTouches": [
+          "gateway/run.py",
+          "gateway/platforms/yuanbao.py",
+          "apps/desktop/electron/main.ts",
+          "schema/config/dependencies",
+          "canonical governance"
+        ],
+        "terminalCondition": "P1 CANDIDATE_VERIFIED or HOLD with exact checkpoint; independently reviewable before P2/P3 integration.",
+        "files": [
+          "hermes_state.py",
+          "tui_gateway/server.py",
+          "tests/test_hermes_state.py",
+          "tests/test_tui_gateway_server.py",
+          "apps/desktop/src/i18n/ar.ts",
+          "apps/desktop/src/i18n/en.ts",
+          "apps/desktop/src/i18n/ja.ts",
+          "apps/desktop/src/i18n/zh-hant.ts",
+          "apps/desktop/src/i18n/zh.ts"
+        ],
+        "l2Checkpoints": [
+          {
+            "id": "P1.C1",
+            "parent": "P1",
+            "stage": "RED",
+            "scopeOutput": "Add a NEW behavioral test named test_prompt_submit_rewind_archives_newly_dropped_suffix. Seed the real SessionDB active set with the same four-message model history, including unique NEWLY_DROPPED_SENTINEL plus a separate pre-existing inactive row; invoke prompt.submit by r2 at the second user turn; assert the newly dropped user+assistant suffix survives as active=0,compacted=0, the old inactive row is byte-unchanged and the retained prefix is active exactly once.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "baseExpected": "After the new test exists but before production changes, exact base code must discover 474 tests in tests/test_tui_gateway_server.py and fail exactly one new sentinel-archive assertion; 473 pre-existing tests remain passing. Existing test_rewind_preserves_soft_archived_rows is a passing control and is not RED evidence.",
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_tui_gateway_server.py -q"
+            },
+            "predecessors": [],
+            "forbiddenTouches": [
+              "production source",
+              "existing passing test semantics",
+              "node-id test invocation",
+              "live HERMES_HOME"
+            ],
+            "testsOraclesEvidence": [
+              "COO base control: exact v1-designated existing test passed 1/1 in 2.27s and is invalid RED",
+              "COO harness control: full file 473 passed in 114.5s before RED addition",
+              "failure text must name NEWLY_DROPPED_SENTINEL absence, not discovery/import/setup"
+            ],
+            "budget": "20 minutes / 8k builder tokens; one semantic RED execution; automatic runner retry disabled",
+            "integrationPosition": 1,
+            "productionCallPath": "Desktop Restore/Edit/Re-run -> prompt.submit -> current replace_messages(active_only=True)",
+            "rollback": "Remove only the uncommitted new RED test; no source or durable state."
+          },
+          {
+            "id": "P1.C2",
+            "parent": "P1",
+            "stage": "BUILD",
+            "scopeOutput": "Implement I1/I4/I6 and direct transaction tests: exact normalizer match/refusal, BEGIN IMMEDIATE compare-and-mutate, compression-closed refusal, suffix-only archive, active counters, pre-existing inactive preservation, new head and platform-id dedupe adjudication.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py -q",
+              "pass": "Focused state file green; mutation removing each guard makes its named test fail."
+            },
+            "predecessors": [
+              "P1.C1"
+            ],
+            "forbiddenTouches": [
+              "schema migration",
+              "replace_messages destructive default",
+              "restore_rewound UI",
+              "clear/archive platform_message_id bytes"
+            ],
+            "testsOraclesEvidence": [
+              "two-connection or injected in-transaction conflict proves no compare/update gap",
+              "compression-ended session raises with byte-identical rows/counters",
+              "I6 query includes active or compacted only"
+            ],
+            "budget": "60 minutes / 30k builder tokens",
+            "integrationPosition": 2,
+            "productionCallPath": "I1 consumed by prompt.submit and SessionStore rewind_transcript; I4 consumed by sessions export; I6 consumed by gateway real-message dedupe",
+            "rollback": "Revert P1.C2 source/test edits; no schema rollback; isolated inactive test rows are disposable."
+          },
+          {
+            "id": "P1.C3",
+            "parent": "P1",
+            "stage": "BUILD",
+            "scopeOutput": "Route prompt.submit through I1/I2, preserve r2/opening-turn guards, commit memory/running/turn launch only after DB success, and correct the deletion warning in all five shipped locale files.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_tui_gateway_server.py -q",
+              "pass": "P1.C1 turns green; forced conflict, compression-closed and write failure keep DB/history/history_version/running unchanged and do not launch."
+            },
+            "predecessors": [
+              "P1.C2"
+            ],
+            "forbiddenTouches": [
+              "apps/desktop/electron/main.ts",
+              "apps/desktop rewind transport protocol",
+              "ordinal fallback/r2 semantics",
+              "live Desktop profile"
+            ],
+            "testsOraclesEvidence": [
+              "history_lock held",
+              "DB commit precedes memory",
+              "4018 on semantic conflict",
+              "persistence error on closed/write failure",
+              "five locale key values audited"
+            ],
+            "budget": "45 minutes / 22k builder tokens",
+            "integrationPosition": 3,
+            "productionCallPath": "Desktop rewind.ts existing r2 submit -> TUI prompt.submit",
+            "rollback": "Revert P1.C3 gateway/locale edits as one semantic checkpoint; report destructive rewind restored."
+          }
+        ]
+      },
+      {
+        "id": "P2",
+        "name": "Gateway /retry parity",
+        "purpose": "Route /retry through I1 without altering explicit hard-rewrite callers.",
+        "acceptanceCriteria": [
+          "latest retry target archived",
+          "failure prevents token reset/resend",
+          "synthetic retry message_id None adjudicated",
+          "rotated compression/redaction unchanged"
+        ],
+        "risks": [
+          "accidental resend after failed persistence",
+          "privacy regression from weakening redaction",
+          "compression behavior drift"
+        ],
+        "inputs": [
+          "I1",
+          "active gateway transcript",
+          "last user ordinal"
+        ],
+        "outputs": [
+          "I3",
+          "P2 tests",
+          "hard-rewrite N/A adjudications"
+        ],
+        "interfaces": [
+          "I1",
+          "I3",
+          "I6"
+        ],
+        "effect": "/retry becomes recoverable while explicit rewrite_transcript remains destructive.",
+        "rollbackBoundary": "Revert P2 only; P1 Desktop behavior remains valid. /retry becomes unaccepted/destructive again.",
+        "builderFinalizer": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+        "predecessors": [
+          "P1.C2"
+        ],
+        "integrationGate": "P2.C1-C2 GREEN plus direct retry caller proof and hard-rewrite controls.",
+        "forbiddenTouches": [
+          "gateway/run.py",
+          "gateway/platforms/yuanbao.py",
+          "rewrite_transcript default",
+          "platform adapter identity"
+        ],
+        "terminalCondition": "P2 CANDIDATE_VERIFIED or HOLD; no resend on any canonical write failure.",
+        "files": [
+          "gateway/session.py",
+          "gateway/slash_commands.py",
+          "tests/gateway/test_session.py",
+          "tests/gateway/test_retry_response.py"
+        ],
+        "l2Checkpoints": [
+          {
+            "id": "P2.C1",
+            "parent": "P2",
+            "stage": "RED",
+            "scopeOutput": "Add /retry behavioral tests with a real SessionDB showing the latest active user/assistant turn is hard-deleted on base and that ignored persistence failure still reaches resend/token reset on base. Record MessageEvent.message_id=None and the has_platform_message_id short-circuit as the refutation control.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/gateway/test_retry_response.py tests/gateway/test_session.py -q",
+              "baseExpected": "New archive and abort assertions fail for intended base behavior; discovery/import/setup pass."
+            },
+            "predecessors": [
+              "P1.C2"
+            ],
+            "forbiddenTouches": [
+              "gateway/run.py",
+              "Yuanbao redaction",
+              "rotated compression",
+              "platform adapter event identity"
+            ],
+            "testsOraclesEvidence": [
+              "synthetic retry event has message_id None",
+              "real platform-message-id exposure tested separately under I6",
+              "rewrite_transcript hard-delete remains a control"
+            ],
+            "budget": "25 minutes / 10k builder tokens",
+            "integrationPosition": 4,
+            "productionCallPath": "gateway run command dispatch -> _handle_retry_command",
+            "rollback": "Remove only the new uncommitted P2 RED tests."
+          },
+          {
+            "id": "P2.C2",
+            "parent": "P2",
+            "stage": "BUILD",
+            "scopeOutput": "Add I3 wrapper and route /retry to it; check persistence result before token reset and resend. Preserve rewrite_transcript and every non-retry caller unchanged.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/gateway/test_retry_response.py tests/gateway/test_session.py -q",
+              "pass": "P2 RED green; compression/redaction controls green; forced rewind failure sends nothing."
+            },
+            "predecessors": [
+              "P2.C1",
+              "P1.C2"
+            ],
+            "forbiddenTouches": [
+              "gateway/run.py",
+              "gateway/platforms/yuanbao.py",
+              "rewrite_transcript destructive semantics"
+            ],
+            "testsOraclesEvidence": [
+              "direct call spy proves _handle_retry_command reaches rewind_transcript",
+              "negative assertion proves rewrite_transcript is not reached by /retry",
+              "CompressionSessionClosedError becomes False/no resend"
+            ],
+            "budget": "40 minutes / 18k builder tokens",
+            "integrationPosition": 5,
+            "productionCallPath": "_handle_retry_command -> AsyncSessionStore.rewind_transcript -> SessionStore.rewind_transcript -> I1",
+            "rollback": "Revert P2 files only; P1 remains independently valid."
+          }
+        ]
+      },
+      {
+        "id": "P3",
+        "name": "Read-only recovery export and frozen canary",
+        "purpose": "Expose a bounded byte-preserving recovery surface and executable durability canary.",
+        "acceptanceCriteria": [
+          "one-session JSONL recovery",
+          "active plus rewind-only rows",
+          "compacted archives excluded",
+          "destructive options rejected",
+          "restart/reopen canary passes",
+          "default export/replay/search unchanged"
+        ],
+        "risks": [
+          "inactive data leak through defaults",
+          "destructive option combination",
+          "canary touching live profile",
+          "non-byte-exact rendering"
+        ],
+        "inputs": [
+          "I4",
+          "P1/P2 green candidate",
+          "disposable HERMES_HOME/state.db"
+        ],
+        "outputs": [
+          "I5",
+          "CLI tests",
+          "frozen canary receipt"
+        ],
+        "interfaces": [
+          "I4",
+          "I5",
+          "I7"
+        ],
+        "effect": "Users can inspect/export rewound rows read-only; no restore or deletion authority added.",
+        "rollbackBoundary": "Revert P3 only. Archives remain internal and intact; build cannot be accepted without supported recovery.",
+        "builderFinalizer": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+        "predecessors": [
+          "P1.C2",
+          "P2.C2"
+        ],
+        "integrationGate": "P3.C1-C2 GREEN twice on disposable roots and hard-rewrite/read-isolation controls pass.",
+        "forbiddenTouches": [
+          "live HERMES_HOME",
+          "mutating restoration",
+          "delete-after-verified",
+          "network/upload",
+          "schema/config/dependencies"
+        ],
+        "terminalCondition": "P3 CANDIDATE_VERIFIED or HOLD with canary evidence; no production profile opened.",
+        "files": [
+          "hermes_cli/main.py",
+          "tests/hermes_cli/test_sessions_export_rewound.py",
+          ".ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py"
+        ],
+        "l2Checkpoints": [
+          {
+            "id": "P3.C1",
+            "parent": "P3",
+            "stage": "RED",
+            "scopeOutput": "Add a new file-path-addressable CLI regression for --include-rewound: one resolved session, JSONL only, active plus inactive/non-compacted rows, exact row bytes/state, and refusal of destructive or broad option combinations.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py -q",
+              "baseExpected": "After the new test file exists, exact base production code fails because the option/interface is absent; not because the file path is absent."
+            },
+            "predecessors": [
+              "P1.C2"
+            ],
+            "forbiddenTouches": [
+              "default export semantics",
+              "markdown/qmd lineage",
+              "delete-after-verified",
+              "upload/trace",
+              "live HERMES_HOME"
+            ],
+            "testsOraclesEvidence": [
+              "JSONL parsed and compared byte-for-byte",
+              "compacted=1 excluded",
+              "default export control active-only"
+            ],
+            "budget": "20 minutes / 8k builder tokens",
+            "integrationPosition": 6,
+            "productionCallPath": "hermes sessions export parser/handler -> SessionDB.export_session(include_rewound=True)",
+            "rollback": "Remove only the new uncommitted P3 RED test."
+          },
+          {
+            "id": "P3.C2",
+            "parent": "P3",
+            "stage": "BUILD",
+            "scopeOutput": "Implement I5 and the frozen isolated state.db restart/reopen canary; exercise Desktop prompt.submit, ordinary replay/search isolation, byte-exact export, pre-existing inactive preservation, counters and destructive replace controls.",
+            "soleWriter": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+            "gate": {
+              "failCapable": true,
+              "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py -q && '/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' .ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py",
+              "pass": "CLI tests and canary pass twice against fresh disposable roots; state.db closes/reopens between seed, rewind and recovery."
+            },
+            "predecessors": [
+              "P1.C3",
+              "P2.C2",
+              "P3.C1"
+            ],
+            "forbiddenTouches": [
+              "production profile",
+              "mutating restoration",
+              "schema/config/dependency",
+              "network/credentials"
+            ],
+            "testsOraclesEvidence": [
+              "unique sentinel absent live/search",
+              "sentinel exact in recovery",
+              "prefix once",
+              "old inactive row unchanged",
+              "hard replace remains destructive",
+              "canary records disposable root and db hash"
+            ],
+            "budget": "50 minutes / 24k builder tokens",
+            "integrationPosition": 7,
+            "productionCallPath": "CLI main sessions export -> I4; canary -> real SessionDB + prompt.submit",
+            "rollback": "Revert P3 files; no data/schema rollback."
+          }
+        ]
+      }
+    ],
+    "graph": {
+      "closedRegistry": [
+        "data",
+        "contract",
+        "shared-state",
+        "environment",
+        "integration",
+        "evidence",
+        "topology",
+        "control"
+      ],
+      "vertices": [
+        {
+          "id": "V_INTAKE",
+          "kind": "external-input"
+        },
+        {
+          "id": "V_BASE",
+          "kind": "candidate-base"
+        },
+        {
+          "id": "V_HARNESS",
+          "kind": "environment"
+        },
+        {
+          "id": "V_R2",
+          "kind": "contract"
+        },
+        {
+          "id": "V_MODEL_HISTORY",
+          "kind": "data"
+        },
+        {
+          "id": "V_I1",
+          "kind": "interface"
+        },
+        {
+          "id": "V_DB",
+          "kind": "shared-state"
+        },
+        {
+          "id": "V_COMMIT",
+          "kind": "transaction-result"
+        },
+        {
+          "id": "V_MEMORY",
+          "kind": "runtime-state"
+        },
+        {
+          "id": "V_PROMPT",
+          "kind": "production-caller"
+        },
+        {
+          "id": "V_RETRY",
+          "kind": "production-caller"
+        },
+        {
+          "id": "V_I3",
+          "kind": "interface"
+        },
+        {
+          "id": "V_I4",
+          "kind": "interface"
+        },
+        {
+          "id": "V_CLI",
+          "kind": "production-caller"
+        },
+        {
+          "id": "V_RED_ORACLE",
+          "kind": "evidence"
+        },
+        {
+          "id": "V_BACKEND_CANDIDATE",
+          "kind": "candidate"
+        },
+        {
+          "id": "V_DESKTOP_PORT",
+          "kind": "integration-target"
+        },
+        {
+          "id": "V_RELEASE_REFS",
+          "kind": "authority-target"
+        },
+        {
+          "id": "P1",
+          "kind": "L1-package"
+        },
+        {
+          "id": "P2",
+          "kind": "L1-package"
+        },
+        {
+          "id": "P3",
+          "kind": "L1-package"
+        },
+        {
+          "id": "P1.C1",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P1.C2",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P1.C3",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P2.C1",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P2.C2",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P3.C1",
+          "kind": "L2-checkpoint"
+        },
+        {
+          "id": "P3.C2",
+          "kind": "L2-checkpoint"
+        }
+      ],
+      "vertexCount": 28,
+      "edges": [
+        {
+          "id": "E1",
+          "from": "V_INTAKE",
+          "to": "P1",
+          "type": "contract",
+          "direction": "V_INTAKE->P1",
+          "predicate": "P1 scope and acceptance remain within frozen 1a/2b/3a/4a/5a",
+          "trigger": "map/build start",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "INTAKE.md#ad08d345"
+          ]
+        },
+        {
+          "id": "E2",
+          "from": "V_BASE",
+          "to": "P1.C1",
+          "type": "evidence",
+          "direction": "V_BASE->P1.C1",
+          "predicate": "RED compares new test against exact base production bytes",
+          "trigger": "P1.C1 RED",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "base 872c341302",
+            "COO existing-test 1 passed confirms old T1 invalid"
+          ]
+        },
+        {
+          "id": "E3",
+          "from": "V_HARNESS",
+          "to": "P1.C1",
+          "type": "environment",
+          "direction": "V_HARNESS->P1.C1",
+          "predicate": "candidate-owned Windows venv imports candidate tree and runner receives a file path",
+          "trigger": "every Python gate",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "Python 3.13.14",
+            "pytest 9.0.2",
+            "473 base file tests passed/114.5s",
+            "HERMES_PYTHON path"
+          ]
+        },
+        {
+          "id": "E4",
+          "from": "V_R2",
+          "to": "V_PROMPT",
+          "type": "contract",
+          "direction": "V_R2->V_PROMPT",
+          "predicate": "existing r2 occurrence/prefix identity resolves before I1",
+          "trigger": "Desktop rewind submit",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "tui_gateway/rewind_identity.py:286-323",
+            "tui_gateway/server.py:10928-10962"
+          ]
+        },
+        {
+          "id": "E5",
+          "from": "V_MODEL_HISTORY",
+          "to": "V_I1",
+          "type": "data",
+          "direction": "V_MODEL_HISTORY->V_I1",
+          "predicate": "full expected active history and target user ordinal are consumed by rewind-active-history-v1",
+          "trigger": "I1 invocation",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "I1 normalizer contract"
+          ]
+        },
+        {
+          "id": "E6",
+          "from": "V_I1",
+          "to": "V_DB",
+          "type": "shared-state",
+          "direction": "V_I1->V_DB",
+          "predicate": "compare, target selection, suffix mutation and counters share one BEGIN IMMEDIATE transaction",
+          "trigger": "rewind write",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "hermes_state.py:2074-2105",
+            "F03-F05"
+          ]
+        },
+        {
+          "id": "E7",
+          "from": "V_COMMIT",
+          "to": "V_MEMORY",
+          "type": "control",
+          "direction": "V_COMMIT->V_MEMORY",
+          "predicate": "memory/history_version/running/launch may advance only after successful DB commit",
+          "trigger": "prompt.submit rewind",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "F06",
+            "tui_gateway/server.py:11013-11028 base ordering defect"
+          ]
+        },
+        {
+          "id": "E8",
+          "from": "V_RETRY",
+          "to": "V_I3",
+          "type": "contract",
+          "direction": "V_RETRY->V_I3",
+          "predicate": "/retry uses rewind_transcript and checks result before reset/resend",
+          "trigger": "gateway /retry",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "gateway/slash_commands.py:2351-2385",
+            "F08"
+          ]
+        },
+        {
+          "id": "E9",
+          "from": "P1",
+          "to": "P2",
+          "type": "integration",
+          "direction": "P1->P2",
+          "predicate": "P2 consumes only frozen I1/I3 contract after P1.C2 green",
+          "trigger": "P2 build",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "P2 predecessors",
+            "I1/I3"
+          ]
+        },
+        {
+          "id": "E10",
+          "from": "P1",
+          "to": "P3",
+          "type": "integration",
+          "direction": "P1->P3",
+          "predicate": "P3 consumes frozen I4 after P1.C2 and integrates only after P1/P2 green",
+          "trigger": "P3 build/integration",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "P3 predecessors",
+            "I4/I5"
+          ]
+        },
+        {
+          "id": "E11",
+          "from": "V_RED_ORACLE",
+          "to": "P1.C1",
+          "type": "evidence",
+          "direction": "V_RED_ORACLE->P1.C1",
+          "predicate": "gate is valid only when the new sentinel assertion is the sole failure and discovery is non-vacuous",
+          "trigger": "RED verdict",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "F01",
+            "F02",
+            "expected 474 discovered/473 pass/1 fail"
+          ]
+        },
+        {
+          "id": "E12",
+          "from": "V_BACKEND_CANDIDATE",
+          "to": "V_DESKTOP_PORT",
+          "type": "topology",
+          "direction": "V_BACKEND_CANDIDATE->V_DESKTOP_PORT",
+          "predicate": "accepted source diff ports to Desktop clone while protected dirty file is excluded",
+          "trigger": "later authorized port",
+          "strength": "EVIDENCED_CONDITIONAL",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "INTAKE scope",
+            "dual-repo reland requirement"
+          ]
+        },
+        {
+          "id": "E13",
+          "from": "V_BACKEND_CANDIDATE",
+          "to": "V_RELEASE_REFS",
+          "type": "control",
+          "direction": "V_BACKEND_CANDIDATE->V_RELEASE_REFS",
+          "predicate": "no commit/merge/push/release-ref mutation without typed authority and reland receipt",
+          "trigger": "candidate publication or release transition",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "GOVERNANCE authority gate",
+            "reland-gate command"
+          ]
+        },
+        {
+          "id": "E14",
+          "from": "P3.C2",
+          "to": "V_CLI",
+          "type": "data",
+          "direction": "P3.C2->V_CLI",
+          "predicate": "canary invokes the supported read-only recovery surface and validates exact row bytes/state",
+          "trigger": "canary/recovery acceptance",
+          "strength": "MUST",
+          "epoch": "map-v2-plan-repair-20260810T194347+0700",
+          "evidence": [
+            "INTAKE frozen canary",
+            "I4/I5"
+          ]
+        }
+      ],
+      "edgeCount": 14,
+      "cycles": [],
+      "condensedDagExecution": [
+        "P1.C1",
+        "P1.C2",
+        "P1.C3",
+        "P2.C1",
+        "P2.C2",
+        "P3.C1",
+        "P3.C2"
+      ]
+    },
+    "oneWriterPlan": {
+      "writer": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer",
+      "sequence": [
+        "P1.C1",
+        "P1.C2",
+        "P1.C3",
+        "P2.C1",
+        "P2.C2",
+        "P3.C1",
+        "P3.C2"
+      ],
+      "proof": "One isolated candidate worktree, one builder identity, no concurrent writer dispatch, each file appears in exactly one package. Reviewer is read-only and COO transports unchanged bytes."
+    },
+    "flagStrategy": "No feature flag: each checkpoint remains safe because no production code lands until its package is green; no deploy/live action is authorized. Partial uncommitted work remains isolated.",
+    "deliberatelyNotInMap": [
+      {
+        "path": "gateway/run.py",
+        "status": "NOT_APPLICABLE",
+        "evidence": "Its rewrite_transcript call is under _hyg_rotated at base lines 13586-13628, writes a new rotated session, and INTAKE requires rotated compression to remain destructive."
+      },
+      {
+        "path": "gateway/platforms/yuanbao.py",
+        "status": "NOT_APPLICABLE",
+        "evidence": "Recall/redaction is explicitly out of scope and must remain destructive."
+      },
+      {
+        "path": "apps/desktop/electron/main.ts",
+        "status": "FORBIDDEN",
+        "evidence": "Unrelated user-owned dirty file."
+      },
+      {
+        "path": "skills/autonomous-ai-agents/claude-code/SKILL.md",
+        "status": "FORBIDDEN",
+        "evidence": "Unrelated user-owned dirty file in original backend worktree."
+      },
+      {
+        "scope": "/retry platform-message-id lookup",
+        "status": "REFUTED",
+        "evidence": "Synthetic retry MessageEvent omits message_id at slash_commands.py:2376-2382; default None; event.message_id guard short-circuits. I6 addresses only the narrower real-id exposure."
+      }
+    ],
+    "harnessBinding": {
+      "python": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe",
+      "pythonVersion": "3.13.14 MSC v.1944 64-bit",
+      "pytestVersion": "9.0.2",
+      "imports": {
+        "hermes_state": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/hermes_state.py",
+        "tui_gateway.server": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/tui_gateway/server.py"
+      },
+      "rules": [
+        "Set HERMES_PYTHON to this candidate-owned interpreter on every scripts/run_tests.sh call",
+        "Pass file paths only; node ids are forbidden because run_tests_parallel path discovery discards them",
+        "Pass --file-retries 0 for governed RED so one semantic execution is observed",
+        "Require non-zero discovery and expected counts; No test files to run is HARNESS_FAILURE, never RED",
+        "Never use live HERMES_HOME"
+      ]
+    }
+  },
+  "reviewRepairRegister": [
+    {
+      "id": "F01",
+      "severity": "CRITICAL",
+      "title": "RED identity",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "P1.C1 names a new sentinel-archive test and exact base failure; old passing test is control only."
+    },
+    {
+      "id": "F02",
+      "severity": "HIGH",
+      "title": "Harness binding",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "Candidate Windows venv is pinned through HERMES_PYTHON; file paths only; node ids forbidden; discovery/count and --file-retries 0 bound."
+    },
+    {
+      "id": "F03",
+      "severity": "BLOCKING",
+      "title": "I1 normalizer undefined",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "I1 freezes rewind-active-history-v1 fields, JSON canonicalization, exclusions and fail-closed unsupported values."
+    },
+    {
+      "id": "F04",
+      "severity": "HIGH",
+      "title": "I1 compare/mutate TOCTOU",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "All validation, selection, mutation, counters and result occur inside one _execute_write BEGIN IMMEDIATE closure."
+    },
+    {
+      "id": "F05",
+      "severity": "HIGH",
+      "title": "CompressionSessionClosedError guard loss",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "I1 repeats replace_messages compression-closed guard inside the transaction before reads/mutation and tests byte-identical refusal."
+    },
+    {
+      "id": "F06",
+      "severity": "HIGH",
+      "title": "DB/memory ordering",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "I2 freezes DB commit before history/history_version/running/launch; every failure has zero state/turn side effect."
+    },
+    {
+      "id": "F07",
+      "severity": "HIGH",
+      "title": "Session counter/result consistency",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "I1 recomputes active message/tool counts, increments rewind_count and resolves new head in the same transaction."
+    },
+    {
+      "id": "F08",
+      "severity": "HIGH",
+      "title": "/retry ignores persistence result",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "I3/P2 require no token reset or resend on False/exception and preserve hard rewrites elsewhere."
+    },
+    {
+      "id": "F09",
+      "severity": "MEDIUM",
+      "title": "platform_message_id exposure",
+      "disposition": "PARTIALLY_REFUTED_NARROW_CASE_REMEDIATED",
+      "change": "/retry-specific claim refuted by COO evidence; I6 changes real-id dedupe to active OR compacted so rewind-only rows do not suppress legitimate live persistence."
+    },
+    {
+      "id": "F10",
+      "severity": "CONFORMANCE",
+      "title": "gateway/run.py scope",
+      "disposition": "NOT_APPLICABLE_PROVEN",
+      "change": "File excluded; _hyg_rotated evidence and INTAKE rotated-compression hard-rewrite requirement recorded."
+    },
+    {
+      "id": "F11",
+      "severity": "BLOCKING_CONFORMANCE",
+      "title": "Invalid edge taxonomy/fields",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "Graph uses only eight registry types and every edge binds immutable endpoints, direction, predicate, trigger, strength, epoch and evidence."
+    },
+    {
+      "id": "F12",
+      "severity": "CONFORMANCE",
+      "title": "Incomplete L1/L2 records",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "Every package/checkpoint now binds required purpose/scope, criteria, risk, inputs/outputs/interfaces, writer, predecessors, fail-capable gate, forbidden touches, evidence, budget, integration position, caller and rollback/terminal boundaries."
+    },
+    {
+      "id": "F13",
+      "severity": "MEDIUM",
+      "title": "Recovery/control evidence incomplete",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "P3 binds byte-exact read-only export, option refusals, restart canary, default isolation and destructive replace controls."
+    },
+    {
+      "id": "F14",
+      "severity": "RECORD_KEEPING",
+      "title": "Epoch/root/findings/counters",
+      "disposition": "REMEDIATED_IN_MAP",
+      "change": "v1 remains immutable and superseded; v2 has a canonical structure-only root, ledger binding, all 14 dispositions, plan-review HOLD and unchanged semantic attempt counters."
+    }
+  ],
+  "planReview": {
+    "epoch1": "HOLD",
+    "reviewer": "fresh top-level Claude Code / claude-opus-5 / xhigh; COO independently verified",
+    "rescan": "PENDING same reviewer in fresh epoch",
+    "reviewerTokenSpend": "UNKNOWN_NOT_PROVIDED",
+    "builderTokenSpend": "UNKNOWN_PROVIDER_TELEMETRY_UNAVAILABLE"
+  },
+  "attemptCounters": {
+    "planReviewSemanticAttemptsConsumed": 1,
+    "buildSemanticAttemptsConsumed": 0,
+    "transportRetries": 0,
+    "note": "New map epoch does not reset counters."
+  }
+}
