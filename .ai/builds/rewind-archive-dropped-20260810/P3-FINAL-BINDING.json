@@ -1,0 +1,80 @@
+{
+  "schema": "sakaan.p3.final-binding.v1",
+  "timestamp_ict": "2026-08-11T01:11:38+07:00",
+  "branch": "sakaan/rewind-archive-dropped-20260810",
+  "p2_parent_commit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+  "state": "P3_CANDIDATE_VERIFIED_UNCOMMITTED",
+  "artifacts_sha256": {
+    "hermes_cli/main.py": "577298a0b4378f3160bdac31a42f3c53a9e2fe190b1a7cbc3359a28ba5b3de0d",
+    "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+    "acp_adapter/session.py": "39f2b146e044c193e464056f58b6a8ce2e988e18ab8a5983a107247294ad2a1d",
+    "tests/hermes_cli/test_sessions_export_rewound.py": "50c48393bb13f49abcbf8db5db6ac771781b4157e6518e5509701f6bb87f41d2",
+    "tests/acp/test_session.py": "70ff0f0cb606c087e633792077741dc27958ca84424e6523fd061c438bf4806f",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-C1-RED-RECEIPT.md": "fbfccb7829e0153833a5e0d4b887a30963610956debbc2504f4b311c29373f9b",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-C1-TEST-BODY-HASHES.json": "fcfe962bb275e6e3b9e1d3f8f08ffd4d34e42fefa2a3bfe35bfe3dda2bb269b2",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-C2-RECEIPT.md": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-MED4-DELETE-AFTER-VERIFIED-DECISION.md": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-M1-ACP-RESIDUAL.md": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-CANARY-RUNS.json": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
+    ".ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
+    ".ai/builds/rewind-archive-dropped-20260810/mutation-p3/manifest.json": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
+    ".ai/builds/rewind-archive-dropped-20260810/ledger.json": "616a5b8faee4dd1588f8e9de7b0e8aa44517b55f292b8744c2efec6b0628eefd",
+    ".ai/builds/rewind-archive-dropped-20260810/mutation-p3/run_mutations.py": "fcf9268420d04eac6e05945812824f1038db73cdc99b3b16027eec8b9bbab53a"
+  },
+  "working_tree_evidence_fingerprint_sha256": "e4625a53dda4a69a0ba5908aa745de4ea125ff6136fdab74e33e5ac7f813635e",
+  "p3_c1_red": {
+    "passed": 2,
+    "failed": 8,
+    "failure_class": "BEHAVIOR_ABSENCE",
+    "exit_code": 1
+  },
+  "frozen_bodies_reverified_byte_identical": true,
+  "focused_restored_gate": {
+    "passed": 59,
+    "failed": 0,
+    "files": 2,
+    "seconds": 5.7,
+    "exit_code": 0
+  },
+  "final_governed_gate": {
+    "passed": 1195,
+    "failed": 0,
+    "files": 8,
+    "seconds": 83.7,
+    "exit_code": 0,
+    "file_retries": 0
+  },
+  "mutations": {
+    "count": 16,
+    "all_mutations_failed_named_tests": true,
+    "source_restored_byte_identical": true
+  },
+  "canary": {
+    "fresh_disposable_runs": 2,
+    "passed": 2,
+    "live_profile_used": false
+  },
+  "med4": "ACCEPTED_CONSEQUENCE_V1",
+  "acp_residual": "ACCEPTED_RESIDUAL_NOT_CLEARED",
+  "forbidden_actions": {
+    "p3_commit": false,
+    "push": false,
+    "merge": false,
+    "protected_ref_move": false,
+    "force_push": false,
+    "rebase_protected": false,
+    "no_verify": false,
+    "protected_tag": false,
+    "deploy": false,
+    "activation": false,
+    "trading": false,
+    "orders": false
+  },
+  "verification_refresh": {
+    "timestamp_ict": "2026-08-11T01:22:54+07:00",
+    "full_gate_passed": 1195,
+    "full_gate_failed": 0,
+    "canary_status": "PASS",
+    "mutation_harness_rerun_count": 16
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "schema": "sakaan.p3.canary-runs.v1",
+  "runs": [
+    {
+      "run": 1,
+      "result": {
+        "status": "PASS",
+        "root": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-1-20260811-a",
+        "hermes_home": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-1-20260811-a\\hermes-home",
+        "state_db": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-1-20260811-a\\hermes-home\\state.db",
+        "session_id": "p3-canary-conversation",
+        "sentinel_utf8_hex": "50332d43414e4152592d53454e54494e454c2d3466396438633261",
+        "recovered_sentinel_count": 1,
+        "retained_prefix_count": 1,
+        "preexisting_inactive_state": [
+          0,
+          1
+        ],
+        "default_replay_excludes_sentinel": true,
+        "default_export_excludes_sentinel": true,
+        "default_search_excludes_sentinel": true,
+        "hard_replace_remains_destructive": true,
+        "recovery_command": [
+          "from hermes_cli.main import main; main()",
+          "sessions",
+          "export",
+          "--include-rewound",
+          "--session-id",
+          "p3-canary-conversation",
+          "--format",
+          "jsonl",
+          "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-1-20260811-a\\recovery.jsonl"
+        ],
+        "recovery_stdout": "Exported 1 session to C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-1-20260811-a\\recovery.jsonl"
+      },
+      "result_sha256": "f36a675b9ecde05fd4894f065114669272e5acf515ba87c9d508fa7852ebabae",
+      "recovery_sha256": "be4596981a3c8a3fccc207b8b38c4d87a8d26c7353dbdb68f55614347aa165a5",
+      "state_db_sha256": "972b9d6d405cfdb52047b7862263f572e98e0f3ba6032ea8a65e760d3a47a8f5"
+    },
+    {
+      "run": 2,
+      "result": {
+        "status": "PASS",
+        "root": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-2-20260811-b",
+        "hermes_home": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-2-20260811-b\\hermes-home",
+        "state_db": "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-2-20260811-b\\hermes-home\\state.db",
+        "session_id": "p3-canary-conversation",
+        "sentinel_utf8_hex": "50332d43414e4152592d53454e54494e454c2d3466396438633261",
+        "recovered_sentinel_count": 1,
+        "retained_prefix_count": 1,
+        "preexisting_inactive_state": [
+          0,
+          1
+        ],
+        "default_replay_excludes_sentinel": true,
+        "default_export_excludes_sentinel": true,
+        "default_search_excludes_sentinel": true,
+        "hard_replace_remains_destructive": true,
+        "recovery_command": [
+          "from hermes_cli.main import main; main()",
+          "sessions",
+          "export",
+          "--include-rewound",
+          "--session-id",
+          "p3-canary-conversation",
+          "--format",
+          "jsonl",
+          "C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-2-20260811-b\\recovery.jsonl"
+        ],
+        "recovery_stdout": "Exported 1 session to C:\\Users\\HieuKa\\AppData\\Local\\Temp\\p3-canary-run-2-20260811-b\\recovery.jsonl"
+      },
+      "result_sha256": "1c5d5479723aa5b4f1311a27fc41114978a4ad908b621d133230b099f94a39c8",
+      "recovery_sha256": "efb947ae9f261d418777cd27bcc64e2755797ddba0bc0665a82533c2ac7ac44c",
+      "state_db_sha256": "9892177e2102d76b9a67fd53d7f5805026bb6138ee1e025580ea266156462c8a"
+    }
+  ],
+  "all_passed": true,
+  "live_profile_used": false,
+  "roots_are_disposable": true
+}

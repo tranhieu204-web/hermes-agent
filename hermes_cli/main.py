@@ -15766,6 +15766,14 @@ def main():
     sessions_export.add_argument(
         "--session-id", help="Session ID or unique prefix to export"
     )
+    sessions_export.add_argument(
+        "--include-rewound",
+        action="store_true",
+        help=(
+            "Recovery export: include active and rewind-archived rows for one "
+            "session (JSONL only; excludes compacted rows)"
+        ),
+    )
     _add_session_filter_args(
         sessions_export,
         "Only export sessions older than AGE (duration like '5h'/'2d', "
@@ -16059,6 +16067,47 @@ def main():
             _any_filters = any(
                 getattr(args, a, None) is not None for a in _filter_arg_names
             )
+
+            # Recovery export is intentionally a narrow, read-only surface. It
+            # returns exact persisted content bytes from raw rows, so options that
+            # aggregate, filter, transform, or delete are refused before DB reads.
+            if getattr(args, "include_rewound", False):
+                recovery_error = None
+                if not args.session_id:
+                    recovery_error = "--include-rewound requires --session-id"
+                elif args.format != "jsonl":
+                    recovery_error = "--include-rewound requires --format jsonl"
+                elif getattr(args, "only", None):
+                    recovery_error = "--include-rewound is incompatible with --only"
+                elif getattr(args, "lineage", "single") == "logical":
+                    recovery_error = (
+                        "--include-rewound is incompatible with --lineage logical"
+                    )
+                elif getattr(args, "delete_after_verified", False):
+                    recovery_error = (
+                        "--include-rewound is incompatible with "
+                        "--delete-after-verified"
+                    )
+                elif getattr(args, "redact", False):
+                    recovery_error = "--include-rewound is incompatible with --redact"
+                elif _any_filters:
+                    recovery_error = (
+                        "--include-rewound is incompatible with session filters"
+                    )
+                elif getattr(args, "dry_run", False):
+                    recovery_error = "--include-rewound is incompatible with --dry-run"
+                elif any(
+                    getattr(args, name, False)
+                    for name in ("upload", "public", "no_redact")
+                ):
+                    recovery_error = (
+                        "--include-rewound is incompatible with trace upload options"
+                    )
+                if recovery_error:
+                    print(recovery_error)
+                    db.close()
+                    return
+
             filters = None
             if _any_filters:
                 try:
@@ -16294,7 +16343,14 @@ def main():
                     if not resolved_session_id:
                         print(f"Session '{args.session_id}' not found.")
                         return
-                    data = _redact(db.export_session(resolved_session_id))
+                    if getattr(args, "include_rewound", False):
+                        data = db.export_session(
+                            resolved_session_id, include_rewound=True
+                        )
+                    else:
+                        # Default export remains on its established active-only call.
+                        data = db.export_session(resolved_session_id)
+                    data = _redact(data)
                     if not data:
                         print(f"Session '{args.session_id}' not found.")
                         return

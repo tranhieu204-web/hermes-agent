@@ -1,0 +1,61 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+______ test_include_rewound_resolves_exactly_one_session_and_requests_i4 ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001EDE9BB68B0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4210/test_include_rewound_resolves_0')
+
+    def test_include_rewound_resolves_exactly_one_session_and_requests_i4(
+        monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        captured = []
+        output_path = tmp_path / "one.jsonl"
+
+        class RecordingDB:
+            def resolve_session_id(self, session_id):
+                captured.append(("resolve", session_id))
+                return "resolved-session"
+
+            def export_session(self, session_id, **kwargs):
+                captured.append(("export", session_id, kwargs))
+                return {"id": session_id, "messages": []}
+
+            def export_all(self, *args, **kwargs):
+                raise AssertionError("recovery export must not aggregate sessions")
+
+            def list_prune_candidates(self, *args, **kwargs):
+                raise AssertionError("recovery export must not enumerate sessions")
+
+            def close(self):
+                captured.append(("close",))
+
+        monkeypatch.setattr(hermes_state, "SessionDB", RecordingDB)
+        _run_sessions_export(
+            monkeypatch,
+            [
+                "--include-rewound",
+                "--session-id",
+                "resolved",
+                "--format",
+                "jsonl",
+                str(output_path),
+            ],
+        )
+
+>       assert captured == [
+            ("resolve", "resolved"),
+            ("export", "resolved-session", {"include_rewound": True}),
+        ]
+E       AssertionError: assert [('resolve', ...und': False})] == [('resolve', ...ound': True})]
+E
+E         At index 1 diff: ('export', 'resolved-session', {'include_rewound': False}) != ('export', 'resolved-session', {'include_rewound': True})
+E         Use -v to get more diff
+
+tests\hermes_cli\test_sessions_export_rewound.py:168: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Exported 1 session to C:\Users\HieuKa\AppData\Local\Temp\pytest-of-HieuKa\pytest-4210\test_include_rewound_resolves_0\one.jsonl
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_include_rewound_resolves_exactly_one_session_and_requests_i4
+1 failed in 0.77s

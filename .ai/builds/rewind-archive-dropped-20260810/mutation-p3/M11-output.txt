@@ -1,0 +1,49 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_____ test_default_jsonl_export_keeps_existing_active_only_call_contract ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000025D5F5268B0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4220/test_default_jsonl_export_keep0')
+
+    def test_default_jsonl_export_keeps_existing_active_only_call_contract(
+        monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        captured = []
+        output_path = tmp_path / "default.jsonl"
+
+        class DefaultPathDB:
+            def resolve_session_id(self, session_id):
+                captured.append(("resolve", session_id))
+                return "s1"
+
+            def export_session(self, session_id):
+                captured.append(("export", session_id))
+                return {
+                    "id": session_id,
+                    "messages": [{"role": "user", "content": "active only"}],
+                }
+
+            def close(self):
+                captured.append(("close",))
+
+        monkeypatch.setattr(hermes_state, "SessionDB", DefaultPathDB)
+        _run_sessions_export(
+            monkeypatch,
+            ["--session-id", "s1", "--format", "jsonl", str(output_path)],
+        )
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+>       assert [message["content"] for message in payload["messages"]] == ["active only"]
+E       AssertionError: assert [] == ['active only']
+E
+E         Right contains one more item: 'active only'
+E         Use -v to get more diff
+
+tests\hermes_cli\test_sessions_export_rewound.py:205: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Exported 1 session to C:\Users\HieuKa\AppData\Local\Temp\pytest-of-HieuKa\pytest-4220\test_default_jsonl_export_keep0\default.jsonl
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_default_jsonl_export_keeps_existing_active_only_call_contract
+1 failed in 0.71s

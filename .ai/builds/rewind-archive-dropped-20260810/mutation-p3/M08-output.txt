@@ -1,0 +1,60 @@
+F..                                                                      [100%]
+================================== FAILURES ===================================
+_ test_include_rewound_rejects_other_broad_or_mode_specific_options[extra_args0-session filters] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000014B63EB4180>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4217/test_include_rewound_rejects_o0')
+capsys = <_pytest.capture.CaptureFixture object at 0x0000014B65A48EC0>
+extra_args = ['--session-id', 's1', '--source', 'cli']
+expected_error = 'session filters'
+
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_error"),
+        [
+            (["--session-id", "s1", "--source", "cli"], "session filters"),
+            (["--session-id", "s1", "--dry-run"], "--dry-run"),
+            (["--session-id", "s1", "--upload"], "trace upload options"),
+        ],
+    )
+    def test_include_rewound_rejects_other_broad_or_mode_specific_options(
+        monkeypatch, tmp_path, capsys, extra_args, expected_error
+    ):
+        import hermes_state
+
+        class RefusalDB:
+            def __getattr__(self, name):
+                if name == "close":
+                    return lambda: None
+                raise AssertionError(f"scope refusal reached database operation: {name}")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", RefusalDB)
+        output_path = tmp_path / "refused-extra.jsonl"
+>       _run_sessions_export(
+            monkeypatch, ["--include-rewound", *extra_args, str(output_path)]
+        )
+
+tests\hermes_cli\test_sessions_export_rewound.py:247:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\hermes_cli\test_sessions_export_rewound.py:36: in _run_sessions_export
+    main_mod.main()
+hermes_cli\main.py:17106: in main
+    rc = args.func(args)
+         ^^^^^^^^^^^^^^^
+hermes_cli\main.py:16342: in cmd_sessions
+    resolved_session_id = db.resolve_session_id(args.session_id)
+                          ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <tests.hermes_cli.test_sessions_export_rewound.test_include_rewound_rejects_other_broad_or_mode_specific_options.<locals>.RefusalDB object at 0x0000014B6740AF90>
+name = 'resolve_session_id'
+
+    def __getattr__(self, name):
+        if name == "close":
+            return lambda: None
+>       raise AssertionError(f"scope refusal reached database operation: {name}")
+E       AssertionError: scope refusal reached database operation: resolve_session_id
+
+tests\hermes_cli\test_sessions_export_rewound.py:243: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_include_rewound_rejects_other_broad_or_mode_specific_options[extra_args0-session filters]
+1 failed, 2 passed in 1.18s

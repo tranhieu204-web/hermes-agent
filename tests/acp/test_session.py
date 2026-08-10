@@ -378,6 +378,63 @@ class TestListAndCleanup:
         hits = {r["session_id"] for r in db.search_messages("needle")}
         assert state.session_id in hits
 
+    def test_save_session_non_owner_preserves_rewind_rows_when_archive_probe_succeeds(
+        self, tmp_path
+    ):
+        """M-1 control: successful archive probing protects rewind rows too.
+
+        This proves only the successful-probe branch. The probe still fails open
+        for destruction on exception and remains TOCTOU-exposed; those accepted
+        residuals are deliberately not reclassified by this green control.
+        """
+        from types import SimpleNamespace
+
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+        db.append_message(state.session_id, "user", "retained prefix")
+        db.append_message(state.session_id, "assistant", "retained reply")
+        db.append_message(state.session_id, "user", "rewound raw sentinel")
+        db.append_message(state.session_id, "assistant", "rewound tail")
+        db.rewind_active_history(
+            state.session_id,
+            expected_history=db.get_messages(state.session_id),
+            truncate_before_user_ordinal=1,
+        )
+        rewind_before = [
+            row
+            for row in db.get_messages(state.session_id, include_inactive=True)
+            if row["active"] == 0 and row["compacted"] == 0
+        ]
+        assert [row["content"] for row in rewind_before] == [
+            "rewound raw sentinel",
+            "rewound tail",
+        ]
+
+        probe_calls = []
+        real_probe = db.has_archived_messages
+
+        def observed_probe(session_id):
+            probe_calls.append(session_id)
+            return real_probe(session_id)
+
+        db.has_archived_messages = observed_probe
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = db.get_messages_as_conversation(state.session_id)
+        manager.save_session(state.session_id)
+
+        rewind_after = [
+            row
+            for row in db.get_messages(state.session_id, include_inactive=True)
+            if row["active"] == 0 and row["compacted"] == 0
+        ]
+        assert probe_calls == [state.session_id]
+        assert rewind_after == rewind_before
+
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()

@@ -1,0 +1,66 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001ED294AC8A0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4221/test_include_rewound_jsonl_exp0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001ED29565400>
+
+    def test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection(
+        monkeypatch, tmp_path, capsys
+    ):
+        import hermes_state
+
+        db_path = tmp_path / "state.db"
+        output_path = tmp_path / "recovery.jsonl"
+        session_id, raw_sentinel, compacted_only = _seed_rewound_session(db_path)
+        assert sanitize_context(raw_sentinel).strip() != raw_sentinel
+
+        real_session_db = hermes_state.SessionDB
+
+        def open_isolated_db():
+            db = real_session_db(db_path)
+
+            def forbid_projection(*args, **kwargs):
+                raise AssertionError("recovery must not use conversation projection")
+
+            db.get_messages_as_conversation = forbid_projection
+            return db
+
+        monkeypatch.setattr(hermes_state, "SessionDB", open_isolated_db)
+>       _run_sessions_export(
+            monkeypatch,
+            [
+                "--include-rewound",
+                "--session-id",
+                session_id,
+                "--format",
+                "jsonl",
+                str(output_path),
+            ],
+        )
+
+tests\hermes_cli\test_sessions_export_rewound.py:61:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\hermes_cli\test_sessions_export_rewound.py:36: in _run_sessions_export
+    main_mod.main()
+hermes_cli\main.py:17106: in main
+    rc = args.func(args)
+         ^^^^^^^^^^^^^^^
+hermes_cli\main.py:16347: in cmd_sessions
+    data = db.export_session(
+hermes_state.py:8897: in export_session
+    messages = self.get_messages_as_conversation(session_id)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+args = ('rewind-export-session',), kwargs = {}
+
+    def forbid_projection(*args, **kwargs):
+>       raise AssertionError("recovery must not use conversation projection")
+E       AssertionError: recovery must not use conversation projection
+
+tests\hermes_cli\test_sessions_export_rewound.py:55: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection
+1 failed in 1.29s

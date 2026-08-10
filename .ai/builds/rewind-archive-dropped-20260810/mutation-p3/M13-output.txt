@@ -1,0 +1,58 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000028D1E12C8A0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4222/test_include_rewound_jsonl_exp0')
+capsys = <_pytest.capture.CaptureFixture object at 0x0000028D1EB58D70>
+
+    def test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection(
+        monkeypatch, tmp_path, capsys
+    ):
+        import hermes_state
+
+        db_path = tmp_path / "state.db"
+        output_path = tmp_path / "recovery.jsonl"
+        session_id, raw_sentinel, compacted_only = _seed_rewound_session(db_path)
+        assert sanitize_context(raw_sentinel).strip() != raw_sentinel
+
+        real_session_db = hermes_state.SessionDB
+
+        def open_isolated_db():
+            db = real_session_db(db_path)
+
+            def forbid_projection(*args, **kwargs):
+                raise AssertionError("recovery must not use conversation projection")
+
+            db.get_messages_as_conversation = forbid_projection
+            return db
+
+        monkeypatch.setattr(hermes_state, "SessionDB", open_isolated_db)
+        _run_sessions_export(
+            monkeypatch,
+            [
+                "--include-rewound",
+                "--session-id",
+                session_id,
+                "--format",
+                "jsonl",
+                str(output_path),
+            ],
+        )
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        messages = payload["messages"]
+        sentinel_rows = [row for row in messages if row["content"] == raw_sentinel]
+        assert len(sentinel_rows) == 1
+        assert sentinel_rows[0]["content"].encode("utf-8") == raw_sentinel.encode("utf-8")
+        assert (sentinel_rows[0]["active"], sentinel_rows[0]["compacted"]) == (0, 0)
+        assert [row["content"] for row in messages].count("retained prefix") == 1
+>       assert compacted_only not in [row["content"] for row in messages]
+E       AssertionError: assert 'P3-COMPACTED-ROW-MUST-STAY-EXCLUDED' not in ['P3-COMPACTED-ROW-MUST-STAY-EXCLUDED', 'retained prefix', 'retained reply', '\n  P3-RAW-SENTINEL-8f6a  \t', 'rewound tail']
+
+tests\hermes_cli\test_sessions_export_rewound.py:80: AssertionError
+---------------------------- Captured stdout call -----------------------------
+Exported 1 session to C:\Users\HieuKa\AppData\Local\Temp\pytest-of-HieuKa\pytest-4222\test_include_rewound_jsonl_exp0\recovery.jsonl
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection
+1 failed in 0.61s

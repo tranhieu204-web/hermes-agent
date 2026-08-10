@@ -15,9 +15,9 @@
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a"
   },
   "identities": {
-    "planner": "Hermes openai-codex gpt-5.6-sol HIGH — builder-authored execution map",
-    "builder": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer; assurance-excluded",
-    "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH — builder meta-audit; not assurance",
+    "planner": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder-authored execution map",
+    "builder": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 sole builder-finalizer; assurance-excluded",
+    "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder meta-audit; not assurance",
     "finalInspector": "PENDING fresh-epoch recheck by the same independent Claude Code claude-opus-5 HIGH reviewer",
     "reviewers": [
       "PENDING one fresh COO-transported Claude Code claude-opus-5 HIGH reviewer"
@@ -26,28 +26,28 @@
   "requirements": [
     {
       "id": "R1",
-      "status": "PENDING",
-      "evidence": "Frozen requirement: INTAKE.md acceptance 1-7; no build evidence yet"
+      "status": "CANDIDATE_VERIFIED",
+      "evidence": "CANDIDATE_VERIFIED: transactional soft rewind and strict ordering remain covered by final 1195/1195 gate."
     },
     {
       "id": "R2",
-      "status": "PENDING",
-      "evidence": "Frozen requirement: Desktop prompt.submit and r2 invariants; no build evidence yet"
+      "status": "CANDIDATE_VERIFIED",
+      "evidence": "CANDIDATE_VERIFIED: Desktop prompt.submit archive path and routing invariants remain covered by final gate and twice-run canary."
     },
     {
       "id": "R3",
-      "status": "PENDING",
-      "evidence": "Frozen requirement: gateway /retry parity and hard-rewrite controls; no build evidence yet"
+      "status": "CANDIDATE_VERIFIED",
+      "evidence": "CANDIDATE_VERIFIED: gateway /retry parity, hard-rewrite controls, and P2 mutations remain covered by final gate."
     },
     {
       "id": "R4",
-      "status": "PENDING",
-      "evidence": "Frozen requirement: read-only one-session JSONL rewind recovery; no build evidence yet"
+      "status": "CANDIDATE_VERIFIED",
+      "evidence": "CANDIDATE_VERIFIED: one-session JSONL raw-row recovery, exact whitespace bytes, scope refusals, 16 mutations, and two canary PASS runs."
     },
     {
       "id": "R5",
-      "status": "PENDING",
-      "evidence": "Frozen requirement: no schema/config/dependency change and session-level retention; no build evidence yet"
+      "status": "CANDIDATE_VERIFIED",
+      "evidence": "CANDIDATE_VERIFIED: no schema/config/dependency change; default replay/search/export and session-level retention remain unchanged."
     }
   ],
   "tests": [
@@ -74,34 +74,34 @@
     {
       "id": "T2",
       "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py tests/gateway/test_session.py tests/gateway/test_retry_response.py -q",
-      "output": "PENDING build GREEN",
-      "discovered": null,
-      "passed": null,
-      "failed": null
+      "output": "Final governed eight-file P1+P2+P3 gate includes these owners: 1195 passed / 0 failed in 83.7s",
+      "discovered": 1195,
+      "passed": 1195,
+      "failed": 0
     },
     {
       "id": "T3",
       "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py -q",
-      "output": "PENDING recovery export build",
-      "discovered": null,
-      "passed": null,
-      "failed": null
+      "output": "P3 recovery tests: 13 passed / 0 failed in restored focused gate; includes 10 frozen C1 cases plus 3 C2 option controls",
+      "discovered": 13,
+      "passed": 13,
+      "failed": 0
     },
     {
       "id": "T4",
-      "command": "'/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' .ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py",
-      "output": "PENDING isolated state.db canary",
-      "discovered": null,
-      "passed": null,
-      "failed": null
+      "command": "candidate .venv python canary_rewind_archive.py --root <fresh disposable p3-canary root>",
+      "output": "Two independent fresh disposable HERMES_HOME/state.db runs PASS; P3-CANARY-RUNS.json sha256 56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
+      "discovered": 2,
+      "passed": 2,
+      "failed": 0
     },
     {
       "id": "T3b",
       "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/acp/test_session.py -q",
-      "output": "PENDING P3 control: normal ACP non-owner guarded fallback preserves active=0,compacted=0; does not clear fail-open/TOCTOU residual.",
-      "discovered": null,
-      "passed": null,
-      "failed": null
+      "output": "ACP file: 46 passed / 0 failed; successful-probe branch preserves exact rewind rows; fail-open/TOCTOU residual explicitly remains",
+      "discovered": 46,
+      "passed": 46,
+      "failed": 0
     },
     {
       "id": "P1.C3-GREEN",
@@ -151,6 +151,24 @@
       "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 <six P1+P2 files> -q",
       "output": "6 files; actual 1136 tests; 1136 passed / 0 failed in 131.1s",
       "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0"
+    },
+    {
+      "id": "P3.C1-RED",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py -q",
+      "output": "Exact P2 commit: 2 passed / 8 intended behavior-absence failures in 5.5s; no setup/import/collection failure accepted",
+      "receipt": "P3-C1-RED-RECEIPT.md sha256 fbfccb7829e0153833a5e0d4b887a30963610956debbc2504f4b311c29373f9b"
+    },
+    {
+      "id": "P3.C2-GREEN",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 tests/hermes_cli/test_sessions_export_rewound.py tests/acp/test_session.py -q",
+      "output": "2 files; actual 59 tests; 59 passed / 0 failed in 5.7s after mutation restoration",
+      "receipt": "P3-C2-RECEIPT.md sha256 d93f6ac0c654e3fa57e4596077c7cb9f58ab39215254d27a16efddfa7961cffa"
+    },
+    {
+      "id": "P3-FINAL-P1-P2-P3-GATE",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 <eight P1+P2+P3 files> -q",
+      "output": "8 files; actual 1195 tests; 1195 passed / 0 failed in 83.7s",
+      "receipt": "P3-C2-RECEIPT.md sha256 d93f6ac0c654e3fa57e4596077c7cb9f58ab39215254d27a16efddfa7961cffa"
     }
   ],
   "mutation": [
@@ -176,16 +194,28 @@
       "id": "P2-M01-M13",
       "method": "one guard mutation at a time; direct named pytest; reject collection/import/setup failures; restore exact source after every mutation",
       "output": "mutation-p2/manifest.json sha256 b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
+    },
+    {
+      "id": "P3-M01-M16",
+      "method": "one source mutation at a time; direct named pytest; require named AssertionError; reject collection/import/syntax/setup/zero-discovery; restore exact bytes after every mutation",
+      "mutatedResult": "16/16 named assertion failures",
+      "restoredResult": "59/59 restored focused gate; all source hashes exact",
+      "output": "mutation-p3/manifest.json sha256 ccb83ec27dc4d395cab0d1d1d2869b349c6c394bfe11cb8090f0032a20b1022c; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
     }
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "sourceSha": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
-    "state": "P2_CANDIDATE_VERIFIED_UNCOMMITTED",
-    "workingTreeParentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
-    "workingTreeParent": "bc6c801a5734d30543a908c18233728b691e9e9e"
+    "reverifiedSha": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "state": "P3_CANDIDATE_VERIFIED_UNCOMMITTED",
+    "workingTreeParentCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "workingTreeParent": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "uncommittedSourceSha256": {
+      "hermes_cli/main.py": "577298a0b4378f3160bdac31a42f3c53a9e2fe190b1a7cbc3359a28ba5b3de0d",
+      "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+      "acp_adapter/session.py": "39f2b146e044c193e464056f58b6a8ce2e988e18ab8a5983a107247294ad2a1d"
+    }
   },
   "submission": {
     "verdict": "PENDING",
@@ -266,6 +296,11 @@
       "id": "P1.C3",
       "state": "CANDIDATE_VERIFIED_UNCOMMITTED",
       "evidence": "Routing GREEN: TUI 475/475, CLI 3/3, full four-file gate 980/980; 19/19 mutation proofs; stopped before P2/P3."
+    },
+    {
+      "id": "P3.C2",
+      "state": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "evidence": "Raw one-session JSONL recovery; 16/16 mutations; 2/2 isolated canaries; final gate 1195/1195; MED-4 and ACP residual explicit."
     }
   ],
   "stages": {
@@ -286,13 +321,13 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "P2_CANDIDATE_VERIFIED",
-      "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0; 1136/1136 final P1+P2 gate"
+      "status": "P3_CANDIDATE_VERIFIED",
+      "receipt": "P3-C2-RECEIPT.md sha256 1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44; 1195/1195 final P1+P2+P3 gate; canary 2/2 PASS"
     },
     "adversarial": {
       "sequence": 5,
-      "status": "P2_MUTATION_PASS",
-      "receipt": "P2 M01-M13 PASS; manifest b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1"
+      "status": "P3_MUTATION_PASS",
+      "receipt": "P3 M01-M16 PASS; manifest b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217"
     },
     "independentReview": {
       "sequence": 6,
@@ -364,9 +399,17 @@
     "p2ReceiptSha256": "420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
     "p2MutationManifestSha256": "b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1",
     "p2BodyFreezeSha256": "83579506aa9471853768508c852f01debae5a4f2d1e883ea985732beec1cab70",
-    "p2DecisionSha256": "d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4"
+    "p2DecisionSha256": "d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4",
+    "p3ReceiptPath": ".ai/builds/rewind-archive-dropped-20260810/P3-C2-RECEIPT.md",
+    "p3ReceiptSha256": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+    "p3RedReceiptSha256": "fbfccb7829e0153833a5e0d4b887a30963610956debbc2504f4b311c29373f9b",
+    "p3BodyFreezeSha256": "fcfe962bb275e6e3b9e1d3f8f08ffd4d34e42fefa2a3bfe35bfe3dda2bb269b2",
+    "p3MutationManifestSha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
+    "p3CanaryRunsSha256": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
+    "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
+    "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
   },
-  "updatedAt": "2026-08-11T00:23:19+07:00",
+  "updatedAt": "2026-08-11T01:22:54+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -502,9 +545,9 @@
           "reason": "This is not a user-selected rewind/truncate and has no target ordinal or dropped suffix. The agent normally appends and preserves compaction archives itself. Only when that agent does not own this SessionDB does the adapter rewrite the complete current live history; has_archived_messages selects active_only=True so existing inactive/compacted rows survive.",
           "gatingCondition": "Remains out of scope only while the caller persists the complete current live history, runs solely in the non-owner fallback, and active_only is selected whenever archived rows exist. Any user-triggered subset/truncate, existing-row loss, or target-session mismatch requires a new map revision before source work.",
           "evidence": [
-            "base 872c341302 acp_adapter/session.py:455-468 — normal agent persistence and archive_and_compact rationale",
-            "base 872c341302 acp_adapter/session.py:469-486 — non-owner fallback and archived-row guard",
-            "base 872c341302 acp_adapter/session.py:487-493 — has_archived_messages then replace_messages(... active_only=has_archived)"
+            "base 872c341302 acp_adapter/session.py:455-468 \u2014 normal agent persistence and archive_and_compact rationale",
+            "base 872c341302 acp_adapter/session.py:469-486 \u2014 non-owner fallback and archived-row guard",
+            "base 872c341302 acp_adapter/session.py:487-493 \u2014 has_archived_messages then replace_messages(... active_only=has_archived)"
           ]
         },
         {
@@ -516,9 +559,9 @@
           "reason": "The endpoint creates a new, previously non-existent child session, marks the source branched, reads the source's default active messages, and initializes the empty child with that complete live transcript. It neither truncates nor rewrites the source and has no dropped suffix to archive.",
           "gatingCondition": "Remains out of scope only while fork_id is proven absent before create_session, replace_messages targets only that newly created empty child, and source messages are copied without subset truncation. Reusing an existing child, mutating the source, or copying only a suffix/prefix requires a new map revision.",
           "evidence": [
-            "base 872c341302 gateway/platforms/api_server.py:3231-3248 — fork endpoint and non-existing fork_id check",
-            "base 872c341302 gateway/platforms/api_server.py:3250-3261 — source marked branched and new child created",
-            "base 872c341302 gateway/platforms/api_server.py:3262-3263 — source active messages copied into fork_id"
+            "base 872c341302 gateway/platforms/api_server.py:3231-3248 \u2014 fork endpoint and non-existing fork_id check",
+            "base 872c341302 gateway/platforms/api_server.py:3250-3261 \u2014 source marked branched and new child created",
+            "base 872c341302 gateway/platforms/api_server.py:3262-3263 \u2014 source active messages copied into fork_id"
           ]
         },
         {
@@ -531,9 +574,9 @@
           "implementationBinding": "Already owned by P1 through tui_gateway/server.py. P1.C3 must cover this command under I1/I2: durable compare-and-mutate commits before in-memory truncation/send; conflict, compression-closed, or storage failure leaves history/history_version unchanged and emits no send. No new file ownership, edge, or interface is introduced by this adjudication.",
           "gatingCondition": "It is accepted only when an executable P1 test proves the command archives the last active user/assistant suffix and fails closed before memory/send on every I1 failure. Treating it as memory-only or leaving durable state divergent is a P1 HOLD.",
           "evidence": [
-            "base 872c341302 tui_gateway/server.py:15360-15377 — user-facing /retry and last-user resolution",
-            "base 872c341302 tui_gateway/server.py:15378-15386 — message recovery/validation",
-            "base 872c341302 tui_gateway/server.py:15387-15392 — in-memory truncate/history_version increment and send with no persistence call",
+            "base 872c341302 tui_gateway/server.py:15360-15377 \u2014 user-facing /retry and last-user resolution",
+            "base 872c341302 tui_gateway/server.py:15378-15386 \u2014 message recovery/validation",
+            "base 872c341302 tui_gateway/server.py:15387-15392 \u2014 in-memory truncate/history_version increment and send with no persistence call",
             "execution-map-v2 P1 already solely owns tui_gateway/server.py"
           ]
         },
@@ -545,8 +588,8 @@
           "reason": "The opening-turn correction rewords the existing restoreBody and restoreBodyWipes values in the five already-owned locale files. Both keys already exist in Translations; no new translation key or type-contract change is required.",
           "gatingCondition": "Remains out of scope only if implementation changes values of the existing restoreBody/restoreBodyWipes keys. If any new key, renamed key, or type shape is proposed, stop before editing and issue a map revision that pre-authorizes types.ts.",
           "evidence": [
-            "base 872c341302 apps/desktop/src/i18n/types.ts:2287-2294 — existing restore keys, including restoreBodyWipes and restoreBody",
-            "base 872c341302 apps/desktop/src/i18n/en.ts:2704-2708 — existing opening-turn and ordinary restore copy values",
+            "base 872c341302 apps/desktop/src/i18n/types.ts:2287-2294 \u2014 existing restore keys, including restoreBodyWipes and restoreBody",
+            "base 872c341302 apps/desktop/src/i18n/en.ts:2704-2708 \u2014 existing opening-turn and ordinary restore copy values",
             "git grep at base 872c341302 confirms restoreBody and restoreBodyWipes in ar/en/ja/zh-hant/zh locale files"
           ]
         }
@@ -664,7 +707,7 @@
       }
     },
     "P1.C3": {
-      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "status": "COMMITTED",
       "parentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
       "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
       "gate": {
@@ -720,11 +763,11 @@
         "files": 5,
         "oldIrreversibleClaimsFound": 0,
         "isolatedSyntaxErrors": 0,
-        "syntaxCheckRerun": "PASS — 5 files, 0 syntax errors",
-        "temporaryJunctionResidue": "NONE — candidate node_modules absent; original clone node_modules directories present and not links/junctions",
+        "syntaxCheckRerun": "PASS \u2014 5 files, 0 syntax errors",
+        "temporaryJunctionResidue": "NONE \u2014 candidate node_modules absent; original clone node_modules directories present and not links/junctions",
         "fullTypecheck": "BLOCKED_BY_MISSING_CANDIDATE_DEPENDENCIES_AND_INCOMPLETE_BORROWED_TREE"
       },
-      "next": "STOP_BEFORE_P2_P3",
+      "next": "COMPLETED_SUPERSEDED_BY_P2_P3",
       "currentByteVerification": {
         "verifiedBy": "COO",
         "fourFileGate": {
@@ -745,7 +788,8 @@
         "result": "1 failed, 2 passed in 0.71s",
         "namedTestFailed": true,
         "serverRestoredSha256": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168"
-      }
+      },
+      "commit": "bc6c801a5734d30543a908c18233728b691e9e9e"
     },
     "P2.C1": {
       "status": "RED_PROVEN_TEST_BODIES_FROZEN",
@@ -754,7 +798,7 @@
       "bodyFreeze": "P2-C1-TEST-BODY-HASHES.json sha256 83579506aa9471853768508c852f01debae5a4f2d1e883ea985732beec1cab70"
     },
     "P2.C2": {
-      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "status": "COMMITTED",
       "sourceSha256": {
         "gateway/session.py": "29b447cb6f3b0f54f980b94482ad3f00853de66b36de335b9df8cd6930ab0a40",
         "gateway/slash_commands.py": "e7e3c3de15308a87e4a128afd2f0a9034d60dae728374c8f6859658804d1a04f"
@@ -767,7 +811,23 @@
       "decisionMED3": "P2-MED3-REWIND-SESSION-DECISION.md sha256 d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4",
       "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
       "finalGate": "1136 passed / 0 failed in 131.1s",
-      "hardRewriteControls": "retry/compress 14/14; Yuanbao recall 2/2; run.py and yuanbao.py byte-identical to P1.C3"
+      "hardRewriteControls": "retry/compress 14/14; Yuanbao recall 2/2; run.py and yuanbao.py byte-identical to P1.C3",
+      "commit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4"
+    },
+    "P3.C1": {
+      "status": "RED_PROVEN_TEST_BODIES_FROZEN",
+      "baseCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+      "receipt": "P3-C1-RED-RECEIPT.md sha256 fbfccb7829e0153833a5e0d4b887a30963610956debbc2504f4b311c29373f9b",
+      "bodyFreeze": "P3-C1-TEST-BODY-HASHES.json sha256 fcfe962bb275e6e3b9e1d3f8f08ffd4d34e42fefa2a3bfe35bfe3dda2bb269b2",
+      "red": "2 passed / 8 intended failed"
+    },
+    "P3.C2": {
+      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "parentCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+      "receipt": "P3-C2-RECEIPT.md sha256 1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+      "mutationManifest": "mutation-p3/manifest.json sha256 b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
+      "canary": "2 / 2 fresh disposable runs PASS",
+      "finalGate": "1195 passed / 0 failed in 83.7s"
     }
   }
 }

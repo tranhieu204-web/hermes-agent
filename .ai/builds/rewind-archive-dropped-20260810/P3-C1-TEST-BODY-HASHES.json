@@ -1,0 +1,49 @@
+{
+  "schema": "sakaan.p3.c1.test-body-freeze.v1",
+  "timestamp_ict": "2026-08-11T00:53:58+07:00",
+  "base_commit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+  "extraction": "AST def line through end_lineno inclusive; body first statement through last statement end_lineno inclusive; UTF-8 file bytes with original line endings",
+  "file_sha256": "062167093952ed9b507e689062b564c5c889ed922e25eea4115b33f395c471b2",
+  "tests": [
+    {
+      "file": "tests/hermes_cli/test_sessions_export_rewound.py",
+      "function": "test_include_rewound_jsonl_exports_raw_bytes_without_conversation_projection",
+      "start_line": 39,
+      "end_line": 81,
+      "function_source_sha256": "f4c24b3ddb28cceb98ee683c05b20af94759bf833911d0cc0054c73eaeb3a54e",
+      "body_source_sha256": "296c7ae0b386ba249a7ec476b116b2c0ae5cc07b306a3e4b51608b09d105b944"
+    },
+    {
+      "file": "tests/hermes_cli/test_sessions_export_rewound.py",
+      "function": "test_include_rewound_scope_fence_rejects_broad_or_destructive_combinations",
+      "start_line": 107,
+      "end_line": 126,
+      "function_source_sha256": "9db44eb2834f7deda0eaf0ad8ef8cded136f418c2cee4d9d17532324b639c43e",
+      "body_source_sha256": "aca4a2a08adfda3c2fef8bd2d3e00b4d4cf9e9c637a27f9a0072dc3bdcbd3a86"
+    },
+    {
+      "file": "tests/hermes_cli/test_sessions_export_rewound.py",
+      "function": "test_include_rewound_resolves_exactly_one_session_and_requests_i4",
+      "start_line": 129,
+      "end_line": 172,
+      "function_source_sha256": "e3761b7989e71f94fcc955d2eae86a9d7afa4b68bccd4ccb5578d971e8c522b0",
+      "body_source_sha256": "f125e33715af43b12ae7e694b9c7ce207f8e34c5fade67e6ba23fd8f59da81b2"
+    },
+    {
+      "file": "tests/hermes_cli/test_sessions_export_rewound.py",
+      "function": "test_default_jsonl_export_keeps_existing_active_only_call_contract",
+      "start_line": 175,
+      "end_line": 206,
+      "function_source_sha256": "e2965286d4be6059f7892c726c904dda2988c09d7c7a9fed99ca799ca874aa84",
+      "body_source_sha256": "89ed4cf4b47b6e69bc312c76230d938901f50abd261f5b6f4dc5642c541c1a93"
+    },
+    {
+      "file": "tests/hermes_cli/test_sessions_export_rewound.py",
+      "function": "test_default_replay_export_and_search_exclude_rewound_sentinel",
+      "start_line": 209,
+      "end_line": 223,
+      "function_source_sha256": "668355f0ef64aff11651bb6555b63d43c69fadb97761cf9bc10da3d3e343b586",
+      "body_source_sha256": "788977afa0c5a3f40bad69f222e982fb84469ef791ea72ab199c63fdc0ffca03"
+    }
+  ]
+}

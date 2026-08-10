@@ -1,0 +1,78 @@
+..F...                                                                   [100%]
+================================== FAILURES ===================================
+_ test_include_rewound_scope_fence_rejects_broad_or_destructive_combinations[extra_args2---include-rewound is incompatible with --only] _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002786C907410>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4213/test_include_rewound_scope_fen2')
+capsys = <_pytest.capture.CaptureFixture object at 0x000002786FBB3390>
+extra_args = ['--session-id', 's1', '--only', 'user-prompts']
+expected_error = '--include-rewound is incompatible with --only'
+
+    @pytest.mark.parametrize(
+        ("extra_args", "expected_error"),
+        [
+            ([], "--include-rewound requires --session-id"),
+            (["--session-id", "s1", "--format", "md"], "--include-rewound requires --format jsonl"),
+            (
+                ["--session-id", "s1", "--only", "user-prompts"],
+                "--include-rewound is incompatible with --only",
+            ),
+            (
+                ["--session-id", "s1", "--lineage", "logical"],
+                "--include-rewound is incompatible with --lineage logical",
+            ),
+            (
+                ["--session-id", "s1", "--delete-after-verified", "--yes"],
+                "--include-rewound is incompatible with --delete-after-verified",
+            ),
+            (
+                ["--session-id", "s1", "--redact"],
+                "--include-rewound is incompatible with --redact",
+            ),
+        ],
+    )
+    def test_include_rewound_scope_fence_rejects_broad_or_destructive_combinations(
+        monkeypatch, tmp_path, capsys, extra_args, expected_error
+    ):
+        import hermes_state
+
+        class RefusalDB:
+            def __getattr__(self, name):
+                if name == "close":
+                    return lambda: None
+                raise AssertionError(f"scope refusal reached database operation: {name}")
+
+        monkeypatch.setattr(hermes_state, "SessionDB", RefusalDB)
+>       _run_sessions_export(
+            monkeypatch,
+            ["--include-rewound", *extra_args, str(tmp_path / "refused.jsonl")],
+        )
+
+tests\hermes_cli\test_sessions_export_rewound.py:119:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\hermes_cli\test_sessions_export_rewound.py:36: in _run_sessions_export
+    main_mod.main()
+hermes_cli\main.py:17106: in main
+    rc = args.func(args)
+         ^^^^^^^^^^^^^^^
+hermes_cli\main.py:16174: in cmd_sessions
+    sessions = _collect_sessions()
+               ^^^^^^^^^^^^^^^^^^^
+hermes_cli\main.py:16132: in _collect_sessions
+    resolved = db.resolve_session_id(args.session_id)
+               ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <tests.hermes_cli.test_sessions_export_rewound.test_include_rewound_scope_fence_rejects_broad_or_destructive_combinations.<locals>.RefusalDB object at 0x000002786E1D8EC0>
+name = 'resolve_session_id'
+
+    def __getattr__(self, name):
+        if name == "close":
+            return lambda: None
+>       raise AssertionError(f"scope refusal reached database operation: {name}")
+E       AssertionError: scope refusal reached database operation: resolve_session_id
+
+tests\hermes_cli\test_sessions_export_rewound.py:116: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_rewound.py::test_include_rewound_scope_fence_rejects_broad_or_destructive_combinations[extra_args2---include-rewound is incompatible with --only]
+1 failed, 5 passed in 1.36s
