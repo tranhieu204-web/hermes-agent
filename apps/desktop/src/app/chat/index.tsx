@@ -85,7 +85,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onReload: (parentId: string | null) => Promise<void>
   onRestoreToMessage?: (
     messageId: string,
-    target?: { rewindId?: null | string; text?: string; userOrdinal?: number | null }
+    target?: { rewindId?: null | string; text?: string; userOrdinal?: number | null; wipesTranscript?: boolean }
   ) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>

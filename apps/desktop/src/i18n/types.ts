@@ -2288,6 +2288,7 @@ export interface Translations {
       restoreCheckpoint: string
       restoreFromHere: string
       restoreTitle: string
+      restoreBodyWipes: string
       restoreBody: string
       restoreConfirm: string
       restoreNext: string

@@ -2704,6 +2704,8 @@ export const en: Translations = {
       restoreTitle: 'Restore to this checkpoint?',
       restoreBody:
         'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+            restoreBodyWipes:
+        'This is the first prompt, so the ENTIRE conversation is deleted and only this prompt remains. This cannot be undone.',
       restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',

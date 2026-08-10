@@ -2568,6 +2568,8 @@ export const ja = defineLocale({
       restoreFromHere: 'チェックポイントを復元 — このプロンプトから再実行',
       restoreTitle: 'このチェックポイントに復元しますか？',
       restoreBody: 'このプロンプト以降のメッセージは会話から削除され、ここからプロンプトが再実行されます。',
+            restoreBodyWipes:
+        'これは最初のプロンプトです。会話全体が削除され、このプロンプトだけが残ります。元に戻せません。',
       restoreConfirm: '復元して再実行',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',

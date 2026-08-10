@@ -2483,6 +2483,7 @@ export const zhHant = defineLocale({
       restoreFromHere: '還原檢查點 — 從此提示重新執行',
       restoreTitle: '還原至此檢查點？',
       restoreBody: '此提示之後的所有訊息將從對話中移除，並從此處重新執行該提示。',
+            restoreBodyWipes: '這是第一條提示，因此整個對話都會被刪除，只保留這條提示。此操作無法復原。',
       restoreConfirm: '還原並重新執行',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',

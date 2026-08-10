@@ -14159,6 +14159,80 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
         server._sessions.pop("wipe-race-sid", None)
 
 
+def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
+    """Restoring the very first turn empties the transcript, so it needs intent
+    about THAT act — not the generic flag every rewind carries.
+
+    The id path ignores confirm_empty_truncate (a blanket one is what let a
+    misattached id delete a session) and honours only
+    confirm_delete_entire_transcript, which the client sends after its own
+    "this deletes the whole conversation" dialog.
+    """
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+    ]
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {
+                "final_response": "fresh",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "fresh"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages, **_kwargs):
+            self.replaced.append((session_id, list(messages)))
+
+    def _submit(sid, extra):
+        stub = _StubDb()
+        server._sessions[sid] = _session(agent=_Agent(), history=list(history))
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub)
+        try:
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "start over",
+                        "truncate_before_message_id": _rid(history, 0),
+                        **extra,
+                    },
+                }
+            )
+            return resp, stub
+        finally:
+            server._sessions.pop(sid, None)
+
+    # The generic flag must NOT be enough on the id path.
+    resp, stub = _submit("wipe-generic", {"confirm_empty_truncate": True})
+    assert resp["error"]["code"] == 4028
+    assert stub.replaced == []
+
+    # The dedicated one is.
+    resp, stub = _submit("wipe-explicit", {"confirm_delete_entire_transcript": True})
+    assert resp.get("result"), f"got error: {resp.get('error')}"
+    assert stub.replaced == [("session-key", [])]
+
+
 def test_prompt_submit_truncates_by_message_id(monkeypatch):
     """A rewind addressed by id cuts at the turn that id names."""
 
