@@ -34,6 +34,15 @@ from tui_gateway.turn_marker import (
     read_turn_marker,
     record_turn_start,
 )
+from tui_gateway.rewind_identity import (
+    annotate_rewind_ids,
+    coerce_message_text,
+    model_user_texts,
+    resolve_rewind_ordinal,
+    REWIND_ID_PREFIX,
+    rewind_digest,
+    rewind_message_id,
+)
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -759,6 +768,22 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     """
     if not session:
         return
+
+    # Interrupt the live turn before removing the session's ownership.  A
+    # close/reap can race an in-flight model request; finalizing first leaves
+    # the conversation loop detached from `_sessions`, so later queued work
+    # can continue burning tokens with no reachable `session.interrupt` route.
+    # Keep this cooperative and best-effort: the normal turn-finally path still
+    # owns persistence and cleanup, while this closes the orphan window.
+    try:
+        agent = session.get("agent")
+        if session.get("running") and agent is not None and hasattr(agent, "interrupt"):
+            agent.interrupt()
+        with session.get("history_lock", threading.RLock()):
+            session["_turn_cancel_requested"] = True
+            session["queued_prompt"] = None
+    except Exception:
+        pass
     _finalize_session(session, end_reason=end_reason)
     try:
         from tools.approval import unregister_gateway_notify
@@ -6126,91 +6151,8 @@ def _content_display_text(content: Any) -> str:
     return str(content)
 
 
-def _coerce_message_text(content: Any) -> str:
-    """Render ``message['content']`` as a plain string for transport.
-
-    Provider-side, ``content`` may be a string (most common), a list of
-    multimodal parts (e.g. ``[{"type": "text", "text": "..."},
-    {"type": "image_url", "image_url": {...}}]``), or a single structured
-    dict. Calling ``.strip()`` on a list raises ``'list' object has no
-    attribute 'strip'`` and breaks session resume entirely.
-
-    Image parts (``image_url``) are preserved by appending the underlying
-    URL (data: or http:) into the text. The desktop renderer pulls these
-    back out via ``extractEmbeddedImages`` so the user sees the image
-    instead of the URL — and it stops the resume payload from disagreeing
-    with the cached message (which would otherwise cause the inline image
-    to flash, then disappear when the resume payload overwrites the cache).
-
-    Other structured dict shapes (audio, unknown types) fall back to a
-    bracketed placeholder so resume doesn't drop the message entirely.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, (int, float)):
-        return str(content)
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, str):
-                chunks.append(part)
-                continue
-            if not isinstance(part, dict):
-                continue
-            text = part.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-                continue
-            kind = part.get("type")
-            if kind in {"text", "input_text", "output_text"}:
-                t = part.get("text") or part.get("content") or ""
-                if t:
-                    chunks.append(str(t))
-                continue
-            if kind in {"image_url", "input_image", "image"}:
-                image_url = part.get("image_url")
-                url = ""
-                if isinstance(image_url, dict):
-                    candidate = image_url.get("url")
-                    if isinstance(candidate, str):
-                        url = candidate
-                elif isinstance(image_url, str):
-                    url = image_url
-                if url:
-                    chunks.append(f"\n{url}")
-                else:
-                    chunks.append("\n[image]")
-                continue
-            if kind in {"input_audio", "audio"}:
-                chunks.append("\n[audio]")
-                continue
-            if kind:
-                chunks.append(f"\n[{kind}]")
-        return "".join(chunks)
-    if isinstance(content, dict):
-        kind = content.get("type")
-        if kind in {"text", "input_text", "output_text"}:
-            return str(content.get("text") or content.get("content") or "")
-        if kind in {"image_url", "input_image", "image"}:
-            image_url = content.get("image_url")
-            url = ""
-            if isinstance(image_url, dict):
-                candidate = image_url.get("url")
-                if isinstance(candidate, str):
-                    url = candidate
-            elif isinstance(image_url, str):
-                url = image_url
-            return url or "[image]"
-        if kind in {"input_audio", "audio"}:
-            return "[audio]"
-        if kind:
-            return f"[{kind}]"
-        if "text" in content:
-            return str(content.get("text") or "")
-        return "[structured content]"
-    return str(content)
+# One normalisation for both projections — see tui_gateway.rewind_identity.
+_coerce_message_text = coerce_message_text
 
 
 _TEXT_ONLY_BUSY_PART_KINDS = frozenset({"text", "input_text", "output_text"})
@@ -6326,6 +6268,17 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         messages.append(msg)
 
     return messages
+
+
+# Rewind identity — the pure logic lives in tui_gateway.rewind_identity so the
+# REST transcript endpoint (hermes_cli.web_server) can mint ids this gateway
+# will resolve. See that module for why a position is not an identity.
+_REWIND_ID_PREFIX = REWIND_ID_PREFIX
+_rewind_digest = rewind_digest
+_rewind_message_id = rewind_message_id
+_model_user_texts = model_user_texts
+_annotate_rewind_ids = annotate_rewind_ids
+_resolve_rewind_ordinal = resolve_rewind_ordinal
 
 
 def _coerce_seed_history(value: Any) -> list[dict]:
@@ -7056,7 +7009,7 @@ def _(rid, params: dict) -> dict:
             "session_id": sid,
             "stored_session_id": key,
             "message_count": len(history),
-            "messages": _history_to_messages(history),
+            "messages": _annotate_rewind_ids(_history_to_messages(history), history),
             "info": {
                 # Reflect the per-session model override (desktop composer pick)
                 # in the immediate response so the client doesn't briefly clobber
@@ -7396,6 +7349,17 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4007, "session not found")
 
+    # An operator-policy stop is a hard resume boundary.  The desktop can
+    # reconnect and replay its focused session automatically after a backend
+    # restart; reopening this exact row would resurrect a deliberately
+    # retired deep/retry loop.  A new session must be created instead.
+    if found and found.get("end_reason") == "operator_policy_stop":
+        return _err(
+            rid,
+            4013,
+            "session stopped by operator policy; start a new bounded session",
+        )
+
     # Follow the compression-continuation chain to the live tip so a resume on
     # a rotated-out parent id binds to the descendant that actually holds the
     # post-compression turns. Auto-compression ends the session and forks a
@@ -7522,7 +7486,9 @@ def _(rid, params: dict) -> dict:
         except Exception:
             logger.debug("child-watch display projection read failed", exc_info=True)
             display_history = history
-        messages = _history_to_messages(display_history)
+        messages = _annotate_rewind_ids(
+            _history_to_messages(display_history), history
+        )
         return _ok(
             rid,
             {
@@ -7614,7 +7580,7 @@ def _(rid, params: dict) -> dict:
         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
         auto_continue = _maybe_schedule_auto_continue(sid, record, target)
 
-        messages = _history_to_messages(display_history)
+        messages = _annotate_rewind_ids(_history_to_messages(display_history), history)
         payload = {
             "session_id": sid,
             "resumed": target,
@@ -7668,7 +7634,9 @@ def _(rid, params: dict) -> dict:
         # the WebUI/TUI resume path picking up the same cleanup.
         display_history_prefix = db.get_ancestor_display_prefix(target)
         history = sanitize_replay_history(raw_history)
-        messages = _history_to_messages(display_history)
+        messages = _annotate_rewind_ids(
+            _history_to_messages(display_history), history
+        )
         tokens = _set_session_context(target)
         try:
             # Pass the profile's db so the agent persists turns to the right
@@ -7999,8 +7967,9 @@ def _live_session_payload(
             session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
-        in_memory_history = list(session.get("display_history_prefix") or []) + list(
-            session.get("history") or []
+        model_history = list(session.get("history") or [])
+        in_memory_history = (
+            list(session.get("display_history_prefix") or []) + model_history
         )
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
@@ -8012,7 +7981,11 @@ def _live_session_payload(
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
-        "messages": _history_to_messages(history),
+        # Rewind ids resolve against the MODEL history only — the ancestor
+        # prefix folded into `history` above is displayable but not truncatable.
+        "messages": _annotate_rewind_ids(
+            _history_to_messages(history), model_history
+        ),
         "running": running,
         "session_id": sid,
         "session_key": _session_lookup_key(session, fallback=sid),
@@ -10099,7 +10072,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    history = list(session.get("history", []))
+    model_history = list(session.get("history", []))
+    history = model_history
     if session.get("session_key"):
         with _session_db(session) as db:
             if db is not None:
@@ -10113,7 +10087,9 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "count": len(history),
-            "messages": _history_to_messages(history),
+            "messages": _annotate_rewind_ids(
+                _history_to_messages(history), model_history
+            ),
         },
     )
 
@@ -10900,6 +10876,9 @@ def _(rid, params: dict) -> dict:
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    # Preferred addressing (see tui_gateway.rewind_identity); the positional
+    # ordinal stays supported for clients that predate it.
+    truncate_message_id = params.get("truncate_before_message_id")
     if params.get("interrupted"):
         # Client-side barge-in (desktop VAD / typing over playback) — latch it
         # so this turn's model message carries the interruption note.
@@ -10942,20 +10921,40 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+        if truncate_message_id is not None or truncate_user_ordinal is not None:
             history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
+            # Must enumerate exactly like _model_user_texts, or an ordinal
+            # minted by _annotate_rewind_ids would index a different row here.
+            user_indices = [
+                i
+                for i, m in enumerate(history)
+                if isinstance(m, dict) and m.get("role") == "user"
+            ]
+            if truncate_message_id is not None:
+                # Identity beats position: the id is resolved against the
+                # history as it stands NOW, so a turn that landed between the
+                # transcript payload and this submit cannot slide the cut onto
+                # a neighbouring message.
+                resolved = _resolve_rewind_ordinal(history, truncate_message_id)
+                if resolved is None:
+                    return _err(
+                        rid, 4018, "target user message is no longer in session history"
+                    )
+                ordinal = resolved
+            else:
+                try:
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                # Reject out-of-range ordinals on BOTH ends. A negative value would
+                # otherwise sail past the upper-bound check and hit Python's negative
+                # indexing below (user_indices[-1] -> the LAST user turn), silently
+                # truncating history to everything before it and persisting that loss
+                # via replace_messages — an unrecoverable overwrite of the session DB.
+                if ordinal < 0 or ordinal >= len(user_indices):
+                    return _err(
+                        rid, 4018, "target user message is no longer in session history"
+                    )
             truncated = history[: user_indices[ordinal]]
             # Stale clients can attach truncate_before_user_ordinal=0 to an
             # ordinary submit. That resolves to history[:0] == [] and
