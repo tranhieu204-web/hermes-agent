@@ -1,0 +1,62 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_tui_gateway_server.py::test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix _
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4162/test_retry_command_converts_ar0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000270491CAFD0>
+
+    def test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix(
+        tmp_path, monkeypatch
+    ):
+        """TUI /retry must convert coordinates and durably archive before sending."""
+        from hermes_state import SessionDB
+
+        sid = "retry-red-coordinate"
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "calling tool"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "retry me"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        user_indices = [i for i, message in enumerate(history) if message.get("role") == "user"]
+        last_user_array_index = user_indices[-1]
+        last_user_ordinal = len(user_indices) - 1
+
+        # Total discriminator: passing the array index as an ordinal is necessarily
+        # out of range, so wrong wiring can only refuse and can never cut another turn.
+        assert user_indices == [0, 4]
+        assert last_user_array_index != last_user_ordinal
+        assert last_user_array_index >= len(user_indices)
+
+        db = SessionDB(db_path=tmp_path / "retry-red-state.db")
+        db.create_session(sid, source="tui")
+        for message in history:
+            db.append_message(sid, role=message["role"], content=message["content"])
+
+        server._sessions[sid] = _session(history=list(history), session_key=sid)
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-red",
+                    "method": "command.dispatch",
+                    "params": {"session_id": sid, "name": "retry", "arg": ""},
+                }
+            )
+>           assert response.get("result") == {"type": "send", "message": "retry me"}, (
+                "wrong array-index-to-user-ordinal wiring refused the retry"
+            )
+E           AssertionError: wrong array-index-to-user-ordinal wiring refused the retry
+E           assert None == {'message': 'retry me', 'type': 'send'}
+E            +  where None = <built-in method get of dict object at 0x000002704998F3C0>('result')
+E            +    where <built-in method get of dict object at 0x000002704998F3C0> = {'error': {'code': 4018, 'message': 'session history changed; reload before rewinding'}, 'id': 'retry-red', 'jsonrpc': '2.0'}.get
+
+tests\test_tui_gateway_server.py:14580: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix
+1 failed in 0.99s

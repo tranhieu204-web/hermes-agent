@@ -1,0 +1,81 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_gateway_rewind_missing_db_or_session_identity_has_no_side_effect
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_gateway_rewind_missing_db_or_session_identity_has_no_side_effect _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x00000274B0459090>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000274B03823F0>
+
+    def test_gateway_rewind_missing_db_or_session_identity_has_no_side_effect(
+        self, monkeypatch
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+
+        prompt_sid = "prompt-no-db"
+        prompt_session = _routing_session(history)
+        server._sessions[prompt_sid] = prompt_session
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        try:
+            response = server.handle_request(
+                {
+                    "id": "prompt-no-db",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": prompt_sid,
+                        "text": "retry",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+            assert response["error"]["code"] == 5008
+            assert response["error"]["message"] == (
+                "canonical session persistence unavailable; rewind not applied"
+            )
+            assert prompt_session["history"] == history
+            assert prompt_session["history_version"] == 0
+            assert prompt_session["running"] is False
+        finally:
+            server._sessions.pop(prompt_sid, None)
+
+        retry_sid = "retry-no-identity"
+        retry_session = _routing_session(history)
+        retry_session["session_key"] = None
+        server._sessions[retry_sid] = retry_session
+        monkeypatch.setattr(server, "_get_db", lambda: object())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-no-identity",
+                    "method": "command.dispatch",
+                    "params": {"session_id": retry_sid, "name": "retry", "arg": ""},
+                }
+            )
+            assert response["error"]["code"] == 5008
+>           assert response["error"]["message"] == (
+                "canonical session persistence unavailable; rewind not applied"
+            )
+E           assert "session pers...tive_history'" == 'canonical se...d not applied'
+E
+E             - canonical session persistence unavailable; rewind not applied
+E             + session persistence failed; rewind not applied: 'object' object has no attribute 'rewind_active_history'
+
+tests\test_hermes_state.py:8049: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    tui_gateway.server:server.py:1119 prompt.submit: canonical session persistence unavailable
+ERROR    tui_gateway.server:server.py:1134 command.dispatch /retry: durable rewind failed
+Traceback (most recent call last):
+  File "C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\tui_gateway\server.py", line 1122, in _persist_rewind_before_memory
+    db.rewind_active_history(
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'object' object has no attribute 'rewind_active_history'
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_gateway_rewind_missing_db_or_session_identity_has_no_side_effect
+1 failed in 1.27s

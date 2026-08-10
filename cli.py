@@ -7689,31 +7689,61 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"(x_x) Failed to save: {e}")
     
     def retry_last(self):
-        """Retry the last user message by removing the last exchange and re-sending.
-        
-        Removes the last assistant response (and any tool-call messages) and
-        the last user message, then re-sends that user message to the agent.
-        Returns the message to re-send, or None if there's nothing to retry.
-        """
+        """Durably rewind the last exchange, then return its user message."""
         if not self.conversation_history:
             print("(._.) No messages to retry.")
             return None
-        
-        # Walk backwards to find the last user message
+
+        history = self.conversation_history
+        # Walk backwards to find the last user message in the full history array.
         last_user_idx = None
-        for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
+        for i in range(len(history) - 1, -1, -1):
+            message = history[i]
+            if isinstance(message, dict) and message.get("role") == "user":
                 last_user_idx = i
                 break
-        
+
         if last_user_idx is None:
             print("(._.) No user message found to retry.")
             return None
-        
-        # Extract the message text and remove everything from that point forward
-        last_message = self.conversation_history[last_user_idx].get("content", "")
-        self.conversation_history = self.conversation_history[:last_user_idx]
-        
+
+        db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "session_id", None)
+        if db is None or not session_id:
+            print("(x_x) Retry failed: canonical session persistence unavailable; nothing was requeued.")
+            return None
+
+        from hermes_state import (
+            CompressionSessionClosedError,
+            RewindHistoryConflict,
+            retry_array_index_to_user_ordinal,
+        )
+
+        try:
+            user_ordinal = retry_array_index_to_user_ordinal(history, last_user_idx)
+            db.rewind_active_history(
+                session_id,
+                expected_history=history,
+                truncate_before_user_ordinal=user_ordinal,
+            )
+        except RewindHistoryConflict as exc:
+            logger.info("CLI /retry refused stale history: %s", exc)
+            print("(x_x) Retry refused: persisted session history changed; nothing was requeued.")
+            return None
+        except CompressionSessionClosedError as exc:
+            logger.warning("CLI /retry refused compression-closed session: %s", exc)
+            print("(x_x) Retry failed: session persistence refused the rewind; nothing was requeued.")
+            return None
+        except Exception:
+            logger.exception("CLI /retry durable rewind failed")
+            print("(x_x) Retry failed: session persistence error; nothing was requeued.")
+            return None
+
+        # The durable transaction committed; only now may memory and the caller's
+        # pending-input queue advance.
+        last_message = history[last_user_idx].get("content", "")
+        self.conversation_history = history[:last_user_idx]
+
         print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
     

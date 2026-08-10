@@ -7922,3 +7922,455 @@ class TestRewindActiveHistory:
         ]
         assert _rewind_raw_snapshot(db, sid) == before
 
+
+class TestRetryCoordinateConversion:
+    def test_retry_coordinate_converts_array_index_to_user_ordinal(self):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "tool call"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "retry"},
+        ]
+        assert hermes_state.retry_array_index_to_user_ordinal(history, 4) == 1
+
+    @pytest.mark.parametrize("bad_index", [-1, 5, "4", True])
+    def test_retry_coordinate_rejects_invalid_array_index(self, bad_index):
+        history = [{"role": "user", "content": "first"}]
+        with pytest.raises(hermes_state.RewindHistoryConflict):
+            hermes_state.retry_array_index_to_user_ordinal(history, bad_index)
+
+    def test_retry_coordinate_requires_user_target(self):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        with pytest.raises(hermes_state.RewindHistoryConflict):
+            hermes_state.retry_array_index_to_user_ordinal(history, 1)
+
+
+def _routing_session(history, *, agent=None):
+    import threading
+    import types
+
+    return {
+        "agent": agent if agent is not None else types.SimpleNamespace(),
+        "session_key": "session-key",
+        "history": list(history),
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cols": 80,
+        "slash_worker": None,
+        "show_reasoning": False,
+        "tool_progress_mode": "all",
+    }
+
+
+def _bare_cli_for_routing():
+    """Load the root CLI module without relying on tests/cli's sys.path shim."""
+    import importlib.util
+    from pathlib import Path
+    import sys
+    import types
+
+    module_name = "_p1c3_root_cli_under_test"
+    module = sys.modules.get(module_name)
+    if module is None:
+        cli_path = Path(__file__).resolve().parents[1] / "cli.py"
+        spec = importlib.util.spec_from_file_location(module_name, cli_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    cli = object.__new__(module.HermesCLI)
+    cli.session_id = "cli-routing-session"
+    cli._session_db = None
+    cli.conversation_history = []
+    cli._pending_input = types.SimpleNamespace(put=lambda _value: None)
+    return cli
+
+
+class TestRewindRouting:
+    def test_gateway_rewind_missing_db_or_session_identity_has_no_side_effect(
+        self, monkeypatch
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+
+        prompt_sid = "prompt-no-db"
+        prompt_session = _routing_session(history)
+        server._sessions[prompt_sid] = prompt_session
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        try:
+            response = server.handle_request(
+                {
+                    "id": "prompt-no-db",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": prompt_sid,
+                        "text": "retry",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+            assert response["error"]["code"] == 5008
+            assert response["error"]["message"] == (
+                "canonical session persistence unavailable; rewind not applied"
+            )
+            assert prompt_session["history"] == history
+            assert prompt_session["history_version"] == 0
+            assert prompt_session["running"] is False
+        finally:
+            server._sessions.pop(prompt_sid, None)
+
+        retry_sid = "retry-no-identity"
+        retry_session = _routing_session(history)
+        retry_session["session_key"] = None
+        server._sessions[retry_sid] = retry_session
+        monkeypatch.setattr(server, "_get_db", lambda: object())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-no-identity",
+                    "method": "command.dispatch",
+                    "params": {"session_id": retry_sid, "name": "retry", "arg": ""},
+                }
+            )
+            assert response["error"]["code"] == 5008
+            assert response["error"]["message"] == (
+                "canonical session persistence unavailable; rewind not applied"
+            )
+            assert retry_session["history"] == history
+            assert retry_session["history_version"] == 0
+            assert retry_session["running"] is False
+        finally:
+            server._sessions.pop(retry_sid, None)
+
+    def test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [{"role": "user", "content": "first"}]
+        db_calls = []
+        monkeypatch.setattr(server, "_get_db", lambda: db_calls.append(True))
+        for offset, bad_ordinal in enumerate(("0", True, 0.0)):
+            sid = f"fr3-{offset}"
+            session = _routing_session(history)
+            server._sessions[sid] = session
+            try:
+                response = server.handle_request(
+                    {
+                        "id": str(offset),
+                        "method": "prompt.submit",
+                        "params": {
+                            "session_id": sid,
+                            "text": "retry",
+                            "truncate_before_user_ordinal": bad_ordinal,
+                        },
+                    }
+                )
+                assert response["error"]["code"] == 4004
+                assert session["history"] == history
+                assert session["history_version"] == 0
+                assert session["running"] is False
+            finally:
+                server._sessions.pop(sid, None)
+        assert db_calls == []
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_code"),
+        [
+            (hermes_state.RewindHistoryConflict("session-key", "stale"), 4018),
+            (hermes_state.CompressionSessionClosedError("session-key"), 5008),
+            (OSError("write failed"), 5008),
+        ],
+    )
+    def test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect(
+        self, monkeypatch, failure, expected_code
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+        sid = f"prompt-failure-{expected_code}-{type(failure).__name__}"
+        session = _routing_session(history)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _FailingDB())
+        monkeypatch.setattr(
+            server, "_start_inflight_turn", lambda *_a, **_k: pytest.fail("turn started")
+        )
+        monkeypatch.setattr(
+            server, "_start_agent_build", lambda *_a, **_k: pytest.fail("agent started")
+        )
+        try:
+            response = server.handle_request(
+                {
+                    "id": "failure",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "edited second",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+            assert response["error"]["code"] == expected_code
+            assert session["history"] == history
+            assert session["history_version"] == 0
+            assert session["running"] is False
+        finally:
+            server._sessions.pop(sid, None)
+
+    def test_prompt_submit_commits_before_memory_running_or_turn_start(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+        sid = "prompt-ordering"
+        observed = []
+
+        class _Agent:
+            def run_conversation(
+                self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+            ):
+                return {
+                    "final_response": "new",
+                    "messages": [
+                        *(conversation_history or []),
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "new"},
+                    ],
+                }
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        session = _routing_session(history, agent=_Agent())
+
+        class _OrderingDB:
+            def rewind_active_history(
+                self, session_id, *, expected_history, truncate_before_user_ordinal
+            ):
+                assert session["history"] == history
+                assert session["history_version"] == 0
+                assert session["running"] is False
+                observed.append(
+                    (session_id, list(expected_history), truncate_before_user_ordinal)
+                )
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _OrderingDB())
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+        try:
+            response = server.handle_request(
+                {
+                    "id": "ordering",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "edited second",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+            assert response.get("result")
+            assert observed == [("session-key", history, 1)]
+            assert session["history_version"] == 2
+        finally:
+            server._sessions.pop(sid, None)
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_code"),
+        [
+            (hermes_state.RewindHistoryConflict("session-key", "stale"), 4018),
+            (hermes_state.CompressionSessionClosedError("session-key"), 5008),
+            (OSError("write failed"), 5008),
+        ],
+    )
+    def test_tui_retry_persistence_failure_has_no_memory_or_send_side_effect(
+        self, monkeypatch, failure, expected_code
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        sid = f"tui-retry-failure-{expected_code}-{type(failure).__name__}"
+        session = _routing_session(history)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _FailingDB())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-failure",
+                    "method": "command.dispatch",
+                    "params": {"session_id": sid, "name": "retry", "arg": ""},
+                }
+            )
+            assert response["error"]["code"] == expected_code
+            assert session["history"] == history
+            assert session["history_version"] == 0
+            assert session["running"] is False
+            assert "result" not in response
+        finally:
+            server._sessions.pop(sid, None)
+
+    def test_tui_retry_commits_converted_ordinal_before_memory_and_send(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "tool call"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        sid = "tui-retry-ordering"
+        session = _routing_session(history)
+        observed = []
+
+        class _OrderingDB:
+            def rewind_active_history(
+                self, session_id, *, expected_history, truncate_before_user_ordinal
+            ):
+                assert session["history"] == history
+                assert session["history_version"] == 0
+                assert session["running"] is False
+                observed.append(
+                    (session_id, list(expected_history), truncate_before_user_ordinal)
+                )
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _OrderingDB())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-ordering",
+                    "method": "command.dispatch",
+                    "params": {"session_id": sid, "name": "retry", "arg": ""},
+                }
+            )
+            assert response["result"] == {"type": "send", "message": "retry"}
+            assert observed == [("session-key", history, 1)]
+            assert session["history"] == history[:4]
+            assert session["history_version"] == 1
+        finally:
+            server._sessions.pop(sid, None)
+
+    def test_cli_retry_missing_persistence_does_not_mutate_or_requeue(self, monkeypatch):
+        history = [
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        for db, session_id in ((None, "cli-routing-session"), (object(), None)):
+            cli = _bare_cli_for_routing()
+            queued = []
+            cli._session_db = db
+            cli.session_id = session_id
+            cli.conversation_history = list(history)
+            monkeypatch.setattr(cli._pending_input, "put", queued.append)
+
+            cli.process_command("/retry")
+
+            assert cli.conversation_history == history
+            assert queued == []
+
+    def test_cli_retry_commits_converted_ordinal_before_memory_and_requeue(self, monkeypatch):
+        cli = _bare_cli_for_routing()
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "tool call"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        observed = []
+        queued = []
+        cli.conversation_history = list(history)
+        monkeypatch.setattr(cli._pending_input, "put", queued.append)
+
+        class _OrderingDB:
+            def rewind_active_history(
+                self, session_id, *, expected_history, truncate_before_user_ordinal
+            ):
+                assert cli.conversation_history == history
+                assert queued == []
+                observed.append(
+                    (session_id, list(expected_history), truncate_before_user_ordinal)
+                )
+
+        cli._session_db = _OrderingDB()
+        cli.process_command("/retry")
+
+        assert observed == [(cli.session_id, history, 1)]
+        assert cli.conversation_history == history[:4]
+        assert queued == ["retry"]
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            hermes_state.RewindHistoryConflict("session-key", "stale"),
+            hermes_state.CompressionSessionClosedError("session-key"),
+            OSError("write failed"),
+        ],
+    )
+    def test_cli_retry_persistence_failure_does_not_mutate_or_requeue(
+        self, monkeypatch, failure
+    ):
+        cli = _bare_cli_for_routing()
+        history = [
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        queued = []
+        cli.conversation_history = list(history)
+        monkeypatch.setattr(cli._pending_input, "put", queued.append)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        cli._session_db = _FailingDB()
+        cli.process_command("/retry")
+
+        assert cli.conversation_history == history
+        assert queued == []
+

@@ -1,0 +1,56 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_tui_retry_persistence_failure_has_no_memory_or_send_side_effect
+EXIT=1
+.F.                                                                      [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_tui_retry_persistence_failure_has_no_memory_or_send_side_effect[failure1-5008] _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000002225D360550>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002225D6E6780>
+failure = CompressionSessionClosedError("Session 'session-key' is closed by compression; adopt its live continuation before appending messages")
+expected_code = 5008
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_code"),
+        [
+            (hermes_state.RewindHistoryConflict("session-key", "stale"), 4018),
+            (hermes_state.CompressionSessionClosedError("session-key"), 5008),
+            (OSError("write failed"), 5008),
+        ],
+    )
+    def test_tui_retry_persistence_failure_has_no_memory_or_send_side_effect(
+        self, monkeypatch, failure, expected_code
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        sid = f"tui-retry-failure-{expected_code}-{type(failure).__name__}"
+        session = _routing_session(history)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _FailingDB())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-failure",
+                    "method": "command.dispatch",
+                    "params": {"session_id": sid, "name": "retry", "arg": ""},
+                }
+            )
+>           assert response["error"]["code"] == expected_code
+E           assert 4018 == 5008
+
+tests\test_hermes_state.py:8246: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    tui_gateway.server:server.py:1131 command.dispatch /retry: compression-closed rewind refused: Session 'session-key' is closed by compression; adopt its live continuation before appending messages
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_tui_retry_persistence_failure_has_no_memory_or_send_side_effect[failure1-5008]
+1 failed, 2 passed in 1.60s

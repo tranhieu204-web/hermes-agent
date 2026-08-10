@@ -102,6 +102,37 @@
       "discovered": null,
       "passed": null,
       "failed": null
+    },
+    {
+      "id": "P1.C3-GREEN",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py tests/test_tui_gateway_server.py tests/cli/test_cli_retry.py -q",
+      "output": "COO current-byte readback after final generic-5008 response patch: four-file gate 980 passed, 0 failed in 91.8s; Hermes did not rerun it during bounded finalization.",
+      "filesDiscovered": 4,
+      "estimatedTestsBeforeRun": 927,
+      "actualTests": 980,
+      "passed": 980,
+      "failed": 0,
+      "perFile": {
+        "tests/test_hermes_state.py": {
+          "passed": 494,
+          "failed": 0
+        },
+        "tests/gateway/test_dedupe_user_turns.py": {
+          "passed": 8,
+          "failed": 0
+        },
+        "tests/test_tui_gateway_server.py": {
+          "passed": 475,
+          "failed": 0
+        },
+        "tests/cli/test_cli_retry.py": {
+          "passed": 3,
+          "failed": 0
+        }
+      },
+      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+      "verifiedBy": "COO current-byte execution supplied directly by Sakaan",
+      "decisiveRedToGreen": "Same three decisive test function bytes that failed on base 872c34130 passed on final P1.C3 bytes: 3 passed in 2.93s."
     }
   ],
   "mutation": [
@@ -116,14 +147,21 @@
       "mutatedResult": "PENDING",
       "restoredResult": "PENDING",
       "output": "Planned: force persistence failure and prove memory/turn launch do not advance"
+    },
+    {
+      "id": "P1.C3-M01-M19",
+      "mutatedResult": "19/19 named tests failed; M19 rerun on final server bytes",
+      "restoredResult": "Final source hashes match current candidate; COO gate 980/980 after final patch",
+      "output": "mutation-p1c3/manifest.json sha256 867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
     }
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+    "sourceSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "state": "PRE_BUILD_BASE"
+    "reverifiedSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "state": "P1_C3_CANDIDATE_VERIFIED_UNCOMMITTED",
+    "workingTreeParentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e"
   },
   "submission": {
     "verdict": "PENDING",
@@ -197,13 +235,13 @@
   "remainder": [
     {
       "id": "F-R3",
-      "state": "P1_C3_HORIZON",
-      "evidence": "server.py pre-I1 non-integer ordinal currently maps 4004; P1.C3 must pin it or explicitly collapse to 4018."
+      "state": "RESOLVED_P1_C3",
+      "evidence": "Preserve pre-I1 4004 for a present non-integer prompt ordinal; bound by TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1 and P1-C3-RECEIPT.md."
     },
     {
       "id": "P1.C3",
-      "state": "NOT_AUTHORIZED",
-      "evidence": "P1.C1 routing REDs remain exactly RED after P1.C2."
+      "state": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "evidence": "Routing GREEN: TUI 475/475, CLI 3/3, full four-file gate 980/980; 19/19 mutation proofs; stopped before P2/P3."
     }
   ],
   "stages": {
@@ -224,13 +262,13 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "HOLD",
-      "receipt": "P1.C2 candidate verified; P1.C3 not authorized and not started"
+      "status": "P1_C3_CANDIDATE_VERIFIED",
+      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6; current-byte COO gate 980/980; later P2/P3 remain pending"
     },
     "adversarial": {
       "sequence": 5,
-      "status": "PENDING",
-      "receipt": "P1.C2 guard mutations PASS; whole-build adversarial stage remains pending. mutation manifest ffbbb3ac207ad3025fde70b3312f5f1617c0680cb5d0c39bf5962e3aad1fde5c"
+      "status": "P1_C3_PASS_WHOLE_BUILD_PENDING",
+      "receipt": "P1.C3 M01-M19 PASS; M19 rerun on final server bytes; manifest 867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b; later package adversarial work remains pending"
     },
     "independentReview": {
       "sequence": 6,
@@ -294,9 +332,13 @@
     "previousExecutionMapPath": ".ai/builds/rewind-archive-dropped-20260810/execution-map-v3.1.json",
     "previousMapStructureRoot": "171b74978d53f9edbd03c9dff1bc67d2b871c4a7c3e6827bd1224487435d80d3",
     "executionMapArtifactSha256": "a29b4219580ee4fb8f9713c91a457b08f80c383fcdaca8e80ce649ce9b0dbca5",
-    "previousExecutionMapArtifactSha256": "7d23ffbe410111c6a8db680ccbe1b520c7b7b16f5128585119c4c549dcdcc653"
+    "previousExecutionMapArtifactSha256": "7d23ffbe410111c6a8db680ccbe1b520c7b7b16f5128585119c4c549dcdcc653",
+    "p1c3ReceiptPath": ".ai/builds/rewind-archive-dropped-20260810/P1-C3-RECEIPT.md",
+    "p1c3ReceiptSha256": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+    "p1c3MutationManifestSha256": "867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
+    "p1c3DecisiveBodyEvidenceSha256": "4afebe3573a58d5b9e7a150a322a4200831860d898697c4904e257eb45c55fe2"
   },
-  "updatedAt": "2026-08-10T22:33:40+07:00",
+  "updatedAt": "2026-08-10T23:49:58+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -591,6 +633,90 @@
           2,
           1
         ]
+      }
+    },
+    "P1.C3": {
+      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "parentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+      "gate": {
+        "filesDiscovered": 4,
+        "estimatedTestsBeforeRun": 927,
+        "actualTests": 980,
+        "passed": 980,
+        "failed": 0,
+        "tui": [
+          475,
+          475,
+          0
+        ],
+        "cli": [
+          3,
+          3,
+          0
+        ],
+        "state": [
+          494,
+          494,
+          0
+        ],
+        "dedupe": [
+          8,
+          8,
+          0
+        ],
+        "seconds": 91.8,
+        "verification": "COO_CURRENT_BYTES"
+      },
+      "mutationManifest": "mutation-p1c3/manifest.json sha256 867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
+      "sourceSha256": {
+        "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+        "tui_gateway/server.py": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168",
+        "cli.py": "a399abf9ecbd8d7745a1bcf60694b3ac4861a358fed9b235ff4a9eaef0f899b0"
+      },
+      "decisiveFunctionBodies": "P1-C3-TEST-BODY-HASHES.json sha256 4afebe3573a58d5b9e7a150a322a4200831860d898697c4904e257eb45c55fe2; all before/after byte-identical",
+      "fixtureAudit": "P1-C3-TEST-FIXTURE-AUDIT.json sha256 3b39ef40a2c73e6b0315a7e739b92323ed94f9694405d75bcf5e55f21fd8b951; no removed tests and no assertion-count reduction; diff sha256 483e5625ebfe6972af63d436c6bf9394a3518ee1bf50c4b1b02161cff9490dae",
+      "newWholeFilePins": {
+        "tests/test_tui_gateway_server.py": "d9d7d6ced3e876c23126b98d6f9684d0086607a2c7e5b739b15638f3cc87c88f",
+        "tests/cli/test_cli_retry.py": "d5e6c8fe66c5bc89d7c1fc4893ea3998ecd3ff28cac072a2c7fc0294b8754fc4"
+      },
+      "fR1": {
+        "planReviewSemanticAttemptsConsumed": 2,
+        "action": "VERIFIED_ALREADY_CORRECT_NO_EDIT_REQUIRED"
+      },
+      "fR3": {
+        "decision": "PRESERVE_4004_PRE_I1",
+        "test": "TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1"
+      },
+      "localeVerification": {
+        "files": 5,
+        "oldIrreversibleClaimsFound": 0,
+        "isolatedSyntaxErrors": 0,
+        "syntaxCheckRerun": "PASS — 5 files, 0 syntax errors",
+        "temporaryJunctionResidue": "NONE — candidate node_modules absent; original clone node_modules directories present and not links/junctions",
+        "fullTypecheck": "BLOCKED_BY_MISSING_CANDIDATE_DEPENDENCIES_AND_INCOMPLETE_BORROWED_TREE"
+      },
+      "next": "STOP_BEFORE_P2_P3",
+      "currentByteVerification": {
+        "verifiedBy": "COO",
+        "fourFileGate": {
+          "passed": 980,
+          "failed": 0,
+          "seconds": 91.8
+        },
+        "decisiveRedToGreen": {
+          "passed": 3,
+          "failed": 0,
+          "seconds": 2.93,
+          "functionSourcesByteIdenticalToCommit3235e6b1d": true
+        }
+      },
+      "m19FinalByteProof": {
+        "receipt": "mutation-p1c3/M19-rewind_write_failure_5008_mapping.txt sha256 f16d2eaf971e42f3cb14849d376d3d96c192e6f87674de5a5ab385dd3b4d4bdb",
+        "mutation": "generic write failure response code 5008 -> 4018",
+        "result": "1 failed, 2 passed in 0.71s",
+        "namedTestFailed": true,
+        "serverRestoredSha256": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168"
       }
     }
   }

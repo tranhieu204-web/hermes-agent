@@ -1,0 +1,73 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_tui_retry_commits_converted_ordinal_before_memory_and_send
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_tui_retry_commits_converted_ordinal_before_memory_and_send _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000001CA037232F0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CA04A84C30>
+
+    def test_tui_retry_commits_converted_ordinal_before_memory_and_send(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "tool call"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        sid = "tui-retry-ordering"
+        session = _routing_session(history)
+        observed = []
+
+        class _OrderingDB:
+            def rewind_active_history(
+                self, session_id, *, expected_history, truncate_before_user_ordinal
+            ):
+                assert session["history"] == history
+                assert session["history_version"] == 0
+                assert session["running"] is False
+                observed.append(
+                    (session_id, list(expected_history), truncate_before_user_ordinal)
+                )
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _OrderingDB())
+        try:
+            response = server.handle_request(
+                {
+                    "id": "retry-ordering",
+                    "method": "command.dispatch",
+                    "params": {"session_id": sid, "name": "retry", "arg": ""},
+                }
+            )
+>           assert response["result"] == {"type": "send", "message": "retry"}
+                   ^^^^^^^^^^^^^^^^^^
+E           KeyError: 'result'
+
+tests\test_hermes_state.py:8284: KeyError
+------------------------------ Captured log call ------------------------------
+ERROR    tui_gateway.server:server.py:1134 command.dispatch /retry: durable rewind failed
+Traceback (most recent call last):
+  File "C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\tui_gateway\server.py", line 1122, in _persist_rewind_before_memory
+    db.rewind_active_history(
+    ~~~~~~~~~~~~~~~~~~~~~~~~^
+        session_key,
+        ^^^^^^^^^^^^
+        expected_history=expected_history,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        truncate_before_user_ordinal=truncate_before_user_ordinal,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\tests\test_hermes_state.py", line 8267, in rewind_active_history
+    assert session["history"] == history
+AssertionError: assert [{'content': ... 'assistant'}] == [{'content': ... 'assistant'}]
+
+  Right contains 2 more items, first extra item: {'content': 'retry', 'role': 'user'}
+  Use -v to get more diff
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_tui_retry_commits_converted_ordinal_before_memory_and_send
+1 failed in 1.19s

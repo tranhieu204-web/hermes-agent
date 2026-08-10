@@ -3321,10 +3321,10 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
 
 
 def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
-    """Intentional restore/regenerate of the first user turn may wipe history."""
+    """Intentional restore/regenerate may archive the whole active history."""
 
     seen = {}
-    replaced = []
+    rewinds = []
 
     class _Agent:
         def run_conversation(
@@ -3349,8 +3349,12 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages, **_kwargs):
-            replaced.append((key, list(messages)))
+        def rewind_active_history(
+            self, key, *, expected_history, truncate_before_user_ordinal
+        ):
+            rewinds.append(
+                (key, list(expected_history), truncate_before_user_ordinal)
+            )
 
     history = [
         {"role": "user", "content": "first"},
@@ -3384,7 +3388,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["prompt"] == "first"
         assert seen["history"] == []
-        assert replaced == [("session-key", [])]
+        assert rewinds == [("session-key", history, 0)]
         assert server._sessions["confirm-empty-sid"]["history"] == [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "regenerated"},
@@ -7711,10 +7715,14 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
 
     class _StubDb:
         def __init__(self):
-            self.replaced = []
+            self.rewinds = []
 
-        def replace_messages(self, session_id, messages, **_kwargs):
-            self.replaced.append((session_id, list(messages)))
+        def rewind_active_history(
+            self, session_id, *, expected_history, truncate_before_user_ordinal
+        ):
+            self.rewinds.append(
+                (session_id, list(expected_history), truncate_before_user_ordinal)
+            )
 
     stub_db = _StubDb()
 
@@ -7746,7 +7754,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
             {"role": "assistant", "content": "edited reply"},
         ]
         assert server._sessions["sid"]["history_version"] == 2
-        assert stub_db.replaced == [("session-key", original_history[:2])]
+        assert stub_db.rewinds == [("session-key", original_history, 1)]
     finally:
         server._sessions.pop("sid", None)
 
@@ -14160,13 +14168,13 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
 
 
 def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
-    """Restoring the very first turn empties the transcript, so it needs intent
+    """Restoring the first turn empties the active transcript, so it needs intent
     about THAT act — not the generic flag every rewind carries.
 
     The id path ignores confirm_empty_truncate (a blanket one is what let a
-    misattached id delete a session) and honours only
-    confirm_delete_entire_transcript, which the client sends after its own
-    "this deletes the whole conversation" dialog.
+    misattached id empty a session) and honours only
+    confirm_delete_entire_transcript, which the client sends after its dedicated
+    opening-turn confirmation dialog.
     """
     history = [
         {"role": "user", "content": "first"},
@@ -14192,10 +14200,14 @@ def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
 
     class _StubDb:
         def __init__(self):
-            self.replaced = []
+            self.rewinds = []
 
-        def replace_messages(self, session_id, messages, **_kwargs):
-            self.replaced.append((session_id, list(messages)))
+        def rewind_active_history(
+            self, session_id, *, expected_history, truncate_before_user_ordinal
+        ):
+            self.rewinds.append(
+                (session_id, list(expected_history), truncate_before_user_ordinal)
+            )
 
     def _submit(sid, extra):
         stub = _StubDb()
@@ -14225,24 +14237,22 @@ def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
     # The generic flag must NOT be enough on the id path.
     resp, stub = _submit("wipe-generic", {"confirm_empty_truncate": True})
     assert resp["error"]["code"] == 4028
-    assert stub.replaced == []
+    assert stub.rewinds == []
 
     # The dedicated one is.
     resp, stub = _submit("wipe-explicit", {"confirm_delete_entire_transcript": True})
     assert resp.get("result"), f"got error: {resp.get('error')}"
-    assert stub.replaced == [("session-key", [])]
+    assert stub.rewinds == [("session-key", history, 0)]
 
 
 def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
-    """A rewind replaces the LIVE transcript and must leave archived rows alone.
+    """A rewind archives its live suffix and preserves older inactive rows.
 
-    replace_messages defaults to active_only=False, which DELETEs every row for
-    the session — including the ``active = 0`` rows compaction and undo
-    deliberately keep on disk for durability. An independent audit flagged that
-    a rewind was taking that history with it.
-
-    Behavioural, against a real SessionDB: the archived row has to still be
-    there afterwards, not merely "we passed the right keyword".
+    This fixture predates I1 and originally left the in-memory "second" turn
+    absent from SessionDB because destructive replace_messages could rebuild the
+    database from memory. I1 correctly requires an exact active-history match,
+    so the fixture now persists the complete active transcript and verifies both
+    the old archive and the newly rewound suffix.
     """
     from hermes_state import SessionDB
 
@@ -14256,10 +14266,17 @@ def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
         db._conn.commit()
     db.append_message("arch-sid", role="user", content="first")
     db.append_message("arch-sid", role="assistant", content="reply")
+    db.append_message("arch-sid", role="user", content="second")
+    db.append_message("arch-sid", role="assistant", content="second reply")
 
     assert db.has_archived_messages("arch-sid") is True
     live_before = [m for m in db.get_messages("arch-sid")]
-    assert [m["content"] for m in live_before] == ["first", "reply"]
+    assert [m["content"] for m in live_before] == [
+        "first",
+        "reply",
+        "second",
+        "second reply",
+    ]
 
     history = [
         {"role": "user", "content": "first"},
@@ -14312,7 +14329,16 @@ def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
             for row in db.get_messages("arch-sid", include_inactive=True)
             if row.get("active") == 0
         ]
-        assert [row["content"] for row in archived] == ["archived question", "archived answer"]
+        assert [row["content"] for row in archived] == [
+            "archived question",
+            "archived answer",
+            "second",
+            "second reply",
+        ]
+        assert [row["content"] for row in db.get_messages("arch-sid")] == [
+            "first",
+            "reply",
+        ]
     finally:
         server._sessions.pop("arch-sid", None)
         db.close()
@@ -14353,10 +14379,14 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
 
     class _StubDb:
         def __init__(self):
-            self.replaced = []
+            self.rewinds = []
 
-        def replace_messages(self, session_id, messages, **_kwargs):
-            self.replaced.append((session_id, list(messages)))
+        def rewind_active_history(
+            self, session_id, *, expected_history, truncate_before_user_ordinal
+        ):
+            self.rewinds.append(
+                (session_id, list(expected_history), truncate_before_user_ordinal)
+            )
 
     stub_db = _StubDb()
 
@@ -14380,7 +14410,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
         )
         assert resp.get("result"), f"got error: {resp.get('error')}"
         assert seen["history"] == original_history[:2]
-        assert stub_db.replaced == [("session-key", original_history[:2])]
+        assert stub_db.rewinds == [("session-key", original_history, 1)]
     finally:
         server._sessions.pop("sid", None)
 

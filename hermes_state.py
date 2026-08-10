@@ -1588,6 +1588,42 @@ class RewindHistoryConflict(RuntimeError):
         super().__init__(f"Rewind conflict for session {session_id!r}: {reason}")
 
 
+def retry_array_index_to_user_ordinal(
+    expected_history: list[dict[str, Any]], last_user_array_index: int
+) -> int:
+    """Convert a retry history index into the durable user-turn coordinate.
+
+    Retry callers address the last user message by its position in the full
+    model-history array. ``SessionDB.rewind_active_history`` deliberately uses
+    a user-turn ordinal instead, so passing the array index directly can target
+    the wrong row or become out of range when tool/assistant rows intervene.
+    """
+    if (
+        type(last_user_array_index) is not int
+        or last_user_array_index < 0
+        or last_user_array_index >= len(expected_history)
+    ):
+        raise RewindHistoryConflict("<retry-coordinate>", "invalid history array index")
+
+    target = expected_history[last_user_array_index]
+    if not isinstance(target, dict) or target.get("role") != "user":
+        raise RewindHistoryConflict("<retry-coordinate>", "retry target is not a user row")
+
+    user_indices = [
+        index
+        for index, message in enumerate(expected_history)
+        if isinstance(message, dict) and message.get("role") == "user"
+    ]
+    ordinal = sum(
+        1
+        for message in expected_history[:last_user_array_index]
+        if isinstance(message, dict) and message.get("role") == "user"
+    )
+    if ordinal >= len(user_indices) or user_indices[ordinal] != last_user_array_index:
+        raise RewindHistoryConflict("<retry-coordinate>", "retry coordinate round-trip failed")
+    return ordinal
+
+
 class CompressionSessionBusyError(RuntimeError):
     """A non-owner tried to write while compression owns the session."""
 

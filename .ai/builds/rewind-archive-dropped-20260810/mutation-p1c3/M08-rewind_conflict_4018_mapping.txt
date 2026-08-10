@@ -1,0 +1,64 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect
+EXIT=1
+F..                                                                      [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect[failure0-4018] _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000002AD381C68B0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002AD3552A3F0>
+failure = RewindHistoryConflict("Rewind conflict for session 'session-key': stale")
+expected_code = 4018
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_code"),
+        [
+            (hermes_state.RewindHistoryConflict("session-key", "stale"), 4018),
+            (hermes_state.CompressionSessionClosedError("session-key"), 5008),
+            (OSError("write failed"), 5008),
+        ],
+    )
+    def test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect(
+        self, monkeypatch, failure, expected_code
+    ):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+        sid = f"prompt-failure-{expected_code}-{type(failure).__name__}"
+        session = _routing_session(history)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _FailingDB())
+        monkeypatch.setattr(
+            server, "_start_inflight_turn", lambda *_a, **_k: pytest.fail("turn started")
+        )
+        monkeypatch.setattr(
+            server, "_start_agent_build", lambda *_a, **_k: pytest.fail("agent started")
+        )
+        try:
+            response = server.handle_request(
+                {
+                    "id": "failure",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "edited second",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+>           assert response["error"]["code"] == expected_code
+E           assert 5008 == 4018
+
+tests\test_hermes_state.py:8134: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect[failure0-4018]
+1 failed, 2 passed in 1.05s

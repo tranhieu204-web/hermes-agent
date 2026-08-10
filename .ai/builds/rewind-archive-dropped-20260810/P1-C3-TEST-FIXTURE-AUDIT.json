@@ -1,0 +1,73 @@
+{
+  "schema": "p1c3-obsolete-fixture-audit-v1",
+  "before_commit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+  "files": {
+    "tests/test_tui_gateway_server.py": {
+      "before_whole_file_sha256": "985ff64021be21bf1d72ceece9e134117086cb6a38eb07bbaabcf278ec8ed81c",
+      "after_whole_file_sha256": "d9d7d6ced3e876c23126b98d6f9684d0086607a2c7e5b739b15638f3cc87c88f",
+      "removed_test_functions": [],
+      "added_test_functions": [],
+      "changed_existing_test_functions": [
+        {
+          "name": "test_first_turn_restore_needs_the_dedicated_wipe_confirmation",
+          "before_assert_count": 4,
+          "after_assert_count": 4,
+          "assert_count_not_reduced": true,
+          "reason": "Old FakeDB encoded destructive replacement and irreversible wording; fixture now asserts no I1 call without dedicated confirmation and full-history/ordinal I1 call with it."
+        },
+        {
+          "name": "test_prompt_submit_can_truncate_before_user_ordinal",
+          "before_assert_count": 6,
+          "after_assert_count": 6,
+          "assert_count_not_reduced": true,
+          "reason": "Old FakeDB asserted destructive retained-prefix replacement; fixture now asserts I1 full expected_history plus user ordinal 1."
+        },
+        {
+          "name": "test_prompt_submit_empty_truncation_allowed_with_confirm",
+          "before_assert_count": 5,
+          "after_assert_count": 5,
+          "assert_count_not_reduced": true,
+          "reason": "Old FakeDB exposed destructive replace_messages; fixture now exposes I1 rewind_active_history and asserts full expected_history plus ordinal 0."
+        },
+        {
+          "name": "test_prompt_submit_truncates_by_message_id",
+          "before_assert_count": 3,
+          "after_assert_count": 3,
+          "assert_count_not_reduced": true,
+          "reason": "Old FakeDB asserted destructive retained-prefix replacement; fixture now asserts I1 full expected_history plus resolved user ordinal 1."
+        },
+        {
+          "name": "test_rewind_preserves_soft_archived_rows",
+          "before_assert_count": 5,
+          "after_assert_count": 6,
+          "assert_count_not_reduced": true,
+          "reason": "Old real DB fixture persisted only the retained prefix because destructive replacement rebuilt from memory; it now persists the complete active transcript and additionally proves the new suffix is archived while old inactive rows survive."
+        }
+      ]
+    },
+    "tests/cli/test_cli_retry.py": {
+      "before_whole_file_sha256": "3f76263ed3d0d9b6f6186897da9588ed9303f2a62162edf164fb2200b9a59434",
+      "after_whole_file_sha256": "d5e6c8fe66c5bc89d7c1fc4893ea3998ecd3ff28cac072a2c7fc0294b8754fc4",
+      "removed_test_functions": [],
+      "added_test_functions": [],
+      "changed_existing_test_functions": [
+        {
+          "name": "test_process_command_retry_requeues_original_message_not_retry_command",
+          "before_assert_count": 2,
+          "after_assert_count": 4,
+          "assert_count_not_reduced": true,
+          "reason": "Old CLI fixture existed only in memory; it now seeds SessionDB and adds active/rewound-row assertions while retaining queue and memory assertions."
+        },
+        {
+          "name": "test_retry_last_truncates_history_before_requeueing_message",
+          "before_assert_count": 3,
+          "after_assert_count": 5,
+          "assert_count_not_reduced": true,
+          "reason": "Old CLI fixture existed only in memory; it now seeds SessionDB and adds active/rewound-row assertions while retaining all memory assertions."
+        }
+      ]
+    }
+  },
+  "all_existing_tests_preserved": true,
+  "all_changed_existing_tests_assert_count_not_reduced": true
+}

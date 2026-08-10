@@ -1102,6 +1102,40 @@ def _get_db():
     return _db
 
 
+def _persist_rewind_before_memory(
+    rid,
+    session: dict,
+    expected_history: list[dict],
+    truncate_before_user_ordinal: int,
+    *,
+    operation: str,
+) -> dict | None:
+    """Commit a rewind to the canonical DB before any caller-side mutation."""
+    from hermes_state import CompressionSessionClosedError, RewindHistoryConflict
+
+    session_key = session.get("session_key")
+    db = _get_db()
+    if db is None or not session_key:
+        logger.error("%s: canonical session persistence unavailable", operation)
+        return _err(rid, 5008, "canonical session persistence unavailable; rewind not applied")
+    try:
+        db.rewind_active_history(
+            session_key,
+            expected_history=expected_history,
+            truncate_before_user_ordinal=truncate_before_user_ordinal,
+        )
+    except RewindHistoryConflict as exc:
+        logger.info("%s: stale rewind refused: %s", operation, exc)
+        return _err(rid, 4018, "session history changed; reload before rewinding")
+    except CompressionSessionClosedError as exc:
+        logger.error("%s: compression-closed rewind refused: %s", operation, exc)
+        return _err(rid, 5008, "session persistence refused rewind; rewind not applied")
+    except Exception:
+        logger.exception("%s: durable rewind failed", operation)
+        return _err(rid, 5008, "session persistence failed; rewind not applied")
+    return None
+
+
 def _db_for_profile(profile: str | None = None):
     """Return SessionDB for ``params.profile`` when it differs from launch.
 
@@ -10946,26 +10980,26 @@ def _(rid, params: dict) -> dict:
                     )
                 ordinal = resolved
             else:
-                try:
-                    ordinal = int(truncate_user_ordinal)
-                except (TypeError, ValueError):
+                # F-R3: preserve the client-visible pre-I1 type error. Do not
+                # coerce strings or booleans into an ordinal and thereby bypass
+                # SessionDB's strict coordinate contract.
+                if type(truncate_user_ordinal) is not int:
                     return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                ordinal = truncate_user_ordinal
                 # Reject out-of-range ordinals on BOTH ends. A negative value would
                 # otherwise sail past the upper-bound check and hit Python's negative
                 # indexing below (user_indices[-1] -> the LAST user turn), silently
-                # truncating history to everything before it and persisting that loss
-                # via replace_messages — an unrecoverable overwrite of the session DB.
+                # targeting the wrong durable suffix.
                 if ordinal < 0 or ordinal >= len(user_indices):
                     return _err(
                         rid, 4018, "target user message is no longer in session history"
                     )
             truncated = history[: user_indices[ordinal]]
             # Stale clients can attach truncate_before_user_ordinal=0 to an
-            # ordinary submit. That resolves to history[:0] == [] and
-            # replace_messages() DELETEs every durable row — silent total
-            # transcript loss. Refuse the empty-truncation edge unless the
-            # client explicitly opts in (legitimate restore/regenerate of the
-            # first user turn).
+            # ordinary submit. That resolves to history[:0] == [] and removes
+            # every live message from the active transcript. Refuse the
+            # empty-truncation edge unless the client explicitly opts in
+            # (legitimate restore/regenerate of the first user turn).
             # An id is NOT proof of intent (independent audit, 2026-08-10).
             # _annotate_rewind_ids tail-aligns the DISPLAY list against the
             # model history, and when the same prompt text appears twice it can
@@ -10987,7 +11021,7 @@ def _(rid, params: dict) -> dict:
             if not truncated and history and not empty_truncation_confirmed:
                 logger.warning(
                     "prompt.submit: REFUSED empty truncation of session %s "
-                    "(%d messages would be wiped; ordinal=%d).",
+                    "(%d live messages would be removed; ordinal=%d).",
                     sid,
                     len(history),
                     ordinal,
@@ -10995,15 +11029,26 @@ def _(rid, params: dict) -> dict:
                 return _err(
                     rid,
                     4028,
-                    "truncation would erase the entire session transcript; resubmit "
-                    "with confirm_delete_entire_transcript=true (id) or "
+                    "truncation would remove every live message from the active transcript; "
+                    "resubmit with confirm_delete_entire_transcript=true (id) or "
                     "confirm_empty_truncate=true (ordinal) if this is intended",
                 )
+
+            persistence_error = _persist_rewind_before_memory(
+                rid,
+                session,
+                history,
+                ordinal,
+                operation="prompt.submit",
+            )
+            if persistence_error is not None:
+                return persistence_error
+
             # Info for routine rewind/edit cuts; warning only when the client
-            # explicitly opts into wiping the whole transcript.
+            # explicitly opts into archiving the whole active transcript.
             log_fn = logger.warning if not truncated else logger.info
             log_fn(
-                "prompt.submit: truncating session %s history %d -> %d messages "
+                "prompt.submit: archiving session %s active history %d -> %d messages "
                 "(ordinal=%d)",
                 sid,
                 len(history),
@@ -11012,16 +11057,6 @@ def _(rid, params: dict) -> dict:
             )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    # active_only: a rewind replaces the LIVE transcript and must
-                    # leave soft-archived rows (compaction/undo history) alone.
-                    # The default deletes every row for the session.
-                    db.replace_messages(
-                        session["session_key"], truncated, active_only=True
-                    )
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -15360,33 +15395,53 @@ def _(rid, params: dict) -> dict:
     if name == "retry":
         if not session:
             return _err(rid, 4001, "no active session to retry")
-        if session.get("running"):
-            return _err(
-                rid, 4009, "session busy — /interrupt the current turn before /retry"
-            )
-        history = session.get("history", [])
-        if not history:
-            return _err(rid, 4018, "no previous user message to retry")
-        # Walk backwards to find the last user message
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        if last_user_idx is None:
-            return _err(rid, 4018, "no previous user message to retry")
-        content = history[last_user_idx].get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
-            return _err(rid, 4018, "last user message is empty")
-        # Truncate history: remove everything from the last user message onward
-        # (mirrors CLI retry_last() which strips the failed exchange)
+        from hermes_state import RewindHistoryConflict, retry_array_index_to_user_ordinal
+
         with session["history_lock"]:
+            if session.get("running"):
+                return _err(
+                    rid, 4009, "session busy — /interrupt the current turn before /retry"
+                )
+            history = session.get("history", [])
+            if not history:
+                return _err(rid, 4018, "no previous user message to retry")
+
+            # Walk backwards to find the last user message in the full array.
+            last_user_idx = None
+            for i in range(len(history) - 1, -1, -1):
+                message = history[i]
+                if isinstance(message, dict) and message.get("role") == "user":
+                    last_user_idx = i
+                    break
+            if last_user_idx is None:
+                return _err(rid, 4018, "no previous user message to retry")
+
+            try:
+                user_ordinal = retry_array_index_to_user_ordinal(history, last_user_idx)
+            except RewindHistoryConflict:
+                return _err(rid, 4018, "retry target no longer matches session history")
+
+            content = history[last_user_idx].get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            if not content:
+                return _err(rid, 4018, "last user message is empty")
+
+            persistence_error = _persist_rewind_before_memory(
+                rid,
+                session,
+                history,
+                user_ordinal,
+                operation="command.dispatch /retry",
+            )
+            if persistence_error is not None:
+                return persistence_error
+
+            # Durable commit succeeded; memory may now follow it.
             session["history"] = history[:last_user_idx]
             session["history_version"] = int(session.get("history_version", 0)) + 1
         return _ok(rid, {"type": "send", "message": content})

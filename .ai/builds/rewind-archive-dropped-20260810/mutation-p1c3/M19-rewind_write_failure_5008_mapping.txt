@@ -1,0 +1,25 @@
+{
+  "mutation_id": "M19",
+  "name": "rewind_write_failure_5008_mapping",
+  "final_candidate_server_sha256": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168",
+  "mutation": {
+    "from_code": 5008,
+    "to_code": 4018,
+    "response": "session persistence failed; rewind not applied",
+    "replacement_count": 1
+  },
+  "command": "C:\\c\\Users\\HieuKa\\Desktop\\hermes-rewind-archive-20260810\\.venv\\Scripts\\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect",
+  "exit_code": 1,
+  "named_test_failed": true,
+  "invalid_harness_or_import": false,
+  "passed_mutation_proof": true,
+  "stdout_sha256": "5ea360bf80f96968379e7e3eff6236ffdf668c3d780fb4ed9740fe017e5aedb2",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_restored_sha256": {
+    "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+    "tui_gateway/server.py": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168",
+    "cli.py": "a399abf9ecbd8d7745a1bcf60694b3ac4861a358fed9b235ff4a9eaef0f899b0"
+  },
+  "source_restored_byte_identical": true,
+  "output": "..F                                                                      [100%]\n================================== FAILURES ===================================\n_ TestRewindRouting.test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect[failure2-5008] _\n\nself = <tests.test_hermes_state.TestRewindRouting object at 0x0000014F8F5B0A70>\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000014F924B27B0>\nfailure = OSError('write failed'), expected_code = 5008\n\n    @pytest.mark.parametrize(\n        (\"failure\", \"expected_code\"),\n        [\n            (hermes_state.RewindHistoryConflict(\"session-key\", \"stale\"), 4018),\n            (hermes_state.CompressionSessionClosedError(\"session-key\"), 5008),\n            (OSError(\"write failed\"), 5008),\n        ],\n    )\n    def test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect(\n        self, monkeypatch, failure, expected_code\n    ):\n        from tui_gateway import server\n    \n        history = [\n            {\"role\": \"user\", \"content\": \"first\"},\n            {\"role\": \"assistant\", \"content\": \"one\"},\n            {\"role\": \"user\", \"content\": \"second\"},\n            {\"role\": \"assistant\", \"content\": \"two\"},\n        ]\n        sid = f\"prompt-failure-{expected_code}-{type(failure).__name__}\"\n        session = _routing_session(history)\n    \n        class _FailingDB:\n            def rewind_active_history(self, *_args, **_kwargs):\n                raise failure\n    \n        server._sessions[sid] = session\n        monkeypatch.setattr(server, \"_get_db\", lambda: _FailingDB())\n        monkeypatch.setattr(\n            server, \"_start_inflight_turn\", lambda *_a, **_k: pytest.fail(\"turn started\")\n        )\n        monkeypatch.setattr(\n            server, \"_start_agent_build\", lambda *_a, **_k: pytest.fail(\"agent started\")\n        )\n        try:\n            response = server.handle_request(\n                {\n                    \"id\": \"failure\",\n                    \"method\": \"prompt.submit\",\n                    \"params\": {\n                        \"session_id\": sid,\n                        \"text\": \"edited second\",\n                        \"truncate_before_user_ordinal\": 1,\n                    },\n                }\n            )\n>           assert response[\"error\"][\"code\"] == expected_code\nE           assert 4018 == 5008\n\ntests\\test_hermes_state.py:8134: AssertionError\n------------------------------ Captured log call ------------------------------\nERROR    tui_gateway.server:server.py:1134 prompt.submit: durable rewind failed\nTraceback (most recent call last):\n  File \"C:\\c\\Users\\HieuKa\\Desktop\\hermes-rewind-archive-20260810\\tui_gateway\\server.py\", line 1122, in _persist_rewind_before_memory\n    db.rewind_active_history(\n    ~~~~~~~~~~~~~~~~~~~~~~~~^\n        session_key,\n        ^^^^^^^^^^^^\n        expected_history=expected_history,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        truncate_before_user_ordinal=truncate_before_user_ordinal,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"C:\\c\\Users\\HieuKa\\Desktop\\hermes-rewind-archive-20260810\\tests\\test_hermes_state.py\", line 8112, in rewind_active_history\n    raise failure\nOSError: write failed\n=========================== short test summary info ===========================\nFAILED tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_persistence_failure_has_no_memory_or_turn_side_effect[failure2-5008]\n1 failed, 2 passed in 0.71s\n"
+}

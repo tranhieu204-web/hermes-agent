@@ -1,0 +1,83 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_tui_gateway_server.py::test_prompt_submit_rewind_archives_newly_dropped_suffix
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+___________ test_prompt_submit_rewind_archives_newly_dropped_suffix ___________
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4160/test_prompt_submit_rewind_arch0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002E56E64AFD0>
+
+    def test_prompt_submit_rewind_archives_newly_dropped_suffix(tmp_path, monkeypatch):
+        """The live rewind path must soft-archive the suffix it drops."""
+        from hermes_state import SessionDB
+
+        sid = "prompt-red-archives-suffix"
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "second reply"},
+        ]
+        retained = history[:2]
+        dropped = history[2:]
+
+        db = SessionDB(db_path=tmp_path / "prompt-red-state.db")
+        db.create_session(sid, source="tui")
+        for message in history:
+            db.append_message(sid, role=message["role"], content=message["content"])
+
+        class _Agent:
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+                return {
+                    "final_response": "redone",
+                    "messages": [*(conversation_history or []), {"role": "user", "content": prompt}],
+                }
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        server._sessions[sid] = _session(agent=_Agent(), history=list(history), session_key=sid)
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+
+        try:
+            response = server.handle_request(
+                {
+                    "id": "prompt-red",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "redo second",
+                        "truncate_before_message_id": _rid(history, 1),
+                    },
+                }
+            )
+            assert response.get("result"), f"rewind was refused: {response.get('error')}"
+
+            all_rows = db.get_messages(sid, include_inactive=True)
+            rewound = [
+                row
+                for row in all_rows
+                if row.get("active") == 0 and row.get("compacted") == 0
+            ]
+>           assert [row["content"] for row in rewound] == [m["content"] for m in dropped], (
+                "base hard-deleted the newly dropped prompt.submit suffix instead of preserving it "
+                "as active=0, compacted=0"
+            )
+E           AssertionError: base hard-deleted the newly dropped prompt.submit suffix instead of preserving it as active=0, compacted=0
+E           assert [] == ['second', 'second reply']
+E
+E             Right contains 2 more items, first extra item: 'second'
+E             Use -v to get more diff
+
+tests\test_tui_gateway_server.py:14527: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_prompt_submit_rewind_archives_newly_dropped_suffix
+1 failed in 2.50s

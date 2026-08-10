@@ -1,0 +1,52 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_cli_retry_persistence_failure_does_not_mutate_or_requeue
+EXIT=1
+F..                                                                      [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_cli_retry_persistence_failure_does_not_mutate_or_requeue[failure0] _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x0000020B06CCD7F0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000020B069F4C30>
+failure = RewindHistoryConflict("Rewind conflict for session 'session-key': stale")
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            hermes_state.RewindHistoryConflict("session-key", "stale"),
+            hermes_state.CompressionSessionClosedError("session-key"),
+            OSError("write failed"),
+        ],
+    )
+    def test_cli_retry_persistence_failure_does_not_mutate_or_requeue(
+        self, monkeypatch, failure
+    ):
+        cli = _bare_cli_for_routing()
+        history = [
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        queued = []
+        cli.conversation_history = list(history)
+        monkeypatch.setattr(cli._pending_input, "put", queued.append)
+
+        class _FailingDB:
+            def rewind_active_history(self, *_args, **_kwargs):
+                raise failure
+
+        cli._session_db = _FailingDB()
+        cli.process_command("/retry")
+
+        assert cli.conversation_history == history
+>       assert queued == []
+E       AssertionError: assert ['retry'] == []
+E
+E         Left contains one more item: 'retry'
+E         Use -v to get more diff
+
+tests\test_hermes_state.py:8369: AssertionError
+---------------------------- Captured stdout call -----------------------------
+(x_x) Retry refused: persisted session history changed; nothing was requeued.
+------------------------------ Captured log call ------------------------------
+INFO     _p1c3_root_cli_under_test:cli.py:7730 CLI /retry refused stale history: Rewind conflict for session 'session-key': stale
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_cli_retry_persistence_failure_does_not_mutate_or_requeue[failure0]
+1 failed, 2 passed in 1.22s

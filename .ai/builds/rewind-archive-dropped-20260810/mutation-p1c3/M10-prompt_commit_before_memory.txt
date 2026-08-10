@@ -1,0 +1,219 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_commits_before_memory_running_or_turn_start
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_prompt_submit_commits_before_memory_running_or_turn_start _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000001DC9D558C00>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DC9EBA4C30>
+
+    def test_prompt_submit_commits_before_memory_running_or_turn_start(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+        ]
+        sid = "prompt-ordering"
+        observed = []
+
+        class _Agent:
+            def run_conversation(
+                self, prompt, conversation_history=None, stream_callback=None, **_kwargs
+            ):
+                return {
+                    "final_response": "new",
+                    "messages": [
+                        *(conversation_history or []),
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "new"},
+                    ],
+                }
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        session = _routing_session(history, agent=_Agent())
+
+        class _OrderingDB:
+            def rewind_active_history(
+                self, session_id, *, expected_history, truncate_before_user_ordinal
+            ):
+                assert session["history"] == history
+                assert session["history_version"] == 0
+                assert session["running"] is False
+                observed.append(
+                    (session_id, list(expected_history), truncate_before_user_ordinal)
+                )
+
+        server._sessions[sid] = session
+        monkeypatch.setattr(server, "_get_db", lambda: _OrderingDB())
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *_a, **_k: None)
+        try:
+>           response = server.handle_request(
+                {
+                    "id": "ordering",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "edited second",
+                        "truncate_before_user_ordinal": 1,
+                    },
+                }
+            )
+
+tests\test_hermes_state.py:8187:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tui_gateway\server.py:1688: in handle_request
+    return fn(rid, params)
+           ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+rid = 'ordering'
+params = {'session_id': 'prompt-ordering', 'text': 'edited second', 'truncate_before_user_ordinal': 1}
+
+    @method("prompt.submit")
+    def _(rid, params: dict) -> dict:
+        from hermes_cli.input_sanitize import sanitize_user_prompt_text
+
+        sid = params.get("session_id", "")
+        raw_text = params.get("text", "")
+        text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+        truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+        # Preferred addressing (see tui_gateway.rewind_identity); the positional
+        # ordinal stays supported for clients that predate it.
+        truncate_message_id = params.get("truncate_before_message_id")
+        if params.get("interrupted"):
+            # Client-side barge-in (desktop VAD / typing over playback) — latch it
+            # so this turn's model message carries the interruption note.
+            from tools.tts_streaming import mark_speech_interrupted
+
+            mark_speech_interrupted()
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
+        isolation_cfg = _load_dashboard_process_isolation_config()
+        turn_isolation = _session_uses_compute_host(session, isolation_cfg)
+        # Re-bind to the current client transport for this request. This keeps
+        # streaming events on the active websocket even if an earlier disconnect
+        # or fallback moved the session transport to stdio.
+        if (t := current_transport()) is not None:
+            session["transport"] = t
+        while True:
+            busy_transport = None
+            with session["history_lock"]:
+                if session.get("running"):
+                    # Don't reject a mid-turn prompt — queue it (and, by default,
+                    # interrupt the live turn) so it runs as the next turn. The
+                    # provider interrupt itself must happen after this lock is
+                    # released: a non-interruptible tool may keep it waiting.
+                    busy_transport = t or session.get("transport")
+                else:
+                    break
+            busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+            if busy_response is not None:
+                return busy_response
+            # The old turn finished between the two lock acquisitions. Retry the
+            # claim so this prompt starts normally instead of being stranded in a
+            # queue whose drain already ran.
+
+        with session["history_lock"]:
+            # A watch session's run lives in the PARENT turn, so its own running
+            # flag is False — without this, typing mid-run builds a second agent
+            # racing the in-flight child on the same stored session (interleaved
+            # transcript, stale fork). After the run completes, submitting is fine:
+            # the upgrade resumes the child's transcript as a normal conversation.
+            if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+                return _err(rid, 4009, "subagent still running — wait for it to finish")
+            if truncate_message_id is not None or truncate_user_ordinal is not None:
+                history = session.get("history", [])
+                # Must enumerate exactly like _model_user_texts, or an ordinal
+                # minted by _annotate_rewind_ids would index a different row here.
+                user_indices = [
+                    i
+                    for i, m in enumerate(history)
+                    if isinstance(m, dict) and m.get("role") == "user"
+                ]
+                if truncate_message_id is not None:
+                    # Identity beats position: the id is resolved against the
+                    # history as it stands NOW, so a turn that landed between the
+                    # transcript payload and this submit cannot slide the cut onto
+                    # a neighbouring message.
+                    resolved = _resolve_rewind_ordinal(history, truncate_message_id)
+                    if resolved is None:
+                        return _err(
+                            rid, 4018, "target user message is no longer in session history"
+                        )
+                    ordinal = resolved
+                else:
+                    # F-R3: preserve the client-visible pre-I1 type error. Do not
+                    # coerce strings or booleans into an ordinal and thereby bypass
+                    # SessionDB's strict coordinate contract.
+                    if type(truncate_user_ordinal) is not int:
+                        return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                    ordinal = truncate_user_ordinal
+                    # Reject out-of-range ordinals on BOTH ends. A negative value would
+                    # otherwise sail past the upper-bound check and hit Python's negative
+                    # indexing below (user_indices[-1] -> the LAST user turn), silently
+                    # targeting the wrong durable suffix.
+                    if ordinal < 0 or ordinal >= len(user_indices):
+                        return _err(
+                            rid, 4018, "target user message is no longer in session history"
+                        )
+                truncated = history[: user_indices[ordinal]]
+                # Stale clients can attach truncate_before_user_ordinal=0 to an
+                # ordinary submit. That resolves to history[:0] == [] and removes
+                # every live message from the active transcript. Refuse the
+                # empty-truncation edge unless the client explicitly opts in
+                # (legitimate restore/regenerate of the first user turn).
+                # An id is NOT proof of intent (independent audit, 2026-08-10).
+                # _annotate_rewind_ids tail-aligns the DISPLAY list against the
+                # model history, and when the same prompt text appears twice it can
+                # stamp a displayed bubble with an id naming a DIFFERENT occurrence
+                # — e.g. after session.undo drops a turn from the model history but
+                # not from the DB. An id resolving to ordinal 0 therefore does not
+                # mean the user clicked the first turn, which is exactly what the
+                # client's blanket confirm_empty_truncate assumed.
+                #
+                # So the id path may never auto-confirm emptying a transcript. It
+                # fails closed until the client can express a real second
+                # confirmation for that specific act.
+                id_addressed = truncate_message_id is not None
+                empty_truncation_confirmed = (
+                    is_truthy_value(params.get("confirm_delete_entire_transcript"))
+                    if id_addressed
+                    else is_truthy_value(params.get("confirm_empty_truncate"))
+                )
+                if not truncated and history and not empty_truncation_confirmed:
+                    logger.warning(
+                        "prompt.submit: REFUSED empty truncation of session %s "
+                        "(%d live messages would be removed; ordinal=%d).",
+                        sid,
+                        len(history),
+                        ordinal,
+                    )
+                    return _err(
+                        rid,
+                        4028,
+                        "truncation would remove every live message from the active transcript; "
+                        "resubmit with confirm_delete_entire_transcript=true (id) or "
+                        "confirm_empty_truncate=true (ordinal) if this is intended",
+                    )
+
+>               session["history"] = truncated_history
+                                     ^^^^^^^^^^^^^^^^^
+E               NameError: name 'truncated_history' is not defined
+
+tui_gateway\server.py:11037: NameError
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_prompt_submit_commits_before_memory_running_or_turn_start
+1 failed in 1.23s

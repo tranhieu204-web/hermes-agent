@@ -1,0 +1,55 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/cli/test_cli_retry.py::test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue _
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4166/test_cli_retry_converts_array_0')
+
+    def test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue(
+        tmp_path,
+    ):
+        """CLI retry must durably rewind before mutating its in-memory history."""
+        from hermes_state import SessionDB
+
+        sid = "cli-retry-red-coordinate"
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "calling tool"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "retry me"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+        user_indices = [i for i, message in enumerate(history) if message.get("role") == "user"]
+        last_user_array_index = user_indices[-1]
+        last_user_ordinal = len(user_indices) - 1
+
+        assert user_indices == [0, 4]
+        assert last_user_array_index != last_user_ordinal
+        assert last_user_array_index >= len(user_indices)
+
+        db = SessionDB(db_path=tmp_path / "cli-retry-red-state.db")
+        db.create_session(sid, source="cli")
+        for message in history:
+            db.append_message(sid, role=message["role"], content=message["content"])
+
+        cli = _make_cli()
+        cli._session_db = db
+        cli.session_id = sid
+        cli.conversation_history = list(history)
+
+        try:
+            retry_message = cli.retry_last()
+>           assert retry_message == "retry me", "wrong coordinate wiring refused the CLI retry"
+E           AssertionError: wrong coordinate wiring refused the CLI retry
+E           assert None == 'retry me'
+
+tests\cli\test_cli_retry.py:124: AssertionError
+---------------------------- Captured stdout call -----------------------------
+(x_x) Retry refused: persisted session history changed; nothing was requeued.
+------------------------------ Captured log call ------------------------------
+INFO     cli:cli.py:7730 CLI /retry refused stale history: Rewind conflict for session 'cli-retry-red-coordinate': truncate_before_user_ordinal is outside the active user-turn range
+=========================== short test summary info ===========================
+FAILED tests/cli/test_cli_retry.py::test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue
+1 failed in 1.15s

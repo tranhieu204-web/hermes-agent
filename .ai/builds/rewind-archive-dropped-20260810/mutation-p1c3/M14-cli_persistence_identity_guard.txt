@@ -1,0 +1,37 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_cli_retry_missing_persistence_does_not_mutate_or_requeue
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_cli_retry_missing_persistence_does_not_mutate_or_requeue _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000001A1D1C23E30>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001A1D2F84C30>
+
+    def test_cli_retry_missing_persistence_does_not_mutate_or_requeue(self, monkeypatch):
+        history = [
+            {"role": "user", "content": "retry"},
+            {"role": "assistant", "content": "old"},
+        ]
+        for db, session_id in ((None, "cli-routing-session"), (object(), None)):
+            cli = _bare_cli_for_routing()
+            queued = []
+            cli._session_db = db
+            cli.session_id = session_id
+            cli.conversation_history = list(history)
+            monkeypatch.setattr(cli._pending_input, "put", queued.append)
+
+            cli.process_command("/retry")
+
+            assert cli.conversation_history == history
+>           assert queued == []
+E           AssertionError: assert ['retry'] == []
+E
+E             Left contains one more item: 'retry'
+E             Use -v to get more diff
+
+tests\test_hermes_state.py:8307: AssertionError
+---------------------------- Captured stdout call -----------------------------
+(x_x) Retry failed: canonical session persistence unavailable; nothing was requeued.
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_cli_retry_missing_persistence_does_not_mutate_or_requeue
+1 failed in 1.18s

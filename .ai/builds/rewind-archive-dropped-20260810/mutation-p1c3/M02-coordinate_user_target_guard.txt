@@ -1,0 +1,51 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_converts_array_index_to_user_ordinal
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRetryCoordinateConversion.test_retry_coordinate_converts_array_index_to_user_ordinal _
+
+self = <tests.test_hermes_state.TestRetryCoordinateConversion object at 0x0000027194251090>
+
+    def test_retry_coordinate_converts_array_index_to_user_ordinal(self):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "tool call"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "retry"},
+        ]
+>       assert hermes_state.retry_array_index_to_user_ordinal(history, 4) == 1
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_hermes_state.py:7935:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+expected_history = [{'content': 'first', 'role': 'user'}, {'content': 'tool call', 'role': 'assistant'}, {'content': 'tool result', 'role': 'tool'}, {'content': 'answer', 'role': 'assistant'}, {'content': 'retry', 'role': 'user'}]
+last_user_array_index = 4
+
+    def retry_array_index_to_user_ordinal(
+        expected_history: list[dict[str, Any]], last_user_array_index: int
+    ) -> int:
+        """Convert a retry history index into the durable user-turn coordinate.
+
+        Retry callers address the last user message by its position in the full
+        model-history array. ``SessionDB.rewind_active_history`` deliberately uses
+        a user-turn ordinal instead, so passing the array index directly can target
+        the wrong row or become out of range when tool/assistant rows intervene.
+        """
+        if (
+            type(last_user_array_index) is not int
+            or last_user_array_index < 0
+            or last_user_array_index >= len(expected_history)
+        ):
+            raise RewindHistoryConflict("<retry-coordinate>", "invalid history array index")
+
+        target = expected_history[last_user_array_index]
+        if isinstance(target, dict) and target.get("role") == "user":
+>           raise RewindHistoryConflict("<retry-coordinate>", "retry target is not a user row")
+E           hermes_state.RewindHistoryConflict: Rewind conflict for session '<retry-coordinate>': retry target is not a user row
+
+hermes_state.py:1610: RewindHistoryConflict
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_converts_array_index_to_user_ordinal
+1 failed in 0.81s

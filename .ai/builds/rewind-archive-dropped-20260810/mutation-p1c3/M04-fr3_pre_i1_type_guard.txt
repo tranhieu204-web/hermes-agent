@@ -1,0 +1,40 @@
+$ C:\c\Users\HieuKa\Desktop\hermes-rewind-archive-20260810\.venv\Scripts\python.exe -m pytest -q tests/test_hermes_state.py::TestRewindRouting::test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1
+EXIT=1
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1 _
+
+self = <tests.test_hermes_state.TestRewindRouting object at 0x000001A18CEE0A50>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001A18CE023F0>
+
+    def test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1(self, monkeypatch):
+        from tui_gateway import server
+
+        history = [{"role": "user", "content": "first"}]
+        db_calls = []
+        monkeypatch.setattr(server, "_get_db", lambda: db_calls.append(True))
+        for offset, bad_ordinal in enumerate(("0", True, 0.0)):
+            sid = f"fr3-{offset}"
+            session = _routing_session(history)
+            server._sessions[sid] = session
+            try:
+                response = server.handle_request(
+                    {
+                        "id": str(offset),
+                        "method": "prompt.submit",
+                        "params": {
+                            "session_id": sid,
+                            "text": "retry",
+                            "truncate_before_user_ordinal": bad_ordinal,
+                        },
+                    }
+                )
+>               assert response["error"]["code"] == 4004
+E               assert 4028 == 4004
+
+tests\test_hermes_state.py:8080: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  tui_gateway.server:server.py:11023 prompt.submit: REFUSED empty truncation of session fr3-0 (1 live messages would be removed; ordinal=0).
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindRouting::test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1
+1 failed in 1.02s

@@ -1,36 +1,68 @@
 """Regression tests for CLI /retry history replacement semantics."""
 
+from hermes_state import SessionDB
 from tests.cli.test_cli_init import _make_cli
 
 
-def test_retry_last_truncates_history_before_requeueing_message():
+def _make_persisted_retry_cli(tmp_path, sid, history):
+    """Build the DB-backed fixture required by I1's expected-history contract."""
     cli = _make_cli()
-    cli.conversation_history = [
+    if cli._session_db is not None:
+        cli._session_db.close()
+    db = SessionDB(db_path=tmp_path / f"{sid}.db")
+    db.create_session(sid, source="cli")
+    for message in history:
+        db.append_message(sid, role=message["role"], content=message["content"])
+    cli._session_db = db
+    cli.session_id = sid
+    cli.conversation_history = list(history)
+    return cli, db
+
+
+def test_retry_last_truncates_history_before_requeueing_message(tmp_path):
+    history = [
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "one"},
         {"role": "user", "content": "retry me"},
         {"role": "assistant", "content": "old answer"},
     ]
+    cli, db = _make_persisted_retry_cli(tmp_path, "cli-retry-truncate", history)
 
-    retry_msg = cli.retry_last()
+    try:
+        retry_msg = cli.retry_last()
 
-    assert retry_msg == "retry me"
-    assert cli.conversation_history == [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "one"},
+        assert retry_msg == "retry me"
+        assert cli.conversation_history == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+        ]
+        assert [m["content"] for m in db.get_messages("cli-retry-truncate")] == [
+            "first",
+            "one",
+        ]
+        assert [
+            m["content"]
+            for m in db.get_messages("cli-retry-truncate", include_inactive=True)
+            if m.get("active") == 0 and m.get("compacted") == 0
+        ] == ["retry me", "old answer"]
+
+        cli.conversation_history.append({"role": "user", "content": retry_msg})
+        cli.conversation_history.append({"role": "assistant", "content": "new answer"})
+
+        assert [m["content"] for m in cli.conversation_history if m["role"] == "user"] == [
+            "first",
+            "retry me",
+        ]
+    finally:
+        db.close()
+
+
+def test_process_command_retry_requeues_original_message_not_retry_command(tmp_path):
+    history = [
+        {"role": "user", "content": "retry me"},
+        {"role": "assistant", "content": "old answer"},
     ]
-
-    cli.conversation_history.append({"role": "user", "content": retry_msg})
-    cli.conversation_history.append({"role": "assistant", "content": "new answer"})
-
-    assert [m["content"] for m in cli.conversation_history if m["role"] == "user"] == [
-        "first",
-        "retry me",
-    ]
-
-
-def test_process_command_retry_requeues_original_message_not_retry_command():
-    cli = _make_cli()
+    cli, db = _make_persisted_retry_cli(tmp_path, "cli-retry-command", history)
     queued = []
 
     class _Queue:
@@ -38,15 +70,20 @@ def test_process_command_retry_requeues_original_message_not_retry_command():
             queued.append(value)
 
     cli._pending_input = _Queue()
-    cli.conversation_history = [
-        {"role": "user", "content": "retry me"},
-        {"role": "assistant", "content": "old answer"},
-    ]
 
-    cli.process_command("/retry")
+    try:
+        cli.process_command("/retry")
 
-    assert queued == ["retry me"]
-    assert cli.conversation_history == []
+        assert queued == ["retry me"]
+        assert cli.conversation_history == []
+        assert db.get_messages("cli-retry-command") == []
+        assert [
+            m["content"]
+            for m in db.get_messages("cli-retry-command", include_inactive=True)
+            if m.get("active") == 0 and m.get("compacted") == 0
+        ] == ["retry me", "old answer"]
+    finally:
+        db.close()
 
 
 def test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue(

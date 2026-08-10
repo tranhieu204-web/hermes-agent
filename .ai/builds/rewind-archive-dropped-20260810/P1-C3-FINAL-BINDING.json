@@ -1,0 +1,44 @@
+{
+  "schema": "p1c3-final-binding-v1",
+  "timestamp_ict": "2026-08-10T23:49:58+07:00",
+  "lifecycle": "P1.C3_CANDIDATE_VERIFIED_UNCOMMITTED",
+  "parent_commit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+  "production_sha256": {
+    "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+    "tui_gateway/server.py": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168",
+    "cli.py": "a399abf9ecbd8d7745a1bcf60694b3ac4861a358fed9b235ff4a9eaef0f899b0"
+  },
+  "mutation_manifest": {
+    "path": "mutation-p1c3/manifest.json",
+    "sha256": "867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
+    "all_mutations_failed_named_tests": true,
+    "source_restored_sha256": {
+      "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+      "tui_gateway/server.py": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168",
+      "cli.py": "a399abf9ecbd8d7745a1bcf60694b3ac4861a358fed9b235ff4a9eaef0f899b0"
+    }
+  },
+  "m19_receipt_sha256": "f16d2eaf971e42f3cb14849d376d3d96c192e6f87674de5a5ab385dd3b4d4bdb",
+  "p1c3_receipt_sha256": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+  "ledger_sha256": "9c0b6fb68fb81c93311c8d222d8b97ea8292c11345abbdf8105b0f862594fd09",
+  "coo_current_byte_gate": {
+    "passed": 980,
+    "failed": 0,
+    "seconds": 91.8
+  },
+  "decisive_red_to_green": {
+    "passed": 3,
+    "failed": 0,
+    "seconds": 2.93,
+    "function_sources_byte_identical": true
+  },
+  "fR1": {
+    "planReviewSemanticAttemptsConsumed": 2,
+    "state": "RECONCILED_ALREADY_CORRECT"
+  },
+  "fR3": {
+    "decision": "PRESERVE_4004_PRE_I1",
+    "test": "TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1"
+  },
+  "next": "STOP_BEFORE_P2_P3"
+}
