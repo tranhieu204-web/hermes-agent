@@ -10962,11 +10962,24 @@ def _(rid, params: dict) -> dict:
             # transcript loss. Refuse the empty-truncation edge unless the
             # client explicitly opts in (legitimate restore/regenerate of the
             # first user turn).
-            if (
-                not truncated
-                and history
-                and not is_truthy_value(params.get("confirm_empty_truncate"))
-            ):
+            # An id is NOT proof of intent (independent audit, 2026-08-10).
+            # _annotate_rewind_ids tail-aligns the DISPLAY list against the
+            # model history, and when the same prompt text appears twice it can
+            # stamp a displayed bubble with an id naming a DIFFERENT occurrence
+            # — e.g. after session.undo drops a turn from the model history but
+            # not from the DB. An id resolving to ordinal 0 therefore does not
+            # mean the user clicked the first turn, which is exactly what the
+            # client's blanket confirm_empty_truncate assumed.
+            #
+            # So the id path may never auto-confirm emptying a transcript. It
+            # fails closed until the client can express a real second
+            # confirmation for that specific act.
+            id_addressed = truncate_message_id is not None
+            empty_truncation_confirmed = (
+                not id_addressed
+                and is_truthy_value(params.get("confirm_empty_truncate"))
+            )
+            if not truncated and history and not empty_truncation_confirmed:
                 logger.warning(
                     "prompt.submit: REFUSED empty truncation of session %s "
                     "(%d messages would be wiped; ordinal=%d).",

@@ -69,7 +69,38 @@ afterEach(() => {
   cleanup()
 })
 
-describe('restore button gating', () => {
+describe('restore is withdrawn', () => {
+  // Restore is disabled until rewind identity is occurrence-bound. `rewind_id`
+  // is ordinal + content digest, which an audit showed can name a different
+  // turn than the bubble it rides on (session.undo divergence, ABA
+  // replacement). These pin the withdrawal so it cannot be undone by accident;
+  // the two gating cases they replace are kept below, skipped, ready to
+  // re-enable with the feature.
+  it('offers no restore button, even on a turn the gateway stamped', async () => {
+    render(
+      <Harness
+        messages={[
+          userMessage('u1', 'still in context', 'r1:0:deadbeefdeadbeef'),
+          assistantMessage('a1', 'reply')
+        ]}
+      />
+    )
+
+    await screen.findByText('still in context')
+
+    expect(restoreButtons()).toHaveLength(0)
+  })
+
+  it('offers no restore button when the gateway stamps nothing', async () => {
+    render(<Harness messages={[userMessage('u1', 'first'), assistantMessage('a1', 'reply')]} />)
+
+    await screen.findByText('first')
+
+    expect(restoreButtons()).toHaveLength(0)
+  })
+})
+
+describe.skip('restore button gating (re-enable with the feature)', () => {
   it('offers restore only on the turns the gateway stamped', async () => {
     render(
       <Harness
