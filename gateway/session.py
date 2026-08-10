@@ -3143,10 +3143,10 @@ class SessionStore:
     def _clear_dirty_transcript(self, session_id: str) -> None:
         """Drop queued pending messages for a session.
 
-        Called by ``rewrite_transcript`` and ``rewind_session`` so that
-        /retry, /undo, /compress — which replace or truncate the transcript —
-        don't leave stale messages that would be re-inserted on the next
-        append.
+        Called only after a durable ``rewrite_transcript``, ``rewind_transcript``,
+        or ``rewind_session`` write succeeds so stale queued rows cannot be
+        re-inserted on the next append.  Failed writes retain the pre-call
+        queue and failure counter for custody/retry.
         """
         with self._transcript_retry_lock:
             self._dirty_transcripts.pop(session_id, None)
@@ -3174,8 +3174,9 @@ class SessionStore:
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> bool:
         """Replace the entire transcript for a session with new messages.
 
-        Used by /retry, /undo, and /compress to persist modified conversation
-        history. state.db is the canonical store.
+        This deliberately destructive primitive remains for redaction/recall,
+        rotated compression, and genuine whole-transcript replacement.
+        Recoverable retry rewind uses :meth:`rewind_transcript` instead.
 
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
@@ -3186,13 +3187,49 @@ class SessionStore:
         """
         if not self._db:
             return True
-        self._clear_dirty_transcript(session_id)
         try:
             self._db.replace_messages(session_id, messages)
-            return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)
             return False
+        self._clear_dirty_transcript(session_id)
+        return True
+
+    def rewind_transcript(
+        self,
+        session_id: str,
+        expected_history: List[Dict[str, Any]],
+        truncate_before_user_ordinal: int,
+    ) -> bool:
+        """Persist a recoverable gateway retry rewind through I1.
+
+        This is intentionally distinct from :meth:`rewind_session`.  I3 is the
+        strict gateway ``/retry`` adapter: it consumes the caller's complete
+        expected active history and an exact user-turn ordinal, so I1 can reject
+        stale or semantically mismatched state atomically.  ``rewind_session``
+        remains the count-based ``/undo`` contract that resolves a durable
+        message id and returns target metadata.  Converging them would change
+        the established ``/undo [N]`` API and is outside P2; the two methods
+        deliberately share soft-archive semantics but not caller coordinates or
+        return shape.
+
+        Dirty transcript custody is cleared only after I1 commits.  Any missing
+        canonical DB, compression closure, semantic conflict, or write failure
+        returns ``False`` with the pre-call dirty state intact.
+        """
+        if not self._db:
+            return False
+        try:
+            self._db.rewind_active_history(
+                session_id,
+                expected_history=expected_history,
+                truncate_before_user_ordinal=truncate_before_user_ordinal,
+            )
+        except Exception as e:
+            logger.debug("Failed to rewind transcript in DB: %s", e)
+            return False
+        self._clear_dirty_transcript(session_id)
+        return True
 
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
@@ -3229,7 +3266,6 @@ class SessionStore:
         """
         if not self._db:
             return None
-        self._clear_dirty_transcript(session_id)
         if n < 1:
             n = 1
         try:
@@ -3249,6 +3285,7 @@ class SessionStore:
         except Exception as e:
             logger.debug("rewind_session: rewind_to_message failed: %s", e)
             return None
+        self._clear_dirty_transcript(session_id)
         target_msg = result.get("target_message") or {}
         content = target_msg.get("content") or ""
         if isinstance(content, list):

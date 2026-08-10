@@ -1,0 +1,54 @@
+mutation=M12 rewrite_success_clears_dirty
+node=tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_transcript_append_clears_dirty_on_rewrite
+exit=1
+intended_named_failure=true
+mutated_sha256=09165d3b827dda5280f15c7dcc11fc98e54c2d842b360cbcd39814fe34e8f922
+
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_transcript_append_clears_dirty_on_rewrite _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000029B374376F0>
+
+    def test_transcript_append_clears_dirty_on_rewrite(self):
+        """rewrite_transcript must clear pending dirty messages so /retry
+        and /compress don't re-insert replaced rows."""
+        import threading
+
+        class FakeDb:
+            def __init__(self):
+                self.persisted = []
+                self.replaced = []
+
+            def rebuild_fts(self):
+                return 0
+
+            def append_message(self, **kwargs):
+                raise RuntimeError("database disk image is malformed")
+
+            def replace_messages(self, session_id, messages):
+                self.replaced.append((session_id, messages))
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = True  # prevent rebuild attempt
+
+        # Queue a failed message
+        store.append_to_transcript("s1", {"role": "user", "content": "stale"})
+        assert "s1" in store._dirty_transcripts
+
+        # rewrite_transcript should clear the dirty queue
+        store.rewrite_transcript("s1", [{"role": "user", "content": "fresh"}])
+>       assert "s1" not in store._dirty_transcripts
+E       AssertionError: assert 's1' not in {'s1': [{'content': 'stale', 'role': 'user'}]}
+E        +  where {'s1': [{'content': 'stale', 'role': 'user'}]} = <gateway.session.SessionStore object at 0x0000029B3744ACF0>._dirty_transcripts
+
+tests\gateway\test_session.py:2444: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  gateway.session:session.py:3054 Session DB transcript append failed for s1 (failure_count=1, pending=1); will retry: database disk image is malformed
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_transcript_append_clears_dirty_on_rewrite
+1 failed in 0.36s

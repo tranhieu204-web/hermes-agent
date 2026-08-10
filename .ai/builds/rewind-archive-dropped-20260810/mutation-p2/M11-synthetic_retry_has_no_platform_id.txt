@@ -1,0 +1,73 @@
+mutation=M11 synthetic_retry_has_no_platform_id
+node=tests/gateway/test_retry_response.py::test_retry_archives_latest_suffix_and_resends_without_platform_id
+exit=1
+intended_named_failure=true
+mutated_sha256=ef8b1126c85da6628bd337d078af4518df5008857331c7996e55ce7d235f07f3
+
+F                                                                        [100%]
+================================== FAILURES ===================================
+______ test_retry_archives_latest_suffix_and_resends_without_platform_id ______
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4191/test_retry_archives_latest_suf0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000017A14C7B6F0>
+
+    @pytest.mark.asyncio
+    async def test_retry_archives_latest_suffix_and_resends_without_platform_id(
+        tmp_path, monkeypatch
+    ):
+        """Gateway /retry must archive, not delete, the retried active suffix."""
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        store = SessionStore(tmp_path / "sessions", config)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="p2-retry-chat",
+            user_id="p2-retry-user",
+        )
+        entry = store.get_or_create_session(source)
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "retry me"},
+            {"role": "assistant", "content": "replace me"},
+        ]
+        for message in history:
+            store.append_to_transcript(entry.session_id, message)
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = config
+        runner.session_store = store
+        runner._async_session_store = AsyncSessionStore(store)
+        runner._handle_message = AsyncMock(return_value="retried response")
+        event = MessageEvent(
+            text="/retry",
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+
+        result = await runner._handle_retry_command(event)
+        recovery = store._db.export_session(entry.session_id, include_rewound=True)
+
+        assert result == "retried response"
+        assert [message["content"] for message in recovery["messages"]] == [
+            "first",
+            "first reply",
+            "retry me",
+            "replace me",
+        ]
+        assert [
+            (message["active"], message["compacted"])
+            for message in recovery["messages"]
+        ] == [(1, 0), (1, 0), (0, 0), (0, 0)]
+        retry_event = runner._handle_message.await_args.args[0]
+        assert retry_event.text == "retry me"
+>       assert retry_event.message_id is None
+E       AssertionError: assert 'p2-mutated-retry-id' is None
+E        +  where 'p2-mutated-retry-id' = MessageEvent(text='retry me', message_type=<MessageType.TEXT: 'text'>, source=SessionSource(platform=<Platform.TELEGRA...=None, channel_context=None, internal=False, metadata={}, timestamp=datetime.datetime(2026, 8, 10, 17, 20, 22, 259300)).message_id
+
+tests\gateway\test_retry_response.py:117: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_retry_response.py::test_retry_archives_latest_suffix_and_resends_without_platform_id
+1 failed in 0.79s

@@ -133,6 +133,24 @@
       "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
       "verifiedBy": "COO current-byte execution supplied directly by Sakaan",
       "decisiveRedToGreen": "Same three decisive test function bytes that failed on base 872c34130 passed on final P1.C3 bytes: 3 passed in 2.93s."
+    },
+    {
+      "id": "P2.C1-RED",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 tests/gateway/test_retry_response.py tests/gateway/test_session.py -q",
+      "output": "2 files; actual 151 tests; 147 passed / 4 intended behavior failures in 6.2s",
+      "receipt": "P2-C1-RED-RECEIPT.md sha256 f7e384bb59b682ad2e55b769feb796a76f5ee4f4ac53c164ad05ad682b413d04"
+    },
+    {
+      "id": "P2.C2-GREEN",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 tests/gateway/test_retry_response.py tests/gateway/test_session.py -q",
+      "output": "2 files; actual 156 tests; 156 passed / 0 failed in 6.1s",
+      "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0"
+    },
+    {
+      "id": "P2-FINAL-P1-P2-GATE",
+      "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 <six P1+P2 files> -q",
+      "output": "6 files; actual 1136 tests; 1136 passed / 0 failed in 131.1s",
+      "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0"
     }
   ],
   "mutation": [
@@ -153,6 +171,11 @@
       "mutatedResult": "19/19 named tests failed; M19 rerun on final server bytes",
       "restoredResult": "Final source hashes match current candidate; COO gate 980/980 after final patch",
       "output": "mutation-p1c3/manifest.json sha256 867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
+    },
+    {
+      "id": "P2-M01-M13",
+      "method": "one guard mutation at a time; direct named pytest; reject collection/import/setup failures; restore exact source after every mutation",
+      "output": "mutation-p2/manifest.json sha256 b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
     }
   ],
   "candidate": {
@@ -160,8 +183,9 @@
     "sourceSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
     "reverifiedSha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
-    "state": "P1_C3_CANDIDATE_VERIFIED_UNCOMMITTED",
-    "workingTreeParentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e"
+    "state": "P2_CANDIDATE_VERIFIED_UNCOMMITTED",
+    "workingTreeParentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "workingTreeParent": "bc6c801a5734d30543a908c18233728b691e9e9e"
   },
   "submission": {
     "verdict": "PENDING",
@@ -262,13 +286,13 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "P1_C3_CANDIDATE_VERIFIED",
-      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6; current-byte COO gate 980/980; later P2/P3 remain pending"
+      "status": "P2_CANDIDATE_VERIFIED",
+      "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0; 1136/1136 final P1+P2 gate"
     },
     "adversarial": {
       "sequence": 5,
-      "status": "P1_C3_PASS_WHOLE_BUILD_PENDING",
-      "receipt": "P1.C3 M01-M19 PASS; M19 rerun on final server bytes; manifest 867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b; later package adversarial work remains pending"
+      "status": "P2_MUTATION_PASS",
+      "receipt": "P2 M01-M13 PASS; manifest b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1"
     },
     "independentReview": {
       "sequence": 6,
@@ -336,9 +360,13 @@
     "p1c3ReceiptPath": ".ai/builds/rewind-archive-dropped-20260810/P1-C3-RECEIPT.md",
     "p1c3ReceiptSha256": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
     "p1c3MutationManifestSha256": "867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
-    "p1c3DecisiveBodyEvidenceSha256": "4afebe3573a58d5b9e7a150a322a4200831860d898697c4904e257eb45c55fe2"
+    "p1c3DecisiveBodyEvidenceSha256": "4afebe3573a58d5b9e7a150a322a4200831860d898697c4904e257eb45c55fe2",
+    "p2ReceiptSha256": "420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
+    "p2MutationManifestSha256": "b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1",
+    "p2BodyFreezeSha256": "83579506aa9471853768508c852f01debae5a4f2d1e883ea985732beec1cab70",
+    "p2DecisionSha256": "d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4"
   },
-  "updatedAt": "2026-08-10T23:49:58+07:00",
+  "updatedAt": "2026-08-11T00:23:19+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -718,6 +746,28 @@
         "namedTestFailed": true,
         "serverRestoredSha256": "4ccefc6928444339fa64ee02d88dd6f48f0cd0fab003cf89e0ffccf9d02dc168"
       }
+    },
+    "P2.C1": {
+      "status": "RED_PROVEN_TEST_BODIES_FROZEN",
+      "baseCommit": "bc6c801a5734d30543a908c18233728b691e9e9e",
+      "receipt": "P2-C1-RED-RECEIPT.md sha256 f7e384bb59b682ad2e55b769feb796a76f5ee4f4ac53c164ad05ad682b413d04",
+      "bodyFreeze": "P2-C1-TEST-BODY-HASHES.json sha256 83579506aa9471853768508c852f01debae5a4f2d1e883ea985732beec1cab70"
+    },
+    "P2.C2": {
+      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "sourceSha256": {
+        "gateway/session.py": "29b447cb6f3b0f54f980b94482ad3f00853de66b36de335b9df8cd6930ab0a40",
+        "gateway/slash_commands.py": "e7e3c3de15308a87e4a128afd2f0a9034d60dae728374c8f6859658804d1a04f"
+      },
+      "testSha256": {
+        "tests/gateway/test_session.py": "9e3a43ae79ec82310e7311b0b492ad754f6bf2771c84f37766f3f2ac6c6deb16",
+        "tests/gateway/test_retry_response.py": "699d6eb272a0fcad1a757d47627a6ee9b313a24f68446fba492c2c5078506178"
+      },
+      "mutationManifest": "mutation-p2/manifest.json sha256 b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1",
+      "decisionMED3": "P2-MED3-REWIND-SESSION-DECISION.md sha256 d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4",
+      "receipt": "P2-C2-RECEIPT.md sha256 420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
+      "finalGate": "1136 passed / 0 failed in 131.1s",
+      "hardRewriteControls": "retry/compress 14/14; Yuanbao recall 2/2; run.py and yuanbao.py byte-identical to P1.C3"
     }
   }
 }

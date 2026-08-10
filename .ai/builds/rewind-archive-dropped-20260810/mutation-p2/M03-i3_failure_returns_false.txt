@@ -1,0 +1,139 @@
+mutation=M03 i3_failure_returns_false
+node=tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_failure_preserves_dirty_state
+exit=1
+intended_named_failure=true
+mutated_sha256=1a813622aa34a6b346df3e1cf2d0d8b33b3dafb1a2f798e92634d4fe8b9d268e
+
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_rewind_transcript_failure_preserves_dirty_state[failure0] _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000020BE5D70150>
+failure = RewindHistoryConflict("Rewind conflict for session 's1': stale")
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RewindHistoryConflict("s1", "stale"),
+            CompressionSessionClosedError("s1"),
+            RuntimeError("write failed"),
+        ],
+    )
+    def test_rewind_transcript_failure_preserves_dirty_state(self, failure):
+        """Every I1 refusal returns False without dropping dirty custody."""
+        import threading
+
+        class FailingDb:
+            def rewind_active_history(self, session_id, **kwargs):
+                raise failure
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 5}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_transcript(
+            "s1", [{"role": "user", "content": "retry"}], 0
+        )
+
+>       assert result is False
+E       assert True is False
+
+tests\gateway\test_session.py:2615: AssertionError
+_ TestGatewaySessionDbRecovery.test_rewind_transcript_failure_preserves_dirty_state[failure1] _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000020BE5C0F980>
+failure = CompressionSessionClosedError("Session 's1' is closed by compression; adopt its live continuation before appending messages")
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RewindHistoryConflict("s1", "stale"),
+            CompressionSessionClosedError("s1"),
+            RuntimeError("write failed"),
+        ],
+    )
+    def test_rewind_transcript_failure_preserves_dirty_state(self, failure):
+        """Every I1 refusal returns False without dropping dirty custody."""
+        import threading
+
+        class FailingDb:
+            def rewind_active_history(self, session_id, **kwargs):
+                raise failure
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 5}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_transcript(
+            "s1", [{"role": "user", "content": "retry"}], 0
+        )
+
+>       assert result is False
+E       assert True is False
+
+tests\gateway\test_session.py:2615: AssertionError
+_ TestGatewaySessionDbRecovery.test_rewind_transcript_failure_preserves_dirty_state[failure2] _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000020BE5EB0500>
+failure = RuntimeError('write failed')
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RewindHistoryConflict("s1", "stale"),
+            CompressionSessionClosedError("s1"),
+            RuntimeError("write failed"),
+        ],
+    )
+    def test_rewind_transcript_failure_preserves_dirty_state(self, failure):
+        """Every I1 refusal returns False without dropping dirty custody."""
+        import threading
+
+        class FailingDb:
+            def rewind_active_history(self, session_id, **kwargs):
+                raise failure
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 5}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_transcript(
+            "s1", [{"role": "user", "content": "retry"}], 0
+        )
+
+>       assert result is False
+E       assert True is False
+
+tests\gateway\test_session.py:2615: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_failure_preserves_dirty_state[failure0]
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_failure_preserves_dirty_state[failure1]
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_failure_preserves_dirty_state[failure2]
+3 failed in 0.41s

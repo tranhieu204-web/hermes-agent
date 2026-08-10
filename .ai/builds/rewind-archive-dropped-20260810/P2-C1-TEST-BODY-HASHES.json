@@ -1,0 +1,44 @@
+{
+  "schema": "sakaan.p2.test-body-freeze.v1",
+  "frozen_at_ict": "2026-08-11T00:13:00+07:00",
+  "base_commit": "bc6c801a5734d30543a908c18233728b691e9e9e",
+  "extraction": "SHA-256 over UTF-8 file bytes; function_source is def line through ast.end_lineno inclusive preserving line endings; body_source is first body statement through last body statement ast.end_lineno inclusive",
+  "tests": [
+    {
+      "file": "tests/gateway/test_retry_response.py",
+      "function": "test_retry_archives_latest_suffix_and_resends_without_platform_id",
+      "lineno": 66,
+      "end_lineno": 117,
+      "function_source_sha256": "692a38e09dcf5cb3915f06edf511a1eaa83f52fc661203a1b327d8230c90be0d",
+      "body_source_sha256": "8ae0e33b586ad70dc15c5af1ac8732b5681d2178aec54d27e6f817f9346af33b",
+      "file_sha256": "699d6eb272a0fcad1a757d47627a6ee9b313a24f68446fba492c2c5078506178"
+    },
+    {
+      "file": "tests/gateway/test_retry_response.py",
+      "function": "test_retry_failed_persistence_preserves_tokens_and_prevents_resend",
+      "lineno": 121,
+      "end_lineno": 159,
+      "function_source_sha256": "7092296a67748cfd0d2b84ffcc9d73aa26ce7e241bef16bccf13cb9ba932f3a1",
+      "body_source_sha256": "6262ac42dbde140c1ef57cc1c4cb2b4a4732bc6574ae48dfa82aaf93670a002e",
+      "file_sha256": "699d6eb272a0fcad1a757d47627a6ee9b313a24f68446fba492c2c5078506178"
+    },
+    {
+      "file": "tests/gateway/test_session.py",
+      "function": "test_rewrite_transcript_failure_preserves_dirty_state",
+      "lineno": 2481,
+      "end_lineno": 2508,
+      "function_source_sha256": "5201f9001edda887c7c214c59a750197bc67f78da87d299990e0fcd66a8fc6de",
+      "body_source_sha256": "cbb97a9cb7da4be464b03a4c94aa57f78bff383ac7b1588a800c4cdfff41de5f",
+      "file_sha256": "2cba7eb35dd7f6f80827422b5f5295f68289bff625b58b6d7f9707bc51a0cb73"
+    },
+    {
+      "file": "tests/gateway/test_session.py",
+      "function": "test_rewind_session_failure_preserves_dirty_state",
+      "lineno": 2510,
+      "end_lineno": 2538,
+      "function_source_sha256": "93035be9e572277e0b1effdcec5d20480b3b8e84dfd71b6362948c40f6157630",
+      "body_source_sha256": "093a0b97e49fa669879a951b2c4d06862dc19c977eca81b69c78874bd7de7d84",
+      "file_sha256": "2cba7eb35dd7f6f80827422b5f5295f68289bff625b58b6d7f9707bc51a0cb73"
+    }
+  ]
+}

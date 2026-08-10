@@ -1,0 +1,49 @@
+mutation=M09 retry_token_reset_after_commit
+node=tests/gateway/test_retry_response.py::test_retry_failed_persistence_preserves_tokens_and_prevents_resend
+exit=1
+intended_named_failure=true
+mutated_sha256=dc115841c90358c4d746c1fccda1d71afa72f95aba9d9e058774ab53b74412ae
+
+F                                                                        [100%]
+================================== FAILURES ===================================
+_____ test_retry_failed_persistence_preserves_tokens_and_prevents_resend ______
+
+    @pytest.mark.asyncio
+    async def test_retry_failed_persistence_preserves_tokens_and_prevents_resend():
+        """A failed canonical rewind must not reset tokens or reach resend."""
+        source = MagicMock()
+        entry = MagicMock(session_id="p2-failed-retry", last_prompt_tokens=731)
+        async_store = MagicMock()
+        async_store.get_or_create_session = AsyncMock(return_value=entry)
+        async_store.load_transcript = AsyncMock(
+            return_value=[
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "retry me"},
+                {"role": "assistant", "content": "replace me"},
+            ]
+        )
+        async_store.rewrite_transcript = AsyncMock(return_value=False)
+        async_store.rewind_transcript = AsyncMock(return_value=False)
+        backing_store = MagicMock()
+        async_store._store = backing_store
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.session_store = backing_store
+        runner._async_session_store = async_store
+        runner._handle_message = AsyncMock(return_value="must not resend")
+        event = MessageEvent(
+            text="/retry",
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+
+        result = await runner._handle_retry_command(event)
+
+>       assert entry.last_prompt_tokens == 731
+E       AssertionError: assert 0 == 731
+E        +  where 0 = <MagicMock id='2925046617760'>.last_prompt_tokens
+
+tests\gateway\test_retry_response.py:151: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_retry_response.py::test_retry_failed_persistence_preserves_tokens_and_prevents_resend
+1 failed in 0.67s

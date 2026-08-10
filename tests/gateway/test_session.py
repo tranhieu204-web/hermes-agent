@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from hermes_state import SessionDB
+from hermes_state import CompressionSessionClosedError, RewindHistoryConflict, SessionDB
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
@@ -2477,6 +2477,164 @@ class TestGatewaySessionDbRecovery:
 
         store.rewind_session("s1", 1)
         assert "s1" not in store._dirty_transcripts
+
+    def test_rewrite_transcript_failure_preserves_dirty_state(self):
+        """A failed destructive rewrite must preserve queued transcript custody."""
+        import threading
+
+        class FailingDb:
+            def replace_messages(self, session_id, messages):
+                raise RuntimeError("write failed")
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 2}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewrite_transcript(
+            "s1", [{"role": "user", "content": "replacement"}]
+        )
+
+        assert result is False
+        assert store._dirty_transcripts == before_dirty
+        assert store._transcript_append_failures == before_failures
+
+    def test_rewind_session_failure_preserves_dirty_state(self):
+        """A failed /undo rewind must preserve queued transcript custody."""
+        import threading
+
+        class FailingDb:
+            def list_recent_user_messages(self, session_id, limit=10):
+                return [{"id": 1, "content": "old"}]
+
+            def rewind_to_message(self, session_id, target_id):
+                raise RuntimeError("write failed")
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "assistant", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 3}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_session("s1", 1)
+
+        assert result is None
+        assert store._dirty_transcripts == before_dirty
+        assert store._transcript_append_failures == before_failures
+
+    def test_rewind_transcript_calls_i1_before_clearing_dirty_state(self):
+        """I3 clears stale queued rows only after the durable I1 call lands."""
+        import threading
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "retry"},
+        ]
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "assistant", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 4}
+
+        class RecordingDb:
+            def __init__(self):
+                self.calls = []
+
+            def rewind_active_history(self, session_id, **kwargs):
+                assert "s1" in store._dirty_transcripts
+                assert store._transcript_append_failures["s1"] == 4
+                self.calls.append((session_id, kwargs))
+
+        store._db = RecordingDb()
+
+        result = store.rewind_transcript("s1", history, 1)
+
+        assert result is True
+        assert store._db.calls == [
+            (
+                "s1",
+                {
+                    "expected_history": history,
+                    "truncate_before_user_ordinal": 1,
+                },
+            )
+        ]
+        assert "s1" not in store._dirty_transcripts
+        assert "s1" not in store._transcript_append_failures
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RewindHistoryConflict("s1", "stale"),
+            CompressionSessionClosedError("s1"),
+            RuntimeError("write failed"),
+        ],
+    )
+    def test_rewind_transcript_failure_preserves_dirty_state(self, failure):
+        """Every I1 refusal returns False without dropping dirty custody."""
+        import threading
+
+        class FailingDb:
+            def rewind_active_history(self, session_id, **kwargs):
+                raise failure
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 5}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_transcript(
+            "s1", [{"role": "user", "content": "retry"}], 0
+        )
+
+        assert result is False
+        assert store._dirty_transcripts == before_dirty
+        assert store._transcript_append_failures == before_failures
+
+    def test_rewind_transcript_without_canonical_db_fails_closed(self):
+        """I3 cannot claim success when the canonical SessionDB is absent."""
+        import threading
+
+        store = object.__new__(SessionStore)
+        store._db = None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "user", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 1}
+
+        result = store.rewind_transcript(
+            "s1", [{"role": "user", "content": "retry"}], 0
+        )
+
+        assert result is False
+        assert "s1" in store._dirty_transcripts
+        assert store._transcript_append_failures["s1"] == 1
 
     def test_fts_corruption_error_does_not_match_false_positives(self):
         """_is_fts_corruption_error must not match unrelated error strings

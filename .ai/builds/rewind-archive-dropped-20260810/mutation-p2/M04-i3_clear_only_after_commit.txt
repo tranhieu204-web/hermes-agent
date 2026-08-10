@@ -1,0 +1,48 @@
+mutation=M04 i3_clear_only_after_commit
+node=tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_calls_i1_before_clearing_dirty_state
+exit=1
+intended_named_failure=true
+mutated_sha256=1801cd109b1db397c00aa94a6273143730cd61170b5b8b07bb499c20ea0e1b7a
+
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_rewind_transcript_calls_i1_before_clearing_dirty_state _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000002D748B73D50>
+
+    def test_rewind_transcript_calls_i1_before_clearing_dirty_state(self):
+        """I3 clears stale queued rows only after the durable I1 call lands."""
+        import threading
+
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "retry"},
+        ]
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "assistant", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 4}
+
+        class RecordingDb:
+            def __init__(self):
+                self.calls = []
+
+            def rewind_active_history(self, session_id, **kwargs):
+                assert "s1" in store._dirty_transcripts
+                assert store._transcript_append_failures["s1"] == 4
+                self.calls.append((session_id, kwargs))
+
+        store._db = RecordingDb()
+
+        result = store.rewind_transcript("s1", history, 1)
+
+>       assert result is True
+E       assert False is True
+
+tests\gateway\test_session.py:2569: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_calls_i1_before_clearing_dirty_state
+1 failed in 0.35s

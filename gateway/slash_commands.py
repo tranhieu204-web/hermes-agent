@@ -2350,6 +2350,8 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
+        from hermes_state import RewindHistoryConflict, retry_array_index_to_user_ordinal
+
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -2365,11 +2367,23 @@ class GatewaySlashCommandsMixin:
         
         if not last_user_msg:
             return t("gateway.retry.no_previous")
-        
-        # Truncate history to before the last user message and persist
-        truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(session_entry.session_id, truncated)
-        # Reset stored token count — transcript was truncated
+
+        try:
+            last_user_ordinal = retry_array_index_to_user_ordinal(
+                history, last_user_idx
+            )
+        except RewindHistoryConflict:
+            return "Could not retry because session history changed."
+
+        persisted = await self.async_session_store.rewind_transcript(
+            session_entry.session_id,
+            history,
+            last_user_ordinal,
+        )
+        if not persisted:
+            return "Could not retry because session history could not be persisted."
+
+        # Reset stored token count only after the recoverable rewind commits.
         session_entry.last_prompt_tokens = 0
 
         # Re-send by creating a fake text event with the old message

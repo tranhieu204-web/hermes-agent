@@ -1,0 +1,169 @@
+{
+  "schema": "sakaan.p2.mutation-manifest.v1",
+  "generated_utc": "2026-08-10T17:20:23+00:00",
+  "base_commit": "bc6c801a5734d30543a908c18233728b691e9e9e",
+  "mutations": [
+    {
+      "id": "M01",
+      "name": "i3_missing_db_fail_closed",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_without_canonical_db_fails_closed",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "b6efb50a197f941eb21c88935ee7505cc6117f3c23cdae9a97a903894f5a1963",
+      "output_file": "M01-i3_missing_db_fail_closed.txt",
+      "output_sha256": "ca99e78263dd2af2b44bdc41e54b4807c2be21bb4eb2a243d5ddfc9816bcae0c"
+    },
+    {
+      "id": "M02",
+      "name": "i3_invokes_i1",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_calls_i1_before_clearing_dirty_state",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "e3dbba03f58f04fc51db1c9c86a13e5c97b8d94b533cc3d033f36170af5c0984",
+      "output_file": "M02-i3_invokes_i1.txt",
+      "output_sha256": "aa841609582567ac9a40a02c02a10d21ea011b0e23f59bdd3c33510e9f57fb04"
+    },
+    {
+      "id": "M03",
+      "name": "i3_failure_returns_false",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_failure_preserves_dirty_state",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "1a813622aa34a6b346df3e1cf2d0d8b33b3dafb1a2f798e92634d4fe8b9d268e",
+      "output_file": "M03-i3_failure_returns_false.txt",
+      "output_sha256": "27eb53cf7103cd5b22ff53b2ecd95d0c7a7f255aca0aa7aaba23f798c23e6aa2"
+    },
+    {
+      "id": "M04",
+      "name": "i3_clear_only_after_commit",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_transcript_calls_i1_before_clearing_dirty_state",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "1801cd109b1db397c00aa94a6273143730cd61170b5b8b07bb499c20ea0e1b7a",
+      "output_file": "M04-i3_clear_only_after_commit.txt",
+      "output_sha256": "44a931ef56254ddc1e1bf47c331e116085d8221cf85d3d69235c1e63cdb70840"
+    },
+    {
+      "id": "M05",
+      "name": "rewrite_failure_dirty_custody",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewrite_transcript_failure_preserves_dirty_state",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "ac25e5b3eeb7b14d8c7c606f7c3efb10b4427fd02531f03620eefe1cccf07574",
+      "output_file": "M05-rewrite_failure_dirty_custody.txt",
+      "output_sha256": "312f9ece40b290bfde72a174de5cf6c5f761b274e650d5c5df62fcb57a201ee2"
+    },
+    {
+      "id": "M06",
+      "name": "undo_failure_dirty_custody",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_failure_preserves_dirty_state",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "69fe3eda3906b1848df919b053775787c905cf8dd623fc08bdc9358e081fbf95",
+      "output_file": "M06-undo_failure_dirty_custody.txt",
+      "output_sha256": "a6354e7b46b925d134a65cbe3f346fac4a50997c3d5b38f7d59a7b288a53a22e"
+    },
+    {
+      "id": "M07",
+      "name": "retry_coordinate_conversion",
+      "file": "gateway/slash_commands.py",
+      "test": "tests/gateway/test_retry_response.py::test_retry_archives_latest_suffix_and_resends_without_platform_id",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "068cf86d2c3a4c2ccd26ad316591ead83a2a7fbb8c9b89fadd9db8f7490d8f63",
+      "output_file": "M07-retry_coordinate_conversion.txt",
+      "output_sha256": "0fc4310f330bbbf7370242e25371c6b262a0ca046c01c987b94e77efe88c3a43"
+    },
+    {
+      "id": "M08",
+      "name": "retry_checks_persistence_result",
+      "file": "gateway/slash_commands.py",
+      "test": "tests/gateway/test_retry_response.py::test_retry_failed_persistence_preserves_tokens_and_prevents_resend",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "808ccb93ccc2d072bb9b9806794bdc5ba84444d4e91d8a4889921295a5113836",
+      "output_file": "M08-retry_checks_persistence_result.txt",
+      "output_sha256": "137e2627d59910f712f38c623fcbe8f398c732fb7abe5f716583c10488d12558"
+    },
+    {
+      "id": "M09",
+      "name": "retry_token_reset_after_commit",
+      "file": "gateway/slash_commands.py",
+      "test": "tests/gateway/test_retry_response.py::test_retry_failed_persistence_preserves_tokens_and_prevents_resend",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "dc115841c90358c4d746c1fccda1d71afa72f95aba9d9e058774ab53b74412ae",
+      "output_file": "M09-retry_token_reset_after_commit.txt",
+      "output_sha256": "687608d24f9fb460e19b2449dd501e95627289574301e4e750687b870da1fe0f"
+    },
+    {
+      "id": "M10",
+      "name": "retry_uses_i3_not_hard_rewrite",
+      "file": "gateway/slash_commands.py",
+      "test": "tests/gateway/test_retry_response.py::test_retry_archives_latest_suffix_and_resends_without_platform_id",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "f7cf5c3f034bc8e74a8443e80df4d0ae1b6cc9dcc6eeb842d958dec94fdc3902",
+      "output_file": "M10-retry_uses_i3_not_hard_rewrite.txt",
+      "output_sha256": "ee47c4956936b4b144077b6b4b34be438c47a12502c9cd361bc9e5f2edcd7889"
+    },
+    {
+      "id": "M11",
+      "name": "synthetic_retry_has_no_platform_id",
+      "file": "gateway/slash_commands.py",
+      "test": "tests/gateway/test_retry_response.py::test_retry_archives_latest_suffix_and_resends_without_platform_id",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "ef8b1126c85da6628bd337d078af4518df5008857331c7996e55ce7d235f07f3",
+      "output_file": "M11-synthetic_retry_has_no_platform_id.txt",
+      "output_sha256": "2ad4bfa6a41fe58be01f62f52a0a9d0f497f96cdf94d1d1f23ce8df7b84ad7e0"
+    },
+    {
+      "id": "M12",
+      "name": "rewrite_success_clears_dirty",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_transcript_append_clears_dirty_on_rewrite",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "09165d3b827dda5280f15c7dcc11fc98e54c2d842b360cbcd39814fe34e8f922",
+      "output_file": "M12-rewrite_success_clears_dirty.txt",
+      "output_sha256": "1a8ab86dd191ca85c7c4eb05030f626ede640b254fec7668ff05ae156e47ffe9"
+    },
+    {
+      "id": "M13",
+      "name": "undo_success_clears_dirty",
+      "file": "gateway/session.py",
+      "test": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_transcript_append_clears_dirty_on_rewind",
+      "exit_code": 1,
+      "intended_named_failure": true,
+      "source_restored": true,
+      "mutated_sha256": "e38b96d0abc50fb3d4ee870ffee252cbcd3270ddf461ba791c70ee529587a35c",
+      "output_file": "M13-undo_success_clears_dirty.txt",
+      "output_sha256": "a8d55d701cbaff9bd8a63983ffd3fd3f4d150008f7c8f5d7159dde61af55a2a4"
+    }
+  ],
+  "all_mutations_failed_named_tests": true,
+  "source_restored_byte_identical": true,
+  "source_restored_sha256": {
+    "gateway/session.py": "29b447cb6f3b0f54f980b94482ad3f00853de66b36de335b9df8cd6930ab0a40",
+    "gateway/slash_commands.py": "e7e3c3de15308a87e4a128afd2f0a9034d60dae728374c8f6859658804d1a04f"
+  }
+}

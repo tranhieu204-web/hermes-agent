@@ -1,0 +1,50 @@
+mutation=M06 undo_failure_dirty_custody
+node=tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_failure_preserves_dirty_state
+exit=1
+intended_named_failure=true
+mutated_sha256=69fe3eda3906b1848df919b053775787c905cf8dd623fc08bdc9358e081fbf95
+
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_rewind_session_failure_preserves_dirty_state _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000001824992F350>
+
+    def test_rewind_session_failure_preserves_dirty_state(self):
+        """A failed /undo rewind must preserve queued transcript custody."""
+        import threading
+
+        class FailingDb:
+            def list_recent_user_messages(self, session_id, limit=10):
+                return [{"id": 1, "content": "old"}]
+
+            def rewind_to_message(self, session_id, target_id):
+                raise RuntimeError("write failed")
+
+        store = object.__new__(SessionStore)
+        store._db = FailingDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "s1": [{"role": "assistant", "content": "pending"}]
+        }
+        store._transcript_append_failures = {"s1": 3}
+        before_dirty = {
+            key: [dict(message) for message in messages]
+            for key, messages in store._dirty_transcripts.items()
+        }
+        before_failures = dict(store._transcript_append_failures)
+
+        result = store.rewind_session("s1", 1)
+
+        assert result is None
+>       assert store._dirty_transcripts == before_dirty
+E       AssertionError: assert {} == {'s1': [{'con...'assistant'}]}
+E
+E         Right contains 1 more item:
+E         {'s1': [{'content': 'pending', 'role': 'assistant'}]}
+E         Use -v to get more diff
+
+tests\gateway\test_session.py:2537: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_failure_preserves_dirty_state
+1 failed in 0.34s
