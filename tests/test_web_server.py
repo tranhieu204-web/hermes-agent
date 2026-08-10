@@ -226,3 +226,86 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+# ---------------------------------------------------------------------------
+# Rewind ids on the REST transcript
+# ---------------------------------------------------------------------------
+#
+# This endpoint is the Desktop's transcript authority (the gateway resume is
+# called with omit_messages), so a cold-opened session gets its rewind identity
+# from here or not at all. Without it the client falls back to counting bubbles
+# — the positional bug these ids exist to remove.
+
+
+class _FakeDb:
+    """Just the two reads _with_rewind_ids uses."""
+
+    def __init__(self, model_history):
+        self._model_history = model_history
+
+    def get_resume_conversations(self, _sid):
+        return list(self._model_history), []
+
+
+def test_rest_transcript_stamps_rewind_ids_on_reachable_turns():
+    from tui_gateway.rewind_identity import rewind_message_id
+
+    # The tip session's rows: two turns the gateway will still hold.
+    model_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "two"},
+    ]
+    rows = [
+        {"id": 1, "role": "user", "content": "first"},
+        {"id": 2, "role": "assistant", "content": "one"},
+        {"id": 3, "role": "user", "content": "second"},
+        {"id": 4, "role": "assistant", "content": "two"},
+    ]
+
+    out = web_server._with_rewind_ids(_FakeDb(model_history), "sid", rows, None, 0)
+
+    assert out[0]["rewind_id"] == rewind_message_id(0, "first")
+    assert out[2]["rewind_id"] == rewind_message_id(1, "second")
+    assert "rewind_id" not in out[1] and "rewind_id" not in out[3]
+
+
+def test_rest_transcript_leaves_unreachable_turns_unstamped():
+    """Rows the model history no longer carries must stay unstamped.
+
+    That absence is what tells the client to hide the restore button instead of
+    offering a rewind that can only answer 4018.
+    """
+    from tui_gateway.rewind_identity import rewind_message_id
+
+    rows = [
+        {"id": 1, "role": "user", "content": "compacted away"},
+        {"id": 2, "role": "assistant", "content": "old"},
+        {"id": 3, "role": "user", "content": "still here"},
+    ]
+
+    out = web_server._with_rewind_ids(
+        _FakeDb([{"role": "user", "content": "still here"}]), "sid", rows, None, 0
+    )
+
+    assert "rewind_id" not in out[0]
+    assert out[2]["rewind_id"] == rewind_message_id(0, "still here")
+
+
+def test_rest_transcript_skips_paged_reads_and_survives_db_failure():
+    rows = [{"id": 1, "role": "user", "content": "first"}]
+    db = _FakeDb([{"role": "user", "content": "first"}])
+
+    # A page that does not end where the transcript ends cannot be tail-aligned.
+    assert web_server._with_rewind_ids(db, "sid", rows, 50, 0) == rows
+    assert web_server._with_rewind_ids(db, "sid", rows, None, 10) == rows
+
+    class _BrokenDb:
+        def get_resume_conversations(self, _sid):
+            raise RuntimeError("db gone")
+
+    # Annotation is best-effort: a failure serves the transcript unstamped
+    # rather than 500-ing the endpoint the whole transcript depends on.
+    assert web_server._with_rewind_ids(_BrokenDb(), "sid", rows, None, 0) == rows
