@@ -306,6 +306,12 @@
       "id": "MED-5",
       "state": "ACCEPTED_CONSEQUENCE_V1",
       "evidence": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY. agent/insights.py is byte-identical from base 872c341302b5ed8941f280c3b7939cabba930b5a through P3 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb. Its eight message reads have zero m.active/m.compacted filters at both revisions, so this is not a regression. The build adds persistent active=0, compacted=0 rewind rows to the population counted by tool-usage and tool-call analytics. No v1 code change; future disposition is an explicit active filter or a declaration that insights count executed activity."
+    },
+    {
+      "id": "LOW-1",
+      "state": "OBSERVED_LOW_DIAGNOSABILITY_V1",
+      "severity": "LOW",
+      "evidence": "SWALLOWED_ROLLBACK_CAUSE. hermes_state.py _execute_write lines 2145-2150 discard a rollback exception. A lock/busy retry can then surface a transaction-nesting error at line 2170 rather than the rollback cause. This fails closed; it is pre-existing, not introduced by this build, and is neither correctness nor data loss. No v1 fix proposed; suggested remedy is to log or preserve the rollback exception instead of pass."
     }
   ],
   "stages": {
@@ -416,7 +422,7 @@
     "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
     "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
   },
-  "updatedAt": "2026-08-11T08:16:48+07:00",
+  "updatedAt": "2026-08-11T08:58:32+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -882,13 +888,50 @@
           8611
         ]
       },
-      "notCovered": [
+      "independentBuildReview": "OPEN_UNAFFECTED",
+      "notCoveredAtThatEpoch": [
         "I1 atomicity under the _execute_write locked-retry path",
         "whether the normalizer can mask a genuine mismatch",
         "coordinate-conversion boundaries",
         "mutation spot-checks",
         "whether the cleared plan was itself wrong"
       ],
+      "supersededScopeBy": "closureRecord.deeperCooAudit"
+    },
+    "deeperCooAudit": {
+      "scope": "SIX_TECHNICAL_AREAS",
+      "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+      "auditor": "COO",
+      "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
+      "areasCovered": [
+        "read-path visibility and analytics population",
+        "_execute_write retry-path safety",
+        "I1 compare/mutate TOCTOU closure",
+        "rewind-history normalizer mismatch resistance",
+        "ordinal and whole-transcript boundaries",
+        "independent ordinal-boolean mutation spot-check"
+      ],
+      "lowObservation": {
+        "id": "LOW-1",
+        "severity": "LOW",
+        "classification": "PRE_EXISTING_DIAGNOSABILITY_ONLY_NOT_REGRESSION_NOT_CORRECTNESS_NOT_DATA_LOSS",
+        "cause": "rollback exception swallowed at hermes_state.py:2148-2149",
+        "failureMode": "following BEGIN IMMEDIATE can raise transaction-nesting error which propagates fail-closed at line 2170",
+        "v1Fix": "NONE_PROPOSED",
+        "suggestedRemedy": "log or preserve rollback exception instead of pass"
+      },
+      "verifiedSafe": {
+        "retryPath": "rollback precedes retry; successful rollback means callback re-runs against unchanged DB; rollback failure fails closed",
+        "i1Toctou": "BEGIN IMMEDIATE at 2141 encloses compare at 7493 and mutation at 7511-7515",
+        "normalizer": "non-mapping, unknown-field, alias-disagreement, non-serializable and non-finite values refused; _REWIND_MISSING distinguishes absent from None; observed default is deliberate",
+        "ordinalBoundaries": "empty active-user set fails closed; zero is valid whole-transcript archive behind upstream 4028 confirmation; negative/non-integer/bool refused with type(x) is not int",
+        "mutationSpotCheck": "COO changed type(x) is not int to not isinstance(x, int); only test_rejects_invalid_ordinal_without_any_mutation[True] failed; restored source SHA-256 8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83"
+      },
+      "seventhArea": {
+        "topic": "whether the cleared plan was itself wrong",
+        "status": "OPEN_FOR_STAGE_6",
+        "reason": "structurally unavailable to materially contributing COO"
+      },
       "independentBuildReview": "OPEN_UNAFFECTED"
     }
   }

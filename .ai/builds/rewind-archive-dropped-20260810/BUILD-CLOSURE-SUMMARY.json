@@ -1,7 +1,7 @@
 {
   "schema": "sakaan.build-closure-summary.v1",
   "build_id": "rewind-archive-dropped-20260810",
-  "timestamp_ict": "2026-08-11T08:16:48+07:00",
+  "timestamp_ict": "2026-08-11T08:58:32+07:00",
   "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
   "branch": "sakaan/rewind-archive-dropped-20260810",
   "lifecycle": {
@@ -124,6 +124,14 @@
       "status": "ACCEPTED_CONSEQUENCE_V1",
       "name": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY",
       "detail": "Insights analytics count rewound turns because all eight agent/insights.py message reads omit active/compacted filters. This is not a regression: the file is byte-identical at base and P3, with zero such filters at both revisions, and already counted compacted inactive rows. The build changes the population by retaining active=0, compacted=0 rewind rows. No v1 code change is proposed; a future change must explicitly add an active filter or declare that insights intentionally count executed activity."
+    },
+    {
+      "id": "LOW-1",
+      "status": "OBSERVED_LOW_DIAGNOSABILITY_V1",
+      "severity": "LOW",
+      "name": "SWALLOWED_ROLLBACK_CAUSE",
+      "classification": "PRE_EXISTING_NOT_REGRESSION_NOT_CORRECTNESS_NOT_DATA_LOSS",
+      "detail": "_execute_write discards a rollback exception at hermes_state.py:2148-2149. If a lock/busy retry follows a failed rollback, the next BEGIN IMMEDIATE may produce a transaction-nesting error that propagates fail-closed at line 2170, hiding the actual rollback cause. No v1 fix is proposed; suggested remedy is to log or preserve the rollback exception rather than pass."
     }
   ],
   "negative_lifecycle": {
@@ -137,8 +145,8 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "3985f119baa3e336f4b0c47605830e4be04c0eeb44a278191dbb926616403e20",
-    "ledger.json": "9b1d04529ea9fc03eaab41f6d9519a4ef82f56f22b0d434ce83deb956516462b",
+    "README.md": "b5e2a00af65a880be8cf8e9574645c447eda6400819bcfbf4b68b2123ef18319",
+    "ledger.json": "9249e541703261826afd96e12b45f4c6d31c04865dd032a5be4102e5f20bdd7f",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d"
   },
   "per_agent_token_spend": {
@@ -219,13 +227,100 @@
       ],
       "effect": "rewind rows are excluded while compaction archives are retained"
     },
-    "not_covered": [
+    "stage_6_independent_build_review": "OPEN_UNAFFECTED",
+    "not_covered_at_read_path_epoch": [
       "I1 atomicity under the _execute_write locked-retry path",
       "whether the normalizer can mask a genuine mismatch",
       "coordinate-conversion boundaries",
       "mutation spot-checks",
       "the anchoring question of whether the cleared plan was itself wrong"
     ],
+    "superseded_scope_by": "coo_technical_audit"
+  },
+  "coo_technical_audit": {
+    "scope": "SIX_TECHNICAL_AREAS",
+    "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+    "auditor": "COO",
+    "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
+    "areas_covered": [
+      "read-path visibility and analytics population",
+      "_execute_write retry-path safety",
+      "I1 compare/mutate TOCTOU closure",
+      "rewind-history normalizer mismatch resistance",
+      "ordinal and whole-transcript boundaries",
+      "independent ordinal-boolean mutation spot-check"
+    ],
+    "low_observation": {
+      "id": "LOW-1",
+      "severity": "LOW",
+      "classification": "PRE_EXISTING_DIAGNOSABILITY_ONLY_NOT_REGRESSION_NOT_CORRECTNESS_NOT_DATA_LOSS",
+      "source_lines": [
+        2145,
+        2146,
+        2147,
+        2148,
+        2149,
+        2150,
+        2170
+      ],
+      "rollback_cause_discarded": true,
+      "fails_closed": true,
+      "v1_code_change": "NONE_PROPOSED",
+      "suggested_remedy": "log or preserve the rollback exception instead of pass"
+    },
+    "verified_safe": {
+      "retry_path": {
+        "rollback_before_retry_line": 2147,
+        "effect": "successful rollback makes retry re-run against unchanged DB; failed rollback later fails closed",
+        "compare_then_mutate_idempotent_in_effect_across_retries": true
+      },
+      "i1_toctou": {
+        "begin_immediate_line": 2141,
+        "compare_line": 7493,
+        "mutation_lines": [
+          7511,
+          7512,
+          7513,
+          7514,
+          7515
+        ],
+        "closed_inside_i1": true,
+        "m1_acp_window_remains_open": true
+      },
+      "normalizer": {
+        "non_mapping_refused_line": 7331,
+        "unknown_fields_refused_line": 7342,
+        "alias_disagreement_refused_line": 7359,
+        "allow_nan_false_line": 7428,
+        "non_serializable_refused_line": 7430,
+        "missing_sentinel_line": 7320,
+        "deliberate_observed_normalization_lines": [
+          7373,
+          7387
+        ]
+      },
+      "ordinal_boundaries": {
+        "guard_line": 7500,
+        "guard": "type(x) is not int",
+        "empty_active_user_set": "all ordinals fail closed",
+        "ordinal_zero": "valid whole-transcript archive behind upstream 4028 confirmation",
+        "negative_non_integer_boolean": "refused"
+      },
+      "mutation_spot_check": {
+        "performed_by": "COO",
+        "mutation": "type(x) is not int -> not isinstance(x, int)",
+        "exact_named_failure": "test_rejects_invalid_ordinal_without_any_mutation[True]",
+        "other_parametrized_failures": 0,
+        "restored_source_sha256": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
+        "manifest_claim_accurate": true,
+        "test_precisely_discriminating": true
+      }
+    },
+    "seventh_area": {
+      "topic": "whether the cleared plan was itself wrong",
+      "status": "OPEN_FOR_STAGE_6",
+      "structurally_unavailable_to_coo": true
+    },
     "stage_6_independent_build_review": "OPEN_UNAFFECTED"
   }
 }
