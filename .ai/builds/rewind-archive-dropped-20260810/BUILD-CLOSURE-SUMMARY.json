@@ -5,11 +5,11 @@
   "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
   "branch": "sakaan/rewind-archive-dropped-20260810",
   "lifecycle": {
-    "implementation": "REPAIR_COMMITTED",
-    "independent_build_review": "RECHECK_HOLD_RECORDED_NOT_FINAL_INSPECTION",
+    "implementation": "CODE_SUBJECT_COMMITTED_C266DAD38",
+    "independent_build_review": "FINAL_INSPECTION_HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
     "clearance": "NOT_CLEARED",
     "pipeline_closure": "HOLD",
-    "closure_record_git_state": "COMMITTED_ON_BRANCH"
+    "closure_record_git_state": "EVIDENCE_ENVELOPE_COMMITTED_AS_FIRST_RECORD_COMMIT_AFTER_C266DAD38"
   },
   "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
   "actual_implementation_commits": [
@@ -37,6 +37,12 @@
       "role": "Stage 6 bounded repair epoch 1 code/tests",
       "sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
       "tree": "07eded674d1b1352759ef7ff65bd5a84a4314575"
+    },
+    {
+      "sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
+      "subject": "test(rewind): assert sanitizer-erased drift boundary",
+      "classification": "TEST_ONLY_EXECUTABLE_ACCEPTANCE_ASSERTION_NOT_DEFECT_FIX"
     }
   ],
   "three_package_terminal_shas": {
@@ -51,27 +57,29 @@
     "independent_plan_review": "PASS"
   },
   "build_review": {
-    "status": "RECHECK_HOLD_ACCEPTANCE_CLAIM_CORRECTED_NOT_FINAL_INSPECTION",
+    "status": "FINAL_INSPECTION_HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
     "reviewed_implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
     "repair_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "statement": "Independent Stage 6 defect-finding recheck reproduced the gate, mutations, canary, and RED and judged all seven findings genuinely fixed. It returned RECHECK_HOLD because the recorded B-1 sanitize-equivalence limit was materially under-scoped. That COO-originated acceptance wording is corrected; the recheck was not Final Inspection and the build remains NOT_CLEARED.",
+    "statement": "Fresh Final Inspection verified the product clean at c266dad38 across gate, mutations, canary, map chain, decisive test bodies, production hashes, and all seven Stage 6 dispositions. HOLD is solely that the committed record stopped at d540eaee9 and omitted c266dad38. This update repairs the record; it cannot self-grant clearance.",
     "repair_recheck_status": "RECHECK_HOLD_ACCEPTANCE_CLAIM_UNDER_SCOPED",
     "repair_recheck_scope": "INDEPENDENT_DEFECT_FINDING_NOT_FINAL_INSPECTION_NOT_CLEARANCE",
     "repair_recheck_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\reviewer-output-verbatim.txt",
-    "final_inspection": "NOT_PERFORMED",
-    "current_clearance": "NOT_CLEARED"
+    "final_inspection": "PERFORMED_RESULT_HOLD_RECORD_GAP",
+    "current_clearance": "NOT_CLEARED",
+    "reviewed_code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "final_inspection_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json"
   },
   "final_governed_gate": {
     "files": 10,
-    "passed": 1282,
+    "passed": 1285,
     "failed": 0,
-    "seconds": 88.0,
+    "seconds": 89.5,
     "workers": 64,
     "file_retries": 0,
-    "exact_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/FULL-GOVERNED-GATE.txt",
-    "output_sha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
-    "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE_NO_NORMALIZATION"
+    "exact_code_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "evidence": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json",
+    "evidence_sha256": "3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2",
+    "source": "FRESH_FINAL_INSPECTION"
   },
   "mutation_manifests": {
     "P1.C2": {
@@ -121,17 +129,18 @@
   },
   "rollback": {
     "status": "DOCUMENTED_NOT_EXECUTED",
-    "three_package_terminal_command": "git revert --no-edit d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e",
-    "full_to_base_command": "git revert --no-edit d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "three_package_terminal_command": "git revert --no-edit c266dad38dcf1cbf1bcb67b859bd1ff8d0892463 d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e",
+    "full_to_base_command": "git revert --no-edit c266dad38dcf1cbf1bcb67b859bd1ff8d0892463 d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
     "three_commit_effect": "Destructive Restore/Edit/Re-run and retry behavior returns; P3 recovery export is removed; P1.C2 archival primitive remains uncalled.",
-    "full_effect": "All four implementation commits are forward-reverted toward base behavior.",
-    "proof": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY"
+    "full_effect": "Newest-first reversal now includes the c266dad38 boundary-test commit before the repair and prior implementation commits.",
+    "proof": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY",
+    "expected_conflict_note": "Final Inspector warned that rollback may conflict in tests/test_hermes_state.py. Commands remain documented and unexecuted; any rollback is a new authority-gated transaction and must stop on conflict."
   },
   "open_remainders": [
     {
-      "id": "INDEPENDENT_BUILD_REVIEW",
-      "status": "RECHECK_HOLD_RECORDED_FINAL_INSPECTION_NOT_PERFORMED",
-      "detail": "Independent defect-finding recheck occurred and returned RECHECK_HOLD on the under-scoped B-1 acceptance claim. All seven code findings were judged fixed. Final Inspection and clearance have not occurred."
+      "id": "FINAL_INSPECTION",
+      "status": "HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD_RECORD_EXTENSION_COMMITTED_FRESH_REINSPECTION_REQUIRED",
+      "detail": "Fresh Final Inspection passed the product at c266dad38 and held only because the committed record stopped at d540eaee9. This record extension binds c266dad38; only a fresh inspector can issue PASS or clearance."
     },
     {
       "id": "M-1",
@@ -176,10 +185,10 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "8da5005bbd3cd2e36b0040b6729e305d96d3a3c2546a935e031aeb6f54c4edb6",
-    "ledger.json": "2e5e0c5ee17b144f856b8dba7e302c7d0ad725881d2ba6f675b746871098dba4",
+    "README.md": "b7972704e93c1a039724063dc4348072346cc1a996e5936e387e3cfc05952b81",
+    "ledger.json": "1f067a1370dc3cbac3ed0b9a34cc13f4bc6c7f3d48917bd59c3e7ae185d424d7",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
-    "repair-epoch-1/REPAIR-DECISION.md": "693151d481d4adb7f94406fd592c6753db0e0827863e76f30fe45a76739f78b9",
+    "repair-epoch-1/REPAIR-DECISION.md": "ac5f37812444fd3f7e9fe0d6d393eef46413c9aaa01a303445792379613166ed",
     "repair-epoch-1/run_mutations.py": "2f306d055eb0cf0dc0dab7627b23dc8b176440973d6d654b9072fbf268e21067",
     "repair-epoch-1/test_closure_reclassifications.py": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee",
     "repair-epoch-1/mutation-manifest.json": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
@@ -220,13 +229,13 @@
     }
   },
   "pipeline_gate": {
-    "status": "HOLD_REPAIR_RECHECK_REQUIRED",
+    "status": "HOLD_FRESH_FINAL_INSPECTION_REQUIRED_AFTER_RECORD_EXTENSION",
     "exit_code": 1,
     "material_blockers": [
-      "INDEPENDENT_STAGE6_REPAIR_RECHECK_PENDING",
+      "FRESH_FINAL_INSPECTION_REQUIRED_AFTER_RECORD_EXTENSION",
       "SUBMISSION_NOT_GO",
       "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
-      "FINAL_INSPECTION_CLEARANCE_ABSENT",
+      "FINAL_INSPECTION_CLEARANCE_ABSENT_AFTER_RECORD_GAP_HOLD",
       "ROLLBACK_NOT_PROVEN"
     ],
     "historical_schema_findings_retained": true,
@@ -384,7 +393,7 @@
     "repair_code_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
     "repair_code_tree": "07eded674d1b1352759ef7ff65bd5a84a4314575",
     "decision_record": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "decision_record_sha256": "693151d481d4adb7f94406fd592c6753db0e0827863e76f30fe45a76739f78b9",
+    "decision_record_sha256": "ac5f37812444fd3f7e9fe0d6d393eef46413c9aaa01a303445792379613166ed",
     "B-1": {
       "severity": "HIGH",
       "classification": "PLAN_AND_IMPLEMENTATION_DEFECT",
@@ -466,7 +475,7 @@
         "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
       }
     },
-    "clearance": "NOT_CLEARED_FINAL_INSPECTION_NOT_PERFORMED",
+    "clearance": "NOT_CLEARED_FINAL_INSPECTION_HOLD_RECORD_GAP",
     "formal_independent_stage6_recheck": "PERFORMED_DEFECT_FINDING_RECHECK_RESULT_RECHECK_HOLD_NOT_FINAL_INSPECTION",
     "owner_execution_confirmation": "PASS_SEPARATE_FROM_STAGE6_RECHECK",
     "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
@@ -529,7 +538,7 @@
       "failed": 0
     },
     "mutation_manifest_sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
-    "clearance": "NOT_CLEARED_FINAL_INSPECTION_NOT_PERFORMED",
+    "clearance": "NOT_CLEARED_FINAL_INSPECTION_HOLD_RECORD_GAP",
     "formal_independent_stage6_recheck": "PERFORMED_DEFECT_FINDING_RECHECK_RESULT_RECHECK_HOLD_NOT_FINAL_INSPECTION",
     "owner_execution_confirmation": "PASS_SEPARATE_FROM_STAGE6_RECHECK",
     "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
@@ -635,8 +644,106 @@
       "first_run_evidence_commit": "6df1c46afb7848e6c18ff6510186c2b2f8d09910",
       "note": "Reviewer-run duplicates do not overwrite or replace the authoritative first-run receipts."
     },
-    "acceptance_claim_correction": "APPLIED_BY_BUILDER_PENDING_FINAL_INSPECTION; HISTORICAL_RECHECK_VERDICT_REMAINS_RECHECK_HOLD",
-    "code_correctness_ruling": "PASS_ALL_SEVEN_FINDINGS_GENUINELY_FIXED"
+    "acceptance_claim_correction": "APPLIED; EXECUTABLE_BOUNDARY_ASSERTION_COMMITTED_AT_C266DAD38; FINAL_INSPECTION_HOLD_IS_RECORD_COMPLETENESS_ONLY",
+    "code_correctness_ruling": "PASS_ALL_SEVEN_FINDINGS_GENUINELY_FIXED",
+    "code_subject_closeout": {
+      "commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "classification": "EXECUTABLE_ACCEPTANCE_ASSERTION_OF_DOCUMENTED_LIMIT_AND_COMPENSATION_NOT_A_DEFECT_FIX",
+      "test_file": "tests/test_hermes_state.py",
+      "test_file_sha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648",
+      "diff_sha256": "29147a4791a4b6c7f3d98ceedfb86c7a880ec8c61f70f7b821c6d7de897086d2",
+      "cases_added": 3,
+      "assertions": [
+        {
+          "test": "test_rewind_history_accepts_sanitizer_erased_drift_without_sidecar_as_documented_limit[memory-context]",
+          "expected": "ACCEPTED",
+          "detail": "Without api_content, a 66-byte durable value containing <memory-context>EXFIL: arbitrary payload</memory-context> projects to the clean caller representation and the rewind guard accepts it as the documented limit."
+        },
+        {
+          "test": "test_rewind_history_accepts_sanitizer_erased_drift_without_sidecar_as_documented_limit[system-note]",
+          "expected": "ACCEPTED",
+          "detail": "Without api_content, the exact recalled-memory [System note: ...] form erased by sanitize_context is accepted as the same documented equivalence class."
+        },
+        {
+          "test": "test_rewind_history_sidecar_detects_same_memory_context_injection",
+          "expected": "RewindHistoryConflict",
+          "detail": "With api_content present, the same memory-context-bearing durable value conflicts and the failed rewind leaves durable state unchanged."
+        }
+      ],
+      "coverage_limit": "The executable pin covers memory-context and system-note representatives plus the sidecar compensation. It does not claim every member of the broader sanitize_context(...).strip() equivalence class is separately parametrized.",
+      "decision": "PIN_THE_FORCED_REPRESENTATIONAL_LIMIT_DO_NOT_CHANGE_PRODUCTION",
+      "reasoning": "expected_history already contains the replay projection and no longer carries erased raw bytes. Detecting every sanitizer collision without a raw authority would require changing the contract to preserve a universal raw representation or comparing unlike raw/projected strings, which would reintroduce B-1 and make legitimate retry/rewind histories such as trailing-newline projection differences fail forever. The no-sidecar acceptance pin documents that forced information limit; the companion api_content case pins the available exact-byte compensation. On replay the erased span is also absent from model-visible history, so the residual exposure is durable-record/export fidelity rather than model behavior.",
+      "revisit_when": "Revisit if expected_history gains a universally carried raw-content authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows.",
+      "api_content_frequency": "NOT_ESTABLISHED",
+      "api_content_frequency_reason": "api_content remains nullable and conditional, and no repository telemetry establishes prevalence or post-write-drift coverage."
+    },
+    "code_subject_full_gate": {
+      "passed": true,
+      "tests_passed": 1285,
+      "failed": 0,
+      "seconds": 89.5,
+      "workers": 64,
+      "file_retries": 0,
+      "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "source": "FRESH_FINAL_INSPECTION"
+    },
+    "final_inspection": {
+      "verdict": "FINAL_INSPECTION_HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
+      "code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "product_ruling": "PASS_EVERY_VERIFIABLE_PRODUCT_AXIS_ZERO_DIVERGENCE",
+      "record_ruling": "HOLD_RECORD_COMPLETENESS_DEFECT",
+      "clearance": false,
+      "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT",
+      "stdout_raw_json": {
+        "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json",
+        "sha256": "3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2",
+        "bytes": 22273
+      },
+      "wrapper_receipt": {
+        "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\wrapper-receipt.json",
+        "sha256": "2212cc10d47f36a2c2190336b4d7c377203bd376b33cbdb1da8be591ce6d82bf",
+        "bytes": 3206
+      },
+      "session_id": "3b362832-321f-4064-8212-fc161a41b2a3",
+      "route": {
+        "requested_model": "claude-opus-5",
+        "requested_effort": "max",
+        "effective_effort": "max",
+        "observed_models": [
+          "claude-opus-5"
+        ],
+        "auxiliary_models": [],
+        "route_status": "READY_WITH_ROUTE_EVIDENCE",
+        "process_exit": 0
+      },
+      "custody": {
+        "head_at_start": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+        "head_at_end": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+        "status_at_start": "CLEAN",
+        "status_at_end": "CLEAN",
+        "start_observed_ict": "2026-08-11T11:48:46+07:00",
+        "end_observed_ict": "2026-08-11T12:08:24+07:00",
+        "reflog_head_move": false
+      },
+      "observed_gate": {
+        "files": 10,
+        "passed": 1285,
+        "failed": 0,
+        "seconds": 89.5,
+        "workers": 64,
+        "file_retries": 0
+      },
+      "observed_mutations": {
+        "killed": 12,
+        "total": 12,
+        "semantic_divergences": 0,
+        "sources_restored_byte_identical": true
+      },
+      "observed_canary": "PASS_FRESH_P3_CANARY_ALL_RECORDED_FIELDS_AND_REFUSAL_GUARDS",
+      "decisive_test_bodies": "THREE_BYTE_IDENTICAL",
+      "deciding_gap": "The committed record stopped at d540eaee9 and omitted executable B-1 boundary assertion commit c266dad38.",
+      "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY"
+    }
   },
   "raw_receipt_custody": {
     "authority": "RAW_CAPTURED_BYTES",
@@ -730,5 +837,145 @@
     ],
     "reviewer_regenerated_unannotated_manifest": "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/mutation-manifest.generator-output.json",
     "note": "The committed first-run manifest was augmented after generation. The byte-policy fields are annotations, not generator output; substantive mutation and source-restoration claims regenerate independently."
+  },
+  "updated_at_ict": "2026-08-11T12:25:36+07:00",
+  "code_subject": {
+    "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
+    "parent": "1d5c57f41162ea1b8be53dd25375054dc7277254",
+    "scope": "CODE_AND_TEST_SUBJECT_THROUGH_C266DAD38",
+    "production_repair_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "boundary_test_commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "boundary_test_file": "tests/test_hermes_state.py",
+    "boundary_test_file_sha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648",
+    "boundary_test_diff_sha256_from_parent": "29147a4791a4b6c7f3d98ceedfb86c7a880ec8c61f70f7b821c6d7de897086d2",
+    "functional_commits": [
+      "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+      "bc6c801a5734d30543a908c18233728b691e9e9e",
+      "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+      "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+      "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463"
+    ],
+    "record_boundary": "The code subject is the code and tests as committed at c266dad38. The evidence-only commit containing this record is the record OF that subject and is not part of the code subject."
+  },
+  "record_recursion": {
+    "code_subject_exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "record_commit_parent": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "record_commit_identity": "DISCOVER_AS_THE_COMMIT_THAT_FIRST_INTRODUCES_THIS_RECORD_UPDATE",
+    "record_commit_role": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
+    "binding_rule": "candidate.sourceSha, candidate.workingTreeParent, closure.exactSha, clearance.exactSha, and finalInspection.exactSha bind the code subject c266dad38, not the later evidence-envelope HEAD. After this record is committed, a one-commit HEAD difference is intentional only when the complete c266dad38..HEAD diff is record-only and contains no code or test path.",
+    "fail_closed_rule": "Any code/test byte change after c266dad38 creates a new code subject and stales this inspection evidence. Do not recursively rebind the code subject to an evidence-only record commit."
+  },
+  "stage6_closeout_test_commit": {
+    "commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "classification": "EXECUTABLE_ACCEPTANCE_ASSERTION_OF_DOCUMENTED_LIMIT_AND_COMPENSATION_NOT_A_DEFECT_FIX",
+    "test_file": "tests/test_hermes_state.py",
+    "test_file_sha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648",
+    "diff_sha256": "29147a4791a4b6c7f3d98ceedfb86c7a880ec8c61f70f7b821c6d7de897086d2",
+    "cases_added": 3,
+    "assertions": [
+      {
+        "test": "test_rewind_history_accepts_sanitizer_erased_drift_without_sidecar_as_documented_limit[memory-context]",
+        "expected": "ACCEPTED",
+        "detail": "Without api_content, a 66-byte durable value containing <memory-context>EXFIL: arbitrary payload</memory-context> projects to the clean caller representation and the rewind guard accepts it as the documented limit."
+      },
+      {
+        "test": "test_rewind_history_accepts_sanitizer_erased_drift_without_sidecar_as_documented_limit[system-note]",
+        "expected": "ACCEPTED",
+        "detail": "Without api_content, the exact recalled-memory [System note: ...] form erased by sanitize_context is accepted as the same documented equivalence class."
+      },
+      {
+        "test": "test_rewind_history_sidecar_detects_same_memory_context_injection",
+        "expected": "RewindHistoryConflict",
+        "detail": "With api_content present, the same memory-context-bearing durable value conflicts and the failed rewind leaves durable state unchanged."
+      }
+    ],
+    "coverage_limit": "The executable pin covers memory-context and system-note representatives plus the sidecar compensation. It does not claim every member of the broader sanitize_context(...).strip() equivalence class is separately parametrized.",
+    "decision": "PIN_THE_FORCED_REPRESENTATIONAL_LIMIT_DO_NOT_CHANGE_PRODUCTION",
+    "reasoning": "expected_history already contains the replay projection and no longer carries erased raw bytes. Detecting every sanitizer collision without a raw authority would require changing the contract to preserve a universal raw representation or comparing unlike raw/projected strings, which would reintroduce B-1 and make legitimate retry/rewind histories such as trailing-newline projection differences fail forever. The no-sidecar acceptance pin documents that forced information limit; the companion api_content case pins the available exact-byte compensation. On replay the erased span is also absent from model-visible history, so the residual exposure is durable-record/export fidelity rather than model behavior.",
+    "revisit_when": "Revisit if expected_history gains a universally carried raw-content authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows.",
+    "api_content_frequency": "NOT_ESTABLISHED",
+    "api_content_frequency_reason": "api_content remains nullable and conditional, and no repository telemetry establishes prevalence or post-write-drift coverage."
+  },
+  "final_inspection_hold": {
+    "verdict": "FINAL_INSPECTION_HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
+    "code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "product_ruling": "PASS_EVERY_VERIFIABLE_PRODUCT_AXIS_ZERO_DIVERGENCE",
+    "record_ruling": "HOLD_RECORD_COMPLETENESS_DEFECT",
+    "clearance": false,
+    "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT",
+    "stdout_raw_json": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json",
+      "sha256": "3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2",
+      "bytes": 22273
+    },
+    "wrapper_receipt": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\wrapper-receipt.json",
+      "sha256": "2212cc10d47f36a2c2190336b4d7c377203bd376b33cbdb1da8be591ce6d82bf",
+      "bytes": 3206
+    },
+    "session_id": "3b362832-321f-4064-8212-fc161a41b2a3",
+    "route": {
+      "requested_model": "claude-opus-5",
+      "requested_effort": "max",
+      "effective_effort": "max",
+      "observed_models": [
+        "claude-opus-5"
+      ],
+      "auxiliary_models": [],
+      "route_status": "READY_WITH_ROUTE_EVIDENCE",
+      "process_exit": 0
+    },
+    "custody": {
+      "head_at_start": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "head_at_end": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "status_at_start": "CLEAN",
+      "status_at_end": "CLEAN",
+      "start_observed_ict": "2026-08-11T11:48:46+07:00",
+      "end_observed_ict": "2026-08-11T12:08:24+07:00",
+      "reflog_head_move": false
+    },
+    "observed_gate": {
+      "files": 10,
+      "passed": 1285,
+      "failed": 0,
+      "seconds": 89.5,
+      "workers": 64,
+      "file_retries": 0
+    },
+    "observed_mutations": {
+      "killed": 12,
+      "total": 12,
+      "semantic_divergences": 0,
+      "sources_restored_byte_identical": true
+    },
+    "observed_canary": "PASS_FRESH_P3_CANARY_ALL_RECORDED_FIELDS_AND_REFUSAL_GUARDS",
+    "decisive_test_bodies": "THREE_BYTE_IDENTICAL",
+    "deciding_gap": "The committed record stopped at d540eaee9 and omitted executable B-1 boundary assertion commit c266dad38.",
+    "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY"
+  },
+  "historical_governed_gates": {
+    "stage6_repair_code_d540eaee9": {
+      "files": 10,
+      "passed": 1282,
+      "failed": 0,
+      "seconds": 88.0,
+      "workers": 64,
+      "file_retries": 0,
+      "exact_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/FULL-GOVERNED-GATE.txt",
+      "output_sha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE_NO_NORMALIZATION"
+    },
+    "builder_precommit_same_test_bytes_for_c266dad38": {
+      "files": 10,
+      "passed": 1285,
+      "failed": 0,
+      "seconds": 90.8,
+      "workers": 64,
+      "file_retries": 0,
+      "exact_test_file_sha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648"
+    }
   }
 }

@@ -1,14 +1,18 @@
 # Stage 6 Repair Epoch 1 Decision and Evidence
 
-Timestamp (ICT): `2026-08-11T11:05:33+07:00`
+Timestamp (ICT): `2026-08-11T12:25:36+07:00`
 
-Lifecycle: `BUILD_REVIEW_HOLD — STAGE 6 RECHECK_HOLD RECORDED — ACCEPTANCE CLAIM CORRECTED — FINAL INSPECTION NOT PERFORMED`
+Lifecycle: `BUILD_REVIEW_HOLD — FINAL INSPECTION HOLD: RECORD_DOES_NOT_COVER_SUBJECT_HEAD — RECORD EXTENDED TO C266DAD38 — NOT CLEARED`
 
 Repair base: `9048fea8b930600f95790e4d25eb30f3dbdf13cb`
 
 Repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
 Repair code tree: `07eded674d1b1352759ef7ff65bd5a84a4314575`
+
+Reviewed code subject: `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`
+
+Reviewed code-subject tree: `2095ee450d2582f765c604bb579cc6a93397c1ee`
 
 This is the same single authorized bounded repair epoch. It is not a second attempt.
 
@@ -41,6 +45,26 @@ Evidence:
 - M02 rejects normalizing the caller/expected side a second time.
 - M03 rejects stringification of structured content.
 - M04 rejects loss of persisted `api_content` authority.
+
+## Stage 6 close-out assertion and decision
+
+Commit `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` adds three executable acceptance cases to `tests/test_hermes_state.py` (file SHA-256 `a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648`; parent diff SHA-256 `29147a4791a4b6c7f3d98ceedfb86c7a880ec8c61f70f7b821c6d7de897086d2`):
+
+- `test_rewind_history_accepts_sanitizer_erased_drift_without_sidecar_as_documented_limit[memory-context]` asserts that, without `api_content`, the guard **accepts** the 66-byte durable value `answer text \r\n<memory-context>EXFIL: arbitrary payload</memory-context>` because its memory-context span is erased by the replay projection.
+- The same parametrized test's `[system-note]` case asserts acceptance of the exact recalled-memory `[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]` form without a sidecar.
+- `test_rewind_history_sidecar_detects_same_memory_context_injection` asserts that the same memory-context-bearing value raises `RewindHistoryConflict` when `api_content` is present, and that the failed rewind leaves durable state and counters unchanged.
+
+This is an executable assertion of a documented limit and its compensation, **not a production defect fix**. Pinning the no-sidecar acceptance is the correct current decision because `expected_history` already carries the replay projection and has lost the erased bytes. Detecting every sanitizer collision would require a universally preserved raw representation or comparing unlike raw/projected strings. The latter reintroduces the original B-1 failure mode, where a benign trailing-newline projection mismatch made `/retry` fail forever. The no-sidecar pin documents that forced information loss; the sidecar case pins the available byte-exact authority. Since replay also erases the span before model consumption, the residual concern is durable-record/export fidelity rather than model-visible behavior.
+
+The pin is representative, not exhaustive: it covers memory-context and system-note classes, while the broader recorded equivalence class also includes lone fence tags and final `.strip()` collisions. Revisit the production decision if expected history gains a universally carried raw authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows.
+
+`api_content` numeric frequency remains **NOT ESTABLISHED**. The Final Inspector could not establish it either: the sidecar is nullable and conditional, the repository has no prevalence telemetry, and opening one live personal database would be outside the subject and would not establish general prevalence. Coverage of post-write drift on originally sidecar-free rows also remains not established.
+
+## Code subject versus record commit
+
+The reviewed **CODE SUBJECT** is the code and tests exactly at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`, including the production repair at `d540eaee9764fbc3194c493946cd6624f447c3a5` and the close-out assertion at `c266dad38`. The commit that introduces this section is an evidence-only **record OF that code subject**, not part of it.
+
+The subject fields in `ledger.json` intentionally bind `c266dad38`, not the later record-envelope HEAD. The record commit is discovered from Git history as the first commit introducing this section and is not recursively written into its own subject identity. This one-commit difference is valid only while every `c266dad38..HEAD` change is record-only. Any code or test change after `c266dad38` creates a new code subject and invalidates the inspection binding.
 
 ## Other Stage 6 dispositions
 
@@ -116,6 +140,22 @@ The independent defect-finding recheck ran against repair code commit `d540eaee9
 
 The reviewer reproduced `1,282 passed / 0 failed` in `90.5s` (the author run's `88.0s` difference is run variance), killed `12/12` mutations, independently verified byte-identical source restoration with `git hash-object`, reproduced the canary with all exclusions true, and reproduced the RED as 16 failed cases with zero collection/import errors. All seven findings were judged genuinely fixed; B-1 and M-1, including stale `False`, were verified empirically. The deciding HOLD item was the under-scoped B-1 acceptance wording corrected above.
 
-This recheck was scoped as **independent defect finding**, not Final Inspection and not clearance. Its historical verdict remains `RECHECK_HOLD`; this builder-side record correction cannot transform it into PASS. Final Inspection has not occurred, so merge, push, deployment, activation, trading, and orders remain unauthorized.
+This recheck was scoped as **independent defect finding**, not Final Inspection and not clearance. Its historical verdict remains `RECHECK_HOLD`; the later Final Inspection does not rewrite that history.
 
 The reviewer's mutation run regenerated 14 first-run evidence paths. Those reviewer-run bytes are preserved as a distinct second-run set under `repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/`; the original paths were restored byte-for-byte from evidence commit `6df1c46afb7848e6c18ff6510186c2b2f8d09910`. `PROVENANCE.json` binds both sets. No reviewer-run duplicate silently overwrote first-run evidence.
+
+## Fresh Final Inspection at the code subject
+
+Fresh `claude-opus-5`/max Final Inspection ran against `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` and returned `HOLD — RECORD_DOES_NOT_COVER_SUBJECT_HEAD`. It ruled the product clean on every verified axis and identified one record-completeness defect: the committed record stopped at `d540eaee9764fbc3194c493946cd6624f447c3a5` and did not mention the executable B-1 boundary assertion at `c266dad38`.
+
+External receipt directory: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-final-inspection-2-20260811-114827-ICT`
+
+- `stdout.raw.json`: 22,273 bytes; SHA-256 `3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2`
+- `wrapper-receipt.json`: 3,206 bytes; SHA-256 `2212cc10d47f36a2c2190336b4d7c377203bd376b33cbdb1da8be591ce6d82bf`
+- Route: requested and observed `claude-opus-5`, effective effort `max`, zero auxiliary models, process exit `0`.
+- Custody: HEAD `c266dad38` and clean Git status at both `11:48:46` and `12:08:24` ICT; reflog showed no HEAD move.
+- Gate: `1,285/0` in `89.5s`, 64 workers, zero retries.
+- Mutations: `12/12` killed, zero semantic divergence, byte-identical restoration.
+- Canary, map chain, decisive bodies, five production hashes, and all seven Stage 6 dispositions: confirmed.
+
+The historical Final Inspection verdict remains HOLD. This record extension addresses its sole gap but cannot self-grant a PASS or clearance. Merge, push, deployment, activation, trading, and orders remain unauthorized.

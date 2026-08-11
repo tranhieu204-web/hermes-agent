@@ -8,7 +8,9 @@ Implementation terminal before review: `daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb
 
 Stage 6 repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
-Status: `BUILD_REVIEW_HOLD — STAGE 6 RECHECK_HOLD RECORDED — ACCEPTANCE CLAIM CORRECTED — FINAL INSPECTION NOT PERFORMED`
+Reviewed code subject through: `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`
+
+Status: `BUILD_REVIEW_HOLD — FINAL INSPECTION HOLD: RECORD_DOES_NOT_COVER_SUBJECT_HEAD — RECORD EXTENDED TO C266DAD38 — NOT CLEARED`
 
 ## What changed
 
@@ -18,6 +20,7 @@ This build replaces destructive Restore/Edit/Re-run and retry truncation with re
 - **P2** moved gateway `/retry` to recoverable archival, checks durable success before token reset or resend, preserves dirty state after persistence failure, and keeps `/undo`'s message-ID API as an explicit MED-3 divergence.
 - **P3** exposes read-only, one-session JSONL recovery through `hermes sessions export --include-rewound`. Recovery reads raw rows, includes active rows plus `active=0, compacted=0` rewind rows, excludes compacted history, and preserves content bytes that conversation projection would sanitize or strip.
 - **Stage 6 repair epoch 1** fixes B-1 through B-4 and M-1 and corrects B-5/F-R3 and MED-5. The independent defect-finding recheck judged all seven findings genuinely fixed but returned `RECHECK_HOLD` because the recorded B-1 guard limit was materially under-scoped. That acceptance claim is corrected in `repair-epoch-1/REPAIR-DECISION.md`; the recheck was not Final Inspection and did not clear the build.
+- **Stage 6 close-out test commit** `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` adds three executable acceptance cases in `tests/test_hermes_state.py`. Without `api_content`, the rewind guard accepts sanitizer-erased drift for a 66-byte `<memory-context>...` value and the recalled-memory `[System note: ...]` form; with `api_content`, the same memory-context-bearing value raises `RewindHistoryConflict` and leaves durable state unchanged. This commit documents a representational limit and its sidecar compensation; it does not fix a production defect.
 
 Default replay, export, and search remain active-only. Yuanbao recall/redaction, rotated compression, and ordinary hard replacement remain destructive.
 
@@ -40,7 +43,9 @@ HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Sc
   tests/agent/test_insights.py -q
 ```
 
-Repair result on exact restored code: `1,282 passed / 0 failed` across ten files in `88.0s`, with 64 workers and zero file retries. The authoritative raw runner output is bound at `repair-epoch-1/FULL-GOVERNED-GATE.txt` SHA-256 `5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887`.
+Historical repair-code result at `d540eaee9764fbc3194c493946cd6624f447c3a5`: `1,282 passed / 0 failed` across ten files in `88.0s`, with 64 workers and zero file retries. The authoritative raw runner output is bound at `repair-epoch-1/FULL-GOVERNED-GATE.txt` SHA-256 `5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887`.
+
+Current code-subject result at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`: the author gate passed `1,285/0` in `90.8s`; fresh Final Inspection independently passed `1,285/0` in `89.5s`, 64 workers, zero file retries. The Final Inspection receipt is `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-final-inspection-2-20260811-114827-ICT\stdout.raw.json`, SHA-256 `3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2`.
 
 Stage 6 repair mutation runner:
 
@@ -97,7 +102,7 @@ Requirements:
 
 Rollback was documented but **not executed** because no rollback was authorized.
 
-The actual build history contains a P1 prerequisite, three package-terminal commits, and the Stage 6 repair code commit:
+The actual code-subject history contains a P1 prerequisite, three package-terminal commits, the Stage 6 repair code commit, and the Stage 6 close-out test commit:
 
 ```text
 P1 prerequisite: 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e
@@ -105,12 +110,14 @@ P1 terminal:     bc6c801a5734d30543a908c18233728b691e9e9e
 P2 terminal:     1e8bf80feefd668c247e0c569e28131ae0a2bce4
 P3 terminal:     daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb
 Stage 6 repair:  d540eaee9764fbc3194c493946cd6624f447c3a5
+Boundary test:   c266dad38dcf1cbf1bcb67b859bd1ff8d0892463
 ```
 
 Forward-only behavioral rollback of the repair plus three package-terminal commits, newest first:
 
 ```bash
 git revert --no-edit \
+  c266dad38dcf1cbf1bcb67b859bd1ff8d0892463 \
   d540eaee9764fbc3194c493946cd6624f447c3a5 \
   daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb \
   1e8bf80feefd668c247e0c569e28131ae0a2bce4 \
@@ -123,6 +130,7 @@ To revert all build bytes back toward exact base `872c341302b5ed8941f280c3b7939c
 
 ```bash
 git revert --no-edit \
+  c266dad38dcf1cbf1bcb67b859bd1ff8d0892463 \
   d540eaee9764fbc3194c493946cd6624f447c3a5 \
   daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb \
   1e8bf80feefd668c247e0c569e28131ae0a2bce4 \
@@ -130,10 +138,23 @@ git revert --no-edit \
   3235e6b1d41b3b225bc41c5ac8eed4c662a8666e
 ```
 
-Any rollback is a new authority-gated transaction. Stop on conflicts, rerun the governed ten-file gate, read back the new revert SHA, and record whether destructive rewind has returned.
+Any rollback is a new authority-gated transaction. The Final Inspector warned that rollback may conflict in `tests/test_hermes_state.py`; rollback remains documented and unexecuted. Stop on conflicts, rerun the governed ten-file gate, read back the new revert SHA, and record whether destructive rewind has returned.
+
+## Code subject and record recursion
+
+The reviewed **CODE SUBJECT** is the code and tests exactly as committed at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` (tree `2095ee450d2582f765c604bb579cc6a93397c1ee`). The commit that introduces this record update is an evidence-only **record OF that subject**; it is not part of the code subject.
+
+Therefore `candidate.sourceSha`, `candidate.workingTreeParent`, `closure.exactSha`, `clearance.exactSha`, and `finalInspection.exactSha` intentionally bind `c266dad38`, not the later evidence-envelope HEAD. This is not stale only if the complete `c266dad38..HEAD` diff is record-only and contains no code or test path. Any code/test byte change after `c266dad38` creates a new subject and invalidates this binding. The record commit is identified from Git history as the first commit introducing this section; it is not recursively written into its own subject fields.
+
+## Why the B-1 limit is pinned, not normalized
+
+`expected_history` already carries replay-projected content and no longer contains bytes erased by `sanitize_context(...).strip()`. Detecting every collision without another raw authority would require either a universal raw-content field or comparison of unlike raw/projected strings. The latter is the original B-1 failure mode: legitimate projection differences such as the trailing newline made `/retry` fail forever. The executable no-sidecar acceptance cases therefore document a forced information limit, while the companion `api_content` case pins the exact-byte compensation. The erased span is absent from model-visible replay too; the residual concern is durable-record/export fidelity, not model behavior.
+
+This decision is not permanent by assertion alone. Revisit it if expected history gains a universally carried raw authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows. The executable pin currently covers memory-context and system-note representatives, not every member of the broader sanitizer equivalence class.
 
 ## Open remainders
 
+- **Final Inspection:** `HOLD — RECORD_DOES_NOT_COVER_SUBJECT_HEAD`. Fresh `claude-opus-5`/max inspection of `c266dad38` passed the product on every verified axis: `1,285/0`, `12/12` mutations, fresh canary, map chain, decisive bodies, five production hashes, and all seven dispositions. The sole HOLD was that the committed record stopped at `d540eaee9`. This record extension repairs that bookkeeping gap but cannot self-grant clearance. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-final-inspection-2-20260811-114827-ICT\stdout.raw.json`, SHA-256 `3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2`.
 - **Independent Stage 6 recheck:** `RECHECK_HOLD`. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-recheck-20260811-104048-ICT-c4057c52`. The reviewer reproduced `1,282/0` in `90.5s`, killed `12/12` mutations with byte-identical restoration independently verified by `git hash-object`, passed the canary with all exclusions true, and reproduced RED with zero collection/import errors. All seven findings were judged genuinely fixed. The deciding HOLD item was the under-scoped B-1 acceptance wording. This was defect-finding recheck, not Final Inspection or clearance.
 - **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; BUILD HOLD`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. Without a sidecar, every difference collapsed by `sanitize_context(...).strip()` is undetectable—not merely whitespace—including arbitrary-length `<memory-context>...</memory-context>` spans, the recalled-memory `[System note: ...]` form, and fence tags (`agent/memory_manager.py:163-181`, including `:168-181`). The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
 - **`api_content` prevalence:** `NOT ESTABLISHED`. Code proves it is nullable and conditional: no injection or sanitization-changing content can yield zero sidecars; only the current user row is composed/stamped for injected context, run-agent stamping is conditional, gateway/branch sites forward only an existing sidecar, and content rewrites drop stale sidecars. No repository telemetry establishes a percentage, and coverage of post-write drift on originally sidecar-free rows is not established.
@@ -191,6 +212,6 @@ Audit limit:
 
 ## Mechanical closure gate
 
-The lifecycle remains `HOLD`. The Stage 6 defect-finding recheck occurred and its acceptance-claim HOLD is recorded accurately; Final Inspection and clearance have not occurred. Submission, integration, push/remote readback/CI, deployment, activation, and rollback proof also remain absent or unauthorized. No finding or recheck verdict was rewritten to manufacture PASS.
+The lifecycle remains `HOLD`. Final Inspection occurred against code subject `c266dad38` and passed the product, but returned `RECORD_DOES_NOT_COVER_SUBJECT_HEAD`; this record-only update addresses that exact gap. It does not retroactively transform the historical HOLD into PASS and cannot self-clear. Submission, integration, push/remote readback/CI, deployment, activation, and rollback proof remain absent or unauthorized.
 
 See `BUILD-CLOSURE-SUMMARY.json` and `repair-epoch-1/REPAIR-DECISION.md` for the bound repair record. This note documents repair completion only; it does not claim build clearance or pipeline closure.
