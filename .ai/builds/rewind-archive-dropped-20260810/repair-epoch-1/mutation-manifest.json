@@ -1,0 +1,201 @@
+{
+  "schema": "rewind-stage6-repair-mutation-manifest-v1",
+  "base_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+  "mutation_count": 12,
+  "all_mutations_failed_named_tests": true,
+  "all_sources_restored_byte_identical": true,
+  "per_file_source_baseline_sha256": {
+    "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+    "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+    "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+    "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+    "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+  },
+  "per_file_source_restored_sha256": {
+    "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+    "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+    "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+    "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+    "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+  },
+  "mutations": [
+    {
+      "id": "M01_B1_REMOVE_STRING_REPLAY_PROJECTION",
+      "file": "hermes_state.py",
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M01_B1_REMOVE_STRING_REPLAY_PROJECTION.txt",
+      "output_sha256": "4edb44f7bdda856244619115e3a3872891af7e9509736c7ea087abf6fc8df0d6",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M02_B1_NORMALIZE_EXPECTED_SIDE_TOO",
+      "file": "hermes_state.py",
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M02_B1_NORMALIZE_EXPECTED_SIDE_TOO.txt",
+      "output_sha256": "3bf5a9d52c98261a4f66c1e9785fd5bf100646314b02f2ed24bc78319ba2d730",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M03_B1_STRINGIFY_STRUCTURED_CONTENT",
+      "file": "hermes_state.py",
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M03_B1_STRINGIFY_STRUCTURED_CONTENT.txt",
+      "output_sha256": "818f7a5acba490870dcfc68844cc8059f803fea63af494334040cd18e11433a1",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY",
+      "file": "hermes_state.py",
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY.txt",
+      "output_sha256": "6e273121451c50f0767f4feb9861ec7d580c00bba33c2f3edbd6aebdea6c0850",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD",
+      "file": "hermes_cli/main.py",
+      "selector": "tests/hermes_cli/test_sessions_export_md_cli.py::test_delete_after_verified_refuses_rewind_rows_missing_from_export",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD.txt",
+      "output_sha256": "94ac69a33d649a150981897bec1e42469d7256aa9beee93cbd56507131a71f4f",
+      "source_restored_sha256": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH",
+      "file": "gateway/session.py",
+      "selector": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_selects_count_coordinate_inside_durable_transaction",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH.txt",
+      "output_sha256": "7d2d8d7d30aa70b7ed9231b7ac6b6e52653f065913e259179454d32fb0871e83",
+      "source_restored_sha256": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M07_B3_DISABLE_COMPRESSION_GUARD",
+      "file": "hermes_state.py",
+      "selector": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_refuses_compression_closed_session",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M07_B3_DISABLE_COMPRESSION_GUARD.txt",
+      "output_sha256": "da9219febf988b0723f388fb6745e286c542e7fbb4bd424c0e8ab24059a09b68",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M08_B3_CORRUPT_COUNTER_RECONCILIATION",
+      "file": "hermes_state.py",
+      "selector": "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_repairs_live_counters",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M08_B3_CORRUPT_COUNTER_RECONCILIATION.txt",
+      "output_sha256": "625e8313bf1a529328da819efe31b987f85a82606babb1b5dfd5ce4f4b6d28a9",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK",
+      "file": "acp_adapter/session.py",
+      "selector": "tests/acp/test_session.py::TestListAndCleanup::test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK.txt",
+      "output_sha256": "a306f0b214604fda0b6203c285e99b402ae1a75ca4fc90a07f07270f1d743e8f",
+      "source_restored_sha256": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD",
+      "file": "hermes_state.py",
+      "selector": "tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_has_no_dead_round_trip_guard",
+      "replacement_occurrences": 1,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD.txt",
+      "output_sha256": "b3cbde644d3f786be6574a2412b6cb9adba2af71e2d724772d5c35c07ac2170f",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS",
+      "file": "agent/insights.py",
+      "selector": "tests/agent/test_insights.py::TestInsightsPopulated::test_insights_excludes_rewound_rows_without_excluding_compaction_archives",
+      "replacement_occurrences": 6,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS.txt",
+      "output_sha256": "50268294c49633f8b64cb05ebd2e3a6301a03f5fb433ea52390628507b2af7a1",
+      "source_restored_sha256": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    },
+    {
+      "id": "M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS",
+      "file": "agent/insights.py",
+      "selector": "tests/agent/test_insights.py::TestInsightsPopulated::test_insights_excludes_rewound_rows_without_excluding_compaction_archives",
+      "replacement_occurrences": 2,
+      "mutated_exit_code": 1,
+      "named_test_failed": true,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS.txt",
+      "output_sha256": "bf0fc4872ea25b27f8728bb1b4b4ea29c422870a381e5987f03f532a595bd8ce",
+      "source_restored_sha256": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+      "source_restored_byte_identical": true,
+      "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+    }
+  ],
+  "restored_focused_gate": {
+    "selectors": [
+      "tests/acp/test_session.py::TestListAndCleanup::test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked",
+      "tests/agent/test_insights.py::TestInsightsPopulated::test_insights_excludes_rewound_rows_without_excluding_compaction_archives",
+      "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_refuses_compression_closed_session",
+      "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_repairs_live_counters",
+      "tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_selects_count_coordinate_inside_durable_transaction",
+      "tests/hermes_cli/test_sessions_export_md_cli.py::test_delete_after_verified_refuses_rewind_rows_missing_from_export",
+      "tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_has_no_dead_round_trip_guard",
+      "tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows",
+      "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift"
+    ],
+    "exit_code": 0,
+    "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RESTORED-FOCUSED-GREEN.txt",
+    "output_sha256": "ff21789bbec7300827b55c414ba900fe676cce4700c876fc90ee1fd23472a06c",
+    "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE"
+  },
+  "receipt_byte_policy": {
+    "authoritative": "raw captured bytes",
+    "normalization": "NONE",
+    "note": "Whitespace and mixed line endings in captured pytest/runner output are evidence bytes and are not stripped or canonicalized."
+  }
+}

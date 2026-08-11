@@ -18,16 +18,16 @@
     "planner": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder-authored execution map",
     "builder": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 sole builder-finalizer; assurance-excluded",
     "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder meta-audit; not assurance",
-    "finalInspector": "PENDING fresh-epoch recheck by the same independent Claude Code claude-opus-5 HIGH reviewer",
+    "finalInspector": "PENDING same-route independent Stage 6 recheck by eligible reviewer",
     "reviewers": [
-      "PENDING one fresh COO-transported Claude Code claude-opus-5 HIGH reviewer"
+      "PENDING same-route independent Stage 6 repair recheck"
     ]
   },
   "requirements": [
     {
       "id": "R1",
       "status": "CANDIDATE_VERIFIED",
-      "evidence": "CANDIDATE_VERIFIED: transactional soft rewind and strict ordering remain covered by final 1195/1195 gate."
+      "evidence": "CANDIDATE_VERIFIED: transactional soft rewind and strict ordering remain covered by repair final 1282/1282 gate."
     },
     {
       "id": "R2",
@@ -98,7 +98,7 @@
     {
       "id": "T3b",
       "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/acp/test_session.py -q",
-      "output": "ACP file: 46 passed / 0 failed; successful-probe branch preserves exact rewind rows; fail-open/TOCTOU residual explicitly remains",
+      "output": "Historical ACP baseline: 46 passed / 0 failed; successful-probe branch preserved exact rewind rows. The then-observed fail-open/TOCTOU condition was reclassified as defect M-1 and fixed by Stage 6 repair.",
       "discovered": 46,
       "passed": 46,
       "failed": 0
@@ -169,6 +169,16 @@
       "command": "HERMES_PYTHON=... scripts/run_tests.sh --file-retries 0 <eight P1+P2+P3 files> -q",
       "output": "8 files; actual 1195 tests; 1195 passed / 0 failed in 83.7s",
       "receipt": "P3-C2-RECEIPT.md sha256 d93f6ac0c654e3fa57e4596077c7cb9f58ab39215254d27a16efddfa7961cffa"
+    },
+    {
+      "id": "STAGE6-REPAIR-FULL-GATE",
+      "command": "HERMES_PYTHON=./.venv/Scripts/python.exe scripts/run_tests.sh --file-retries 0 <10 governed files> -q",
+      "output": "10 files; 1282 passed / 0 failed in 88.0s; 64 workers; zero file retries",
+      "discovered": 1282,
+      "passed": 1282,
+      "failed": 0,
+      "exactCodeSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "receipt": "repair-epoch-1/FULL-GOVERNED-GATE.txt sha256 5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887"
     }
   ],
   "mutation": [
@@ -201,26 +211,35 @@
       "mutatedResult": "16/16 named assertion failures",
       "restoredResult": "59/59 restored focused gate; all source hashes exact",
       "output": "mutation-p3/manifest.json sha256 ccb83ec27dc4d395cab0d1d1d2869b349c6c394bfe11cb8090f0032a20b1022c; all_mutations_failed_named_tests=true; source_restored_byte_identical=true"
+    },
+    {
+      "id": "STAGE6-REPAIR-M01-M12",
+      "method": "one logical guard mutation at a time; direct named pytest; reject collection/import/syntax/setup/zero-discovery; restore exact bytes after every mutation",
+      "mutatedResult": "12/12 mutations failed named tests",
+      "restoredResult": "10/10 restored focused tests passed; all five production source hashes exact",
+      "output": "repair-epoch-1/mutation-manifest.json sha256 f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0; all_mutations_failed_named_tests=true; all_sources_restored_byte_identical=true"
     }
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "sourceSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "state": "IMPLEMENTATION_COMMITTED_BUILD_REVIEW_PENDING",
-    "workingTreeParentCommit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "workingTreeParent": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "uncommittedSourceSha256": {
-      "hermes_cli/main.py": "577298a0b4378f3160bdac31a42f3c53a9e2fe190b1a7cbc3359a28ba5b3de0d",
-      "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
-      "acp_adapter/session.py": "39f2b146e044c193e464056f58b6a8ce2e988e18ab8a5983a107247294ad2a1d"
+    "reverifiedSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "state": "STAGE6_REPAIR_COMMITTED_BUILD_REVIEW_HOLD_RECHECK_PENDING",
+    "workingTreeParentCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "workingTreeParent": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "committedSourceSha256": {
+      "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+      "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+      "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+      "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+      "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
     }
   },
   "submission": {
-    "verdict": "PENDING_BUILD_REVIEW",
-    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "receipt": "Implementation committed locally; not cleared for submission"
+    "verdict": "HOLD_INDEPENDENT_RECHECK_PENDING",
+    "exactSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "receipt": "Stage 6 repair committed locally; not cleared for submission"
   },
   "push": {
     "status": "PENDING",
@@ -242,15 +261,18 @@
     "rationale": "Current authorized lifecycle is source candidate and dual-repository port only; no deploy or packaged artifact authority"
   },
   "finalInspection": {
-    "status": "PENDING_BUILD_REVIEW",
-    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "status": "HOLD_REPAIR_RECHECK_PENDING",
+    "exactSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
     "artifactSha256": "NOT_APPLICABLE",
-    "receipt": "No independent build review or final inspection"
+    "receipt": "Independent Stage 6 HOLD remains until repair recheck",
+    "repairedCodeIndependentStage6Review": "NOT_PERFORMED",
+    "ownerExecutionConfirmationIsFormalStage6Recheck": false
   },
   "clearance": {
-    "status": "PENDING",
-    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "receipt": "No build clearance"
+    "status": "HOLD",
+    "exactSha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "receipt": "No build clearance; repair recheck pending",
+    "reason": "Repaired code commit d540eaee9764fbc3194c493946cd6624f447c3a5 has had no independent Stage 6 review; formal same-route recheck is required."
   },
   "deployment": {
     "required": false,
@@ -266,7 +288,7 @@
     "consumerTest": "PENDING"
   },
   "rollback": {
-    "command": "Behavioral rollback of package terminal commits: git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e. Full rollback to base also reverts prerequisite 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e.",
+    "command": "Behavioral rollback newest first: git revert --no-edit d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e. Full rollback to base also reverts prerequisite 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e.",
     "testStatus": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY",
     "priorIdentity": "872c341302b5ed8941f280c3b7939cabba930b5a",
     "postRollbackReadback": "PENDING_IF_ROLLBACK_AUTHORIZED",
@@ -289,8 +311,8 @@
   "remainder": [
     {
       "id": "F-R3",
-      "state": "RESOLVED_P1_C3",
-      "evidence": "Preserve pre-I1 4004 for a present non-integer prompt ordinal; bound by TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1 and P1-C3-RECEIPT.md."
+      "state": "NARROWS_ACCEPTED_INPUT_SET",
+      "evidence": "Corrected record: pre-I1 4004 for present non-integer prompt ordinal narrows accepted input; it is not preservation."
     },
     {
       "id": "P1.C3",
@@ -300,18 +322,48 @@
     {
       "id": "P3.C2",
       "state": "COMMITTED",
-      "evidence": "Committed at daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb; raw one-session JSONL recovery; 16/16 mutations; isolated canaries PASS; final gate 1195/1195; MED-4 and M-1 explicit."
+      "evidence": "Committed at daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb; raw one-session JSONL recovery; 16/16 mutations; isolated canaries PASS; final gate 1195/1195; Historical MED-4 and M-1 dispositions superseded by Stage 6 repair."
     },
     {
       "id": "MED-5",
-      "state": "ACCEPTED_CONSEQUENCE_V1",
-      "evidence": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY. agent/insights.py is byte-identical from base 872c341302b5ed8941f280c3b7939cabba930b5a through P3 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb. Its eight message reads have zero m.active/m.compacted filters at both revisions, so this is not a regression. The build adds persistent active=0, compacted=0 rewind rows to the population counted by tool-usage and tool-call analytics. No v1 code change; future disposition is an explicit active filter or a declaration that insights count executed activity."
+      "state": "REGRESSION_DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Prior not-a-regression framing withdrawn. Retained rewind rows caused retried turns to be double-counted. Repair applies active-or-compacted visibility to all insights message reads, excluding rewind rows while retaining compaction archives."
     },
     {
       "id": "LOW-1",
       "state": "OBSERVED_LOW_DIAGNOSABILITY_V1",
       "severity": "LOW",
       "evidence": "SWALLOWED_ROLLBACK_CAUSE. hermes_state.py _execute_write lines 2145-2150 discard a rollback exception. A lock/busy retry can then surface a transaction-nesting error at line 2170 rather than the rollback cause. This fails closed; it is pre-existing, not introduced by this build, and is neither correctness nor data loss. No v1 fix proposed; suggested remedy is to log or preserve the rollback exception instead of pass."
+    },
+    {
+      "id": "B-1",
+      "state": "HIGH_FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Projected replay content is canonical; durable string side is sanitize/strip projected, structured content stays decoded JSON, api_content stays byte-exact. Whitespace-only string drift already erased from expected_history is undetectable by construction; see repair-epoch-1/REPAIR-DECISION.md."
+    },
+    {
+      "id": "B-2",
+      "state": "FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Destructive export refuses deletion when ordinary export omits rewind rows or coverage probe fails."
+    },
+    {
+      "id": "B-3",
+      "state": "FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Count selection, compression guard, archival, counters, and head are one write transaction."
+    },
+    {
+      "id": "M-1",
+      "state": "DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Accepted-residual classification withdrawn; probe retries/fails closed and replacement rechecks archived rows under its own write transaction."
+    },
+    {
+      "id": "B-4",
+      "state": "FIXED_PENDING_INDEPENDENT_RECHECK",
+      "evidence": "Dead round-trip guard removed; direct type/range/role checks retained."
+    },
+    {
+      "id": "B-5",
+      "state": "CORRECTED_RECORD",
+      "evidence": "F-R3 wording corrected from preservation to narrowed accepted input set."
     }
   ],
   "stages": {
@@ -332,22 +384,22 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "IMPLEMENTATION_COMMITTED",
-      "receipt": "P3 commit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb; final governed gate 1195/1195; P3 mutation 16/16; canary PASS"
+      "status": "STAGE6_REPAIR_COMMITTED",
+      "receipt": "Repair code d540eaee9764fbc3194c493946cd6624f447c3a5; full gate 1282/1282"
     },
     "adversarial": {
       "sequence": 5,
-      "status": "P3_MUTATION_PASS",
-      "receipt": "P3 M01-M16 PASS; manifest b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217"
+      "status": "STAGE6_REPAIR_MUTATION_PASS",
+      "receipt": "12/12 named failures; manifest f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0; exact restoration"
     },
     "independentReview": {
       "sequence": 6,
-      "status": "PENDING_BUILD_REVIEW",
-      "receipt": "Only execution plan v3.2 was independently reviewed. No independent review of committed build daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb has occurred."
+      "status": "BUILD_REVIEW_HOLD_REPAIR_RECHECK_PENDING",
+      "receipt": "Independent Stage 6 found defects; repair code d540eaee9764fbc3194c493946cd6624f447c3a5 awaits same-route recheck."
     },
     "metaAudit": {
       "sequence": 7,
-      "status": "PENDING"
+      "status": "DIRECT_REPAIR_VERIFIED_NOT_INDEPENDENTLY_CLEARED"
     },
     "submission": {
       "sequence": 8,
@@ -387,13 +439,13 @@
     },
     "close": {
       "sequence": 17,
-      "status": "DOCUMENTED_NOT_CLOSED",
-      "receipt": "Closure record written locally; independent BUILD review, integration, push, CI, clearance, deployment, and activation remain incomplete or not authorized."
+      "status": "DOCUMENTED_HOLD_RECHECK_PENDING",
+      "receipt": "Repair records committed locally; independent recheck and later lifecycle gates remain incomplete or unauthorized."
     }
   },
   "closure": {
-    "status": "OPEN_BUILD_REVIEW_PENDING",
-    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb"
+    "status": "BUILD_REVIEW_HOLD_REPAIR_RECHECK_PENDING",
+    "exactSha": "d540eaee9764fbc3194c493946cd6624f447c3a5"
   },
   "bindings": {
     "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
@@ -420,9 +472,24 @@
     "p3MutationManifestSha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
     "p3CanaryRunsSha256": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
     "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
-    "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
+    "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5",
+    "stage6RepairDecisionPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
+    "stage6RepairDecisionSha256": "7b6d1595710fafc0ab1389ac0514bf3adabb762933ba5642d9de25ebcced44d0",
+    "stage6RepairMutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+    "stage6RepairFullGateSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+    "stage6RepairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "rawReceiptBindings": {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RAW-RECEIPT-BINDINGS.json",
+      "sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+      "authority": "RAW_CAPTURED_BYTES",
+      "normalization": "NONE"
+    },
+    "repairDecision": {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
+      "sha256": "7b6d1595710fafc0ab1389ac0514bf3adabb762933ba5642d9de25ebcced44d0"
+    }
   },
-  "updatedAt": "2026-08-11T08:58:32+07:00",
+  "updatedAt": "2026-08-11T10:36:39+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -610,7 +677,7 @@
       "verdict": "S04_IN_SCOPE_SURFACE_WITHOUT_FAIL_CAPABLE_RED"
     },
     "v3RepairEpoch": {
-      "status": "SUPERSEDED_BEFORE_RESCAN_BY_V3_1",
+      "status": "HISTORICAL_PLAN_PASS_OVERTURNED_BY_STAGE6_BUILD_REVIEW",
       "mapPath": "execution-map-v3.json",
       "mapRoot": "898741e5925f00e6bc4da949877c98709f9ee02f3bb6fc79c317a2b09f7ace12",
       "artifactSha256": "9e46a8590caf081630bdeca2e2014d9f1719be14da544a16a8e72e37e4b11ded",
@@ -630,8 +697,8 @@
         {
           "id": "M-1",
           "rank": "MEDIUM",
-          "status": "ADJUDICATED_RESIDUAL_CONTROL_ONLY",
-          "record": "ACP probe is fail-open/TOCTOU; production fix excluded as disproportionate pre-existing fallback redesign; P3 preservation control required; residual not cleared."
+          "status": "DEFECT_FIXED_IN_STAGE6_REPAIR_PENDING_RECHECK",
+          "record": "Prior residual adjudication overturned: lock contention and stale probe results selected destruction. Repair adds bounded read retry/fail-closed behavior and authoritative in-transaction archive recheck."
         },
         {
           "id": "M-5",
@@ -691,9 +758,10 @@
   },
   "attemptCounters": {
     "planReviewSemanticAttemptsConsumed": 2,
-    "buildSemanticAttemptsConsumed": 1,
+    "buildSemanticAttemptsConsumed": 2,
     "transportRetries": 0,
-    "redSemanticExecutionsConsumed": 1
+    "redSemanticExecutionsConsumed": 1,
+    "boundedRepairEpochsConsumed": 1
   },
   "checkpoints": {
     "P1.C2": {
@@ -769,7 +837,7 @@
         "action": "VERIFIED_ALREADY_CORRECT_NO_EDIT_REQUIRED"
       },
       "fR3": {
-        "decision": "PRESERVE_4004_PRE_I1",
+        "decision": "NARROWS_ACCEPTED_INPUT_SET_PRE_I1_4004",
         "test": "TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1"
       },
       "localeVerification": {
@@ -842,24 +910,57 @@
       "canary": "2 / 2 fresh disposable runs PASS",
       "finalGate": "1195 passed / 0 failed in 83.7s",
       "commit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb"
+    },
+    "STAGE6-REPAIR-EPOCH-1": {
+      "status": "COMMITTED_DIRECT_VERIFIED_INDEPENDENT_RECHECK_PENDING",
+      "baseCommit": "9048fea8b930600f95790e4d25eb30f3dbdf13cb",
+      "codeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "codeTree": "07eded674d1b1352759ef7ff65bd5a84a4314575",
+      "red": "16 intended failures on exact repair base; no setup/import/collection failure accepted",
+      "gate": {
+        "files": 10,
+        "tests": 1282,
+        "passed": 1282,
+        "failed": 0,
+        "seconds": 88.0,
+        "workers": 64,
+        "fileRetries": 0,
+        "outputSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887"
+      },
+      "mutation": {
+        "count": 12,
+        "manifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+        "allMutationsFailedNamedTests": true,
+        "allSourcesRestoredByteIdentical": true,
+        "sourceRestoredSha256": {
+          "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+          "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+          "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+          "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+          "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+        }
+      },
+      "decision": "repair-epoch-1/REPAIR-DECISION.md sha256 7b6d1595710fafc0ab1389ac0514bf3adabb762933ba5642d9de25ebcced44d0",
+      "formalIndependentStage6Recheck": "NOT_PERFORMED",
+      "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
     }
   },
   "closureRecord": {
     "stage": "18b",
-    "status": "DOCUMENTED_COMMITTED_NOT_CLEARED",
+    "status": "DOCUMENTED_REPAIR_COMMITTED_NOT_CLEARED",
     "readme": ".ai/builds/rewind-archive-dropped-20260810/README.md",
     "summary": ".ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
-    "implementationCommit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "independentBuildReview": "PENDING",
+    "implementationCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "independentBuildReview": "HOLD_REPAIR_RECHECK_PENDING_NOT_PERFORMED_ON_REPAIRED_CODE",
     "merged": false,
     "pushed": false,
     "deployed": false,
     "activated": false,
     "pipelineGate": {
-      "status": "HOLD_PIPELINE_GATE_FAILED",
+      "status": "HOLD_REPAIR_RECHECK_REQUIRED",
       "exitCode": 1,
       "materialBlockers": [
-        "INDEPENDENT_BUILD_REVIEW_PENDING",
+        "INDEPENDENT_STAGE6_REPAIR_RECHECK_PENDING",
         "SUBMISSION_NOT_GO",
         "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
         "FINAL_INSPECTION_CLEARANCE_ABSENT",
@@ -869,10 +970,9 @@
     },
     "readPathAudit": {
       "scope": "READ_PATH_ONLY",
-      "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+      "status": "SUPERSEDED_BY_STAGE6_HOLD_AND_REPAIR",
       "auditor": "COO",
       "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
-      "acceptedConsequence": "MED-5",
       "positiveFinding": "SEARCH_FILTERING_CORRECT_AND_CONSISTENT",
       "searchEvidence": {
         "named_fts_lines": [
@@ -888,7 +988,7 @@
           8611
         ]
       },
-      "independentBuildReview": "OPEN_UNAFFECTED",
+      "independentBuildReview": "HOLD_REPAIR_RECHECK_PENDING",
       "notCoveredAtThatEpoch": [
         "I1 atomicity under the _execute_write locked-retry path",
         "whether the normalizer can mask a genuine mismatch",
@@ -896,11 +996,12 @@
         "mutation spot-checks",
         "whether the cleared plan was itself wrong"
       ],
-      "supersededScopeBy": "closureRecord.deeperCooAudit"
+      "supersededScopeBy": "closureRecord.deeperCooAudit",
+      "med5Reclassification": "REGRESSION_DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK"
     },
     "deeperCooAudit": {
       "scope": "SIX_TECHNICAL_AREAS",
-      "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+      "status": "SUPERSEDED_BY_INDEPENDENT_STAGE6_HOLD_AND_REPAIR",
       "auditor": "COO",
       "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
       "areasCovered": [
@@ -929,10 +1030,129 @@
       },
       "seventhArea": {
         "topic": "whether the cleared plan was itself wrong",
-        "status": "OPEN_FOR_STAGE_6",
-        "reason": "structurally unavailable to materially contributing COO"
+        "status": "PLAN_DEFECT_CONFIRMED_AS_B1_REPAIRED_RECHECK_PENDING",
+        "reason": "v3.2 omitted canonical-representation choice; repair is directly verified but not independently cleared"
       },
-      "independentBuildReview": "OPEN_UNAFFECTED"
+      "independentBuildReview": "HOLD_REPAIR_RECHECK_PENDING"
+    },
+    "repairEpoch1": {
+      "lifecycle": "BUILD_REVIEW_HOLD",
+      "codeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "B-1": {
+        "disposition": "FIXED",
+        "canonicalRepresentation": "projected_content",
+        "guardLimit": "For ordinary string content, whitespace-only drift is undetectable by construction because expected_history no longer carries it; api_content closes the gap where present. The guard is not unqualified byte-exact.",
+        "rootCause": "Byte-exact comparison was specified without stating which representation is canonical."
+      },
+      "B-2": {
+        "disposition": "FIXED"
+      },
+      "B-3": {
+        "disposition": "FIXED"
+      },
+      "M-1": {
+        "classification": "DEFECT",
+        "disposition": "FIXED",
+        "rootCause": "has_archived_messages had no retry while replace_messages retried through _execute_write, so lock contention systematically selected destruction."
+      },
+      "B-4": {
+        "disposition": "FIXED"
+      },
+      "B-5": {
+        "disposition": "CORRECTED_RECORD"
+      },
+      "MED-5": {
+        "classification": "REGRESSION_DEFECT",
+        "disposition": "FIXED",
+        "correction": "Retried turns were double-counted; the earlier not-a-regression framing was wrong and is withdrawn."
+      },
+      "F-R3": {
+        "disposition": "NARROWS_ACCEPTED_INPUT_SET"
+      },
+      "fullGate": {
+        "passed": true,
+        "tests": 1282,
+        "failed": 0
+      },
+      "mutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+      "clearance": "NOT_CLEARED_PENDING_INDEPENDENT_RECHECK",
+      "formalIndependentStage6Recheck": "NOT_PERFORMED",
+      "ownerExecutionConfirmation": "PASS_NOT_FORMAL_STAGE6_RECHECK",
+      "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+    },
+    "stage6RepairEpoch1": {
+      "lifecycle": "BUILD_REVIEW_HOLD",
+      "codeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "findings": [
+        {
+          "id": "B-1",
+          "severity": "HIGH",
+          "disposition": "FIXED_ONE_WAY_CANONICAL_PROJECTION",
+          "canonical_representation": "projected_content",
+          "guard_limit": "For ordinary string content, whitespace-only drift is undetectable by construction because expected_history no longer carries it; api_content closes the gap where present. The guard is not unqualified byte-exact.",
+          "root_cause": "Byte-exact comparison was specified without stating which representation is canonical."
+        },
+        {
+          "id": "B-2",
+          "severity": "MEDIUM",
+          "disposition": "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"
+        },
+        {
+          "id": "B-3",
+          "severity": "MEDIUM",
+          "disposition": "FIXED_TRANSACTIONAL_UNDO_PARITY"
+        },
+        {
+          "id": "B-4",
+          "severity": "LOW",
+          "disposition": "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"
+        },
+        {
+          "id": "B-5",
+          "severity": "LOW",
+          "disposition": "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"
+        },
+        {
+          "id": "M-1",
+          "severity": "MEDIUM",
+          "classification": "DEFECT",
+          "disposition": "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED",
+          "root_cause": "has_archived_messages had no retry while replace_messages retried through _execute_write, so lock contention systematically selected destruction."
+        },
+        {
+          "id": "MED-5",
+          "classification": "REGRESSION_DEFECT",
+          "disposition": "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED",
+          "correction": "Retried turns were double-counted; the earlier not-a-regression framing was wrong and is withdrawn."
+        }
+      ],
+      "fullGate": {
+        "passed": true,
+        "tests": 1282,
+        "failed": 0
+      },
+      "mutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+      "clearance": "NOT_CLEARED_PENDING_INDEPENDENT_RECHECK",
+      "formalIndependentStage6Recheck": "NOT_PERFORMED",
+      "ownerExecutionConfirmation": "PASS_NOT_FORMAL_STAGE6_RECHECK",
+      "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+    },
+    "ownerExecutionConfirmation": {
+      "status": "PASS",
+      "scope": [
+        "B-1 documented trailing-newline trigger",
+        "B-1 structured-content case"
+      ],
+      "candidate": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "formalStage6IndependentRecheck": false
+    },
+    "rawReceiptCustody": {
+      "authority": "RAW_CAPTURED_BYTES",
+      "bindingPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RAW-RECEIPT-BINDINGS.json",
+      "bindingSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+      "genericWhitespaceCheck": "SCOPED_TO_NON_RECEIPT_PACKET_FILES",
+      "hashMethod": "SHA-256 over Path.read_bytes(); no normalization",
+      "disclosure": "A rejected packaging attempt normalized CRLF to LF. Exact captured newline topology was restored before binding; full-gate and RED hashes match pre-normalization anchors."
     }
   }
 }

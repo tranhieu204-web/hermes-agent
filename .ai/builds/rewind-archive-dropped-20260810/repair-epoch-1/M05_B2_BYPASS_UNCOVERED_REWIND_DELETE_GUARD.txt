@@ -1,0 +1,60 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_____ test_delete_after_verified_refuses_rewind_rows_missing_from_export ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002460C4B50F0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4256/test_delete_after_verified_ref0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000002460DFFEE40>
+
+    def test_delete_after_verified_refuses_rewind_rows_missing_from_export(
+        monkeypatch, tmp_path, capsys
+    ):
+        """B-2: active-only verification cannot authorize deleting rewound rows."""
+        import hermes_cli.main as main_mod
+        import hermes_state
+    
+        db_path = tmp_path / "state.db"
+        real_session_db = hermes_state.SessionDB
+        db = real_session_db(db_path)
+        db.create_session("rewound-delete", "cli")
+        db.append_message("rewound-delete", "user", "retained")
+        db.append_message("rewound-delete", "assistant", "retained reply")
+        db.append_message("rewound-delete", "user", "rewound")
+        db.append_message("rewound-delete", "assistant", "rewound reply")
+        db.rewind_active_history(
+            "rewound-delete",
+            expected_history=db.get_messages("rewound-delete"),
+            truncate_before_user_ordinal=1,
+        )
+        db.close()
+    
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: real_session_db(db_path))
+        monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+        output_dir = tmp_path / "exports"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "sessions",
+                "export",
+                "--format",
+                "md",
+                "--session-id",
+                "rewound-delete",
+                "--delete-after-verified",
+                "--yes",
+                str(output_dir),
+            ],
+        )
+    
+        main_mod.main()
+    
+        output = capsys.readouterr().out
+>       assert "rewound messages not covered by the verified export" in output
+E       assert 'rewound messages not covered by the verified export' in "Exported 1 session (2 messages) to C:\\Users\\HieuKa\\AppData\\Local\\Temp\\pytest-of-HieuKa\\pytest-4256\\test_delete_after_verified_ref0\\exports\\rewound-delete-session.md\nDeleted exported session 'rewound-delete'.\n"
+
+tests\hermes_cli\test_sessions_export_md_cli.py:744: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/hermes_cli/test_sessions_export_md_cli.py::test_delete_after_verified_refuses_rewind_rows_missing_from_export
+1 failed in 0.92s

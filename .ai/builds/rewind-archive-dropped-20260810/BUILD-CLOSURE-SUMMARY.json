@@ -1,14 +1,14 @@
 {
   "schema": "sakaan.build-closure-summary.v1",
   "build_id": "rewind-archive-dropped-20260810",
-  "timestamp_ict": "2026-08-11T08:58:32+07:00",
+  "timestamp_ict": "2026-08-11T10:36:39+07:00",
   "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
   "branch": "sakaan/rewind-archive-dropped-20260810",
   "lifecycle": {
-    "implementation": "COMMITTED",
-    "independent_build_review": "PENDING",
+    "implementation": "REPAIR_COMMITTED",
+    "independent_build_review": "HOLD_REPAIR_RECHECK_PENDING",
     "clearance": "NOT_CLEARED",
-    "pipeline_closure": "OPEN",
+    "pipeline_closure": "HOLD",
     "closure_record_git_state": "COMMITTED_ON_BRANCH"
   },
   "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
@@ -32,6 +32,11 @@
       "role": "P3 terminal",
       "sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
       "tree": "be2895ad670abce1a7e139332be8ea3ab1274348"
+    },
+    {
+      "role": "Stage 6 bounded repair epoch 1 code/tests",
+      "sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+      "tree": "07eded674d1b1352759ef7ff65bd5a84a4314575"
     }
   ],
   "three_package_terminal_shas": {
@@ -46,17 +51,22 @@
     "independent_plan_review": "PASS"
   },
   "build_review": {
-    "status": "PENDING",
-    "statement": "Only the plan was independently reviewed. No independent review of committed build daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb has occurred."
+    "status": "BUILD_REVIEW_HOLD_REPAIR_IMPLEMENTED_FORMAL_RECHECK_NOT_PERFORMED",
+    "reviewed_implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "repair_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "statement": "Independent Stage 6 found B-1 HIGH plus B-2/B-3/M-1/B-4/B-5/MED-5 defects. Repair code is committed and directly verified, and the owner separately executed the B-1 trailing-newline and structured-content cases successfully. That owner confirmation is not the formal Stage 6 independent recheck. The repaired code has had no independent Stage 6 review and remains HOLD."
   },
   "final_governed_gate": {
-    "files": 8,
-    "passed": 1195,
+    "files": 10,
+    "passed": 1282,
     "failed": 0,
-    "coo_independent_reproduction": {
-      "passed": 1195,
-      "failed": 0
-    }
+    "seconds": 88.0,
+    "workers": 64,
+    "file_retries": 0,
+    "exact_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/FULL-GOVERNED-GATE.txt",
+    "output_sha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+    "output_byte_policy": "RAW_CAPTURE_AUTHORITATIVE_NO_NORMALIZATION"
   },
   "mutation_manifests": {
     "P1.C2": {
@@ -81,6 +91,20 @@
       "sha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
       "all_mutations_failed_named_tests": true,
       "source_restored_byte_identical": true
+    },
+    "STAGE6_REPAIR_EPOCH_1": {
+      "count": 12,
+      "sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "receipt_byte_policy": "RAW_CAPTURE_AUTHORITATIVE_NO_NORMALIZATION"
     }
   },
   "receipts_sha256": {
@@ -92,8 +116,8 @@
   },
   "rollback": {
     "status": "DOCUMENTED_NOT_EXECUTED",
-    "three_package_terminal_command": "git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e",
-    "full_to_base_command": "git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "three_package_terminal_command": "git revert --no-edit d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e",
+    "full_to_base_command": "git revert --no-edit d540eaee9764fbc3194c493946cd6624f447c3a5 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
     "three_commit_effect": "Destructive Restore/Edit/Re-run and retry behavior returns; P3 recovery export is removed; P1.C2 archival primitive remains uncalled.",
     "full_effect": "All four implementation commits are forward-reverted toward base behavior.",
     "proof": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY"
@@ -101,29 +125,31 @@
   "open_remainders": [
     {
       "id": "INDEPENDENT_BUILD_REVIEW",
-      "status": "PENDING",
-      "detail": "Stage 6 has not happened; plan review is not build review."
+      "status": "HOLD_FORMAL_REPAIR_RECHECK_NOT_PERFORMED",
+      "detail": "The repaired code has had no independent Stage 6 review. Owner execution confirmation is not the formal recheck."
     },
     {
       "id": "M-1",
-      "status": "OPEN_ACCEPTED_RESIDUAL",
-      "detail": "ACP archive probe is fail-open for destruction on exception and TOCTOU-exposed."
+      "status": "DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK",
+      "detail": "Upgraded from accepted residual to defect. has_archived_messages had no retry while replace_messages retried through _execute_write, so lock contention systematically selected destruction. Fixed with retry/fail-closed probe plus authoritative transactional recheck.",
+      "classification": "DEFECT"
     },
     {
       "id": "MED-4",
-      "status": "ACCEPTED_CONSEQUENCE_V1",
-      "detail": "delete-after-verified verifies active-only export before whole-session deletion; recovery export is incompatible."
+      "status": "CLOSED_BY_B2_PENDING_INDEPENDENT_RECHECK",
+      "detail": "Destructive export now refuses deletion when selected sessions contain rewind rows omitted by ordinary export, including probe uncertainty."
     },
     {
       "id": "F-R3",
-      "status": "PRESERVE_4004_PRE_I1",
-      "detail": "Present non-integer prompt ordinal keeps pre-I1 error code 4004."
+      "status": "NARROWS_ACCEPTED_INPUT_SET",
+      "detail": "Corrected record: retaining pre-I1 4004 for a present non-integer prompt ordinal narrows the accepted input set; it is not described as preservation."
     },
     {
       "id": "MED-5",
-      "status": "ACCEPTED_CONSEQUENCE_V1",
-      "name": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY",
-      "detail": "Insights analytics count rewound turns because all eight agent/insights.py message reads omit active/compacted filters. This is not a regression: the file is byte-identical at base and P3, with zero such filters at both revisions, and already counted compacted inactive rows. The build changes the population by retaining active=0, compacted=0 rewind rows. No v1 code change is proposed; a future change must explicitly add an active filter or declare that insights intentionally count executed activity."
+      "status": "REGRESSION_DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK",
+      "name": "RETRIED_TURNS_DOUBLE_COUNTED_IN_INSIGHTS",
+      "detail": "Retried turns were double-counted; the earlier not-a-regression framing was wrong and withdrawn. Rewind rows are excluded while compaction archives remain retained.",
+      "classification": "REGRESSION_DEFECT"
     },
     {
       "id": "LOW-1",
@@ -145,19 +171,27 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "b5e2a00af65a880be8cf8e9574645c447eda6400819bcfbf4b68b2123ef18319",
-    "ledger.json": "9249e541703261826afd96e12b45f4c6d31c04865dd032a5be4102e5f20bdd7f",
-    "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d"
+    "README.md": "2f9b51f1d3db68274ccd214c9af7e28eacd898b76e6243a5d8c8339501e17305",
+    "ledger.json": "96ec4d1474ff47888d02dd0ba226aa6fdcfece97ff352ec3decf6125cb533112",
+    "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
+    "repair-epoch-1/REPAIR-DECISION.md": "7b6d1595710fafc0ab1389ac0514bf3adabb762933ba5642d9de25ebcced44d0",
+    "repair-epoch-1/run_mutations.py": "2f306d055eb0cf0dc0dab7627b23dc8b176440973d6d654b9072fbf268e21067",
+    "repair-epoch-1/test_closure_reclassifications.py": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee",
+    "repair-epoch-1/mutation-manifest.json": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+    "repair-epoch-1/RAW-RECEIPT-BINDINGS.json": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+    "repair-epoch-1/FULL-GOVERNED-GATE.txt": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+    "repair-epoch-1/RED-HEAD-9048fea8b.txt": "17bc0860d0bf9f2c808287fe7beb68023009c143356e2d0cf6bafe18cc0c9215",
+    "repair-epoch-1/RESTORED-FOCUSED-GREEN.txt": "ff21789bbec7300827b55c414ba900fe676cce4700c876fc90ee1fd23472a06c"
   },
   "per_agent_token_spend": {
     "Hermes openai-codex gpt-5.6-sol": "UNKNOWN_NOT_EXPOSED",
     "external_agents": "NONE_INVOKED"
   },
   "pipeline_gate": {
-    "status": "HOLD_PIPELINE_GATE_FAILED",
+    "status": "HOLD_REPAIR_RECHECK_REQUIRED",
     "exit_code": 1,
     "material_blockers": [
-      "INDEPENDENT_BUILD_REVIEW_PENDING",
+      "INDEPENDENT_STAGE6_REPAIR_RECHECK_PENDING",
       "SUBMISSION_NOT_GO",
       "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
       "FINAL_INSPECTION_CLEARANCE_ABSENT",
@@ -168,32 +202,9 @@
   },
   "read_path_audit": {
     "scope": "READ_PATH_ONLY",
-    "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+    "status": "SUPERSEDED_BY_STAGE6_HOLD_AND_REPAIR",
     "auditor": "COO",
     "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
-    "insights_accepted_consequence": {
-      "id": "MED-5",
-      "classification": "ACCEPTED_CONSEQUENCE_V1_NOT_REGRESSION",
-      "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-      "implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-      "agent_insights_diff_empty": true,
-      "message_reads": 8,
-      "base_m_active_occurrences": 0,
-      "current_m_active_occurrences": 0,
-      "base_m_compacted_occurrences": 0,
-      "current_m_compacted_occurrences": 0,
-      "preexisting_population": "active=0, compacted=1 compaction rows were already counted",
-      "new_population": "active=0, compacted=0 rewind rows are now retained and counted",
-      "affected_analytics": [
-        "tool usage",
-        "tool-call totals"
-      ],
-      "v1_code_change": "NONE_PROPOSED",
-      "future_alternatives": [
-        "explicit m.active filter",
-        "intentional declaration that insights count executed activity"
-      ]
-    },
     "positive_search_finding": {
       "status": "DIRECT_VERIFIED",
       "predicate": "(m.active = 1 OR m.compacted = 1)",
@@ -227,7 +238,7 @@
       ],
       "effect": "rewind rows are excluded while compaction archives are retained"
     },
-    "stage_6_independent_build_review": "OPEN_UNAFFECTED",
+    "stage_6_independent_build_review": "HOLD_REPAIR_RECHECK_PENDING",
     "not_covered_at_read_path_epoch": [
       "I1 atomicity under the _execute_write locked-retry path",
       "whether the normalizer can mask a genuine mismatch",
@@ -235,11 +246,20 @@
       "mutation spot-checks",
       "the anchoring question of whether the cleared plan was itself wrong"
     ],
-    "superseded_scope_by": "coo_technical_audit"
+    "superseded_scope_by": "coo_technical_audit",
+    "insights_reclassification": {
+      "id": "MED-5",
+      "classification": "REGRESSION_DEFECT",
+      "prior_not_regression_framing_withdrawn": true,
+      "cause": "retained rewind rows were counted in addition to retried turns",
+      "disposition": "FIXED_PENDING_INDEPENDENT_RECHECK",
+      "predicate": "(m.active = 1 OR m.compacted = 1)",
+      "effect": "rewind rows excluded; compaction archives retained"
+    }
   },
   "coo_technical_audit": {
     "scope": "SIX_TECHNICAL_AREAS",
-    "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+    "status": "SUPERSEDED_BY_INDEPENDENT_STAGE6_HOLD_AND_REPAIR",
     "auditor": "COO",
     "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
     "areas_covered": [
@@ -285,7 +305,8 @@
           7515
         ],
         "closed_inside_i1": true,
-        "m1_acp_window_remains_open": true
+        "m1_acp_window_remains_open": false,
+        "m1_repair": "probe retries/fails closed; authoritative archive recheck now occurs in replacement write transaction"
       },
       "normalizer": {
         "non_mapping_refused_line": 7331,
@@ -318,9 +339,170 @@
     },
     "seventh_area": {
       "topic": "whether the cleared plan was itself wrong",
-      "status": "OPEN_FOR_STAGE_6",
-      "structurally_unavailable_to_coo": true
+      "status": "PLAN_DEFECT_CONFIRMED_AS_B1_REPAIRED_RECHECK_PENDING",
+      "structurally_unavailable_to_coo": true,
+      "cause": "v3.2 required byte-exact comparison without selecting the canonical representation"
     },
-    "stage_6_independent_build_review": "OPEN_UNAFFECTED"
+    "stage_6_independent_build_review": "HOLD_REPAIR_RECHECK_PENDING"
+  },
+  "repair_epoch_1": {
+    "lifecycle": "BUILD_REVIEW_HOLD",
+    "attempt": "ONE_BOUNDED_REPAIR_EPOCH_CONTINUATION_NOT_NEW_ATTEMPT",
+    "repair_base": "9048fea8b930600f95790e4d25eb30f3dbdf13cb",
+    "repair_code_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "repair_code_tree": "07eded674d1b1352759ef7ff65bd5a84a4314575",
+    "decision_record": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
+    "decision_record_sha256": "7b6d1595710fafc0ab1389ac0514bf3adabb762933ba5642d9de25ebcced44d0",
+    "B-1": {
+      "severity": "HIGH",
+      "classification": "PLAN_AND_IMPLEMENTATION_DEFECT",
+      "disposition": "FIXED",
+      "canonical_representation": "projected_content",
+      "string_content": "durable side uses sanitize_context(decoded_content).strip(); expected side is not normalized again",
+      "structured_content": "decoded canonical JSON representation is preserved; never stringified",
+      "api_content": "byte-exact authority where present",
+      "guard_limit": "For ordinary string content, whitespace-only drift is undetectable by construction because expected_history no longer carries it; api_content closes the gap where present. The guard is not unqualified byte-exact.",
+      "independent_recheck": "PENDING",
+      "root_cause": "Byte-exact comparison was specified without stating which representation is canonical."
+    },
+    "B-2": {
+      "severity": "MEDIUM",
+      "disposition": "FIXED",
+      "independent_recheck": "PENDING"
+    },
+    "B-3": {
+      "severity": "MEDIUM",
+      "disposition": "FIXED",
+      "independent_recheck": "PENDING"
+    },
+    "M-1": {
+      "severity": "MEDIUM",
+      "classification": "DEFECT",
+      "disposition": "FIXED",
+      "independent_recheck": "PENDING",
+      "root_cause": "has_archived_messages had no retry while replace_messages retried through _execute_write, so lock contention systematically selected destruction."
+    },
+    "B-4": {
+      "severity": "LOW",
+      "disposition": "FIXED",
+      "independent_recheck": "PENDING"
+    },
+    "B-5": {
+      "severity": "LOW",
+      "disposition": "CORRECTED_RECORD"
+    },
+    "MED-5": {
+      "classification": "REGRESSION_DEFECT",
+      "disposition": "FIXED",
+      "prior_not_regression_framing_withdrawn": true,
+      "independent_recheck": "PENDING",
+      "correction": "Retried turns were double-counted; the earlier not-a-regression framing was wrong and is withdrawn."
+    },
+    "F-R3": {
+      "disposition": "NARROWS_ACCEPTED_INPUT_SET"
+    },
+    "red": {
+      "base_head": "9048fea8b930600f95790e4d25eb30f3dbdf13cb",
+      "failed": 16,
+      "output_sha256": "17bc0860d0bf9f2c808287fe7beb68023009c143356e2d0cf6bafe18cc0c9215"
+    },
+    "decisive_function_source_sha256": [
+      "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd",
+      "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd",
+      "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59"
+    ],
+    "full_gate": {
+      "passed": true,
+      "files": 10,
+      "tests_passed": 1282,
+      "failed": 0,
+      "seconds": 88.0,
+      "workers": 64,
+      "file_retries": 0,
+      "output_sha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887"
+    },
+    "mutation": {
+      "count": 12,
+      "manifest_sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+      "all_mutations_failed_named_tests": true,
+      "all_sources_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      }
+    },
+    "clearance": "NOT_CLEARED_PENDING_INDEPENDENT_RECHECK",
+    "formal_independent_stage6_recheck": "NOT_PERFORMED",
+    "owner_execution_confirmation": "PASS_NOT_FORMAL_STAGE6_RECHECK",
+    "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+  },
+  "stage6_repair_epoch_1": {
+    "lifecycle": "BUILD_REVIEW_HOLD",
+    "repair_code_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "findings": [
+      {
+        "id": "B-1",
+        "severity": "HIGH",
+        "disposition": "FIXED_ONE_WAY_CANONICAL_PROJECTION",
+        "canonical_representation": "projected_content",
+        "guard_limit": "For ordinary string content, whitespace-only drift is undetectable by construction because expected_history no longer carries it; api_content closes the gap where present. The guard is not unqualified byte-exact.",
+        "root_cause": "Byte-exact comparison was specified without stating which representation is canonical."
+      },
+      {
+        "id": "B-2",
+        "severity": "MEDIUM",
+        "disposition": "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"
+      },
+      {
+        "id": "B-3",
+        "severity": "MEDIUM",
+        "disposition": "FIXED_TRANSACTIONAL_UNDO_PARITY"
+      },
+      {
+        "id": "B-4",
+        "severity": "LOW",
+        "disposition": "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"
+      },
+      {
+        "id": "B-5",
+        "severity": "LOW",
+        "disposition": "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"
+      },
+      {
+        "id": "M-1",
+        "severity": "MEDIUM",
+        "classification": "DEFECT",
+        "disposition": "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED",
+        "root_cause": "has_archived_messages had no retry while replace_messages retried through _execute_write, so lock contention systematically selected destruction."
+      },
+      {
+        "id": "MED-5",
+        "classification": "REGRESSION_DEFECT",
+        "disposition": "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED",
+        "correction": "Retried turns were double-counted; the earlier not-a-regression framing was wrong and is withdrawn."
+      }
+    ],
+    "full_gate": {
+      "passed": true,
+      "tests_passed": 1282,
+      "failed": 0
+    },
+    "mutation_manifest_sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+    "clearance": "NOT_CLEARED_PENDING_INDEPENDENT_RECHECK",
+    "formal_independent_stage6_recheck": "NOT_PERFORMED",
+    "owner_execution_confirmation": "PASS_NOT_FORMAL_STAGE6_RECHECK",
+    "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+  },
+  "raw_receipt_custody": {
+    "authority": "RAW_CAPTURED_BYTES",
+    "binding_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RAW-RECEIPT-BINDINGS.json",
+    "binding_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+    "normalization": "NONE",
+    "generic_whitespace_check": "SCOPED_TO_NON_RECEIPT_PACKET_FILES",
+    "integrity_check": "SHA-256 over Path.read_bytes()",
+    "disclosure": "A rejected packaging attempt normalized CRLF to LF. Exact captured newline topology was restored before binding; full-gate and RED hashes match their pre-normalization anchors."
   }
 }

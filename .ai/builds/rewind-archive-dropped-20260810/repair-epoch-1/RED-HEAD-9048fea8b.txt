@@ -1,0 +1,652 @@
+FFFFFFFFFFFFFFFF                                                         [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_rewind_history_uses_projected_content_as_canonical_without_masking_drift _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x000001CAE75B7D90>
+db = <hermes_state.SessionDB object at 0x000001CAE82AECF0>
+
+    def test_rewind_history_uses_projected_content_as_canonical_without_masking_drift(
+        self, db
+    ):
+        """B-1: durable rows project one-way; expected history stays byte-exact."""
+        sid = "rewind-projection-canonical"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "first")
+        db.append_message(sid, "assistant", "answer text\n")
+        db.append_message(sid, "user", "retry")
+        db.append_message(sid, "assistant", "stale reply")
+    
+        expected = db.get_messages_as_conversation(sid)
+        assert expected[1]["content"] == "answer text"
+>       result = db.rewind_active_history(
+            sid,
+            expected_history=expected,
+            truncate_before_user_ordinal=1,
+        )
+
+tests\test_hermes_state.py:7938: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+hermes_state.py:7547: in rewind_active_history
+    return self._execute_write(_do)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_state.py:2143: in _execute_write
+    result = fn(self._conn)
+             ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+conn = <sqlite3.Connection object at 0x000001CAE8332110>
+
+    def _do(conn):
+        session = conn.execute(
+            "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if (
+            session is not None
+            and session["ended_at"] is not None
+            and session["end_reason"] == "compression"
+        ):
+            raise CompressionSessionClosedError(session_id)
+    
+        active_rows = conn.execute(
+            "SELECT * FROM messages "
+            "WHERE session_id = ? AND active = 1 ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        persisted_bytes = self._canonicalize_rewind_history(
+            session_id, list(active_rows), persisted=True
+        )
+        expected_bytes = self._canonicalize_rewind_history(
+            session_id, expected_history, persisted=False
+        )
+        if persisted_bytes != expected_bytes:
+>           raise RewindHistoryConflict(
+                session_id, "expected history does not match active durable rows"
+            )
+E           hermes_state.RewindHistoryConflict: Rewind conflict for session 'rewind-projection-canonical': expected history does not match active durable rows
+
+hermes_state.py:7494: RewindHistoryConflict
+_ TestRetryCoordinateConversion.test_retry_coordinate_has_no_dead_round_trip_guard _
+
+self = <tests.test_hermes_state.TestRetryCoordinateConversion object at 0x000001CAE7362360>
+
+    def test_retry_coordinate_has_no_dead_round_trip_guard(self):
+        """B-4: do not carry an unreachable guard as mutation proof."""
+        import inspect
+    
+        source = inspect.getsource(hermes_state.retry_array_index_to_user_ordinal)
+>       assert "retry coordinate round-trip failed" not in source
+E       assert 'retry coord...-trip failed' not in 'def retry_a...rn ordinal\n'
+E         
+E         'retry coordinate round-trip failed' is contained here:
+E           inate>", "retry coordinate round-trip failed")
+E               return ordinal
+
+tests\test_hermes_state.py:7999: AssertionError
+_____ test_delete_after_verified_refuses_rewind_rows_missing_from_export ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001CAE840F410>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4228/test_delete_after_verified_ref0')
+capsys = <_pytest.capture.CaptureFixture object at 0x000001CAE9CD9400>
+
+    def test_delete_after_verified_refuses_rewind_rows_missing_from_export(
+        monkeypatch, tmp_path, capsys
+    ):
+        """B-2: active-only verification cannot authorize deleting rewound rows."""
+        import hermes_cli.main as main_mod
+        import hermes_state
+    
+        db_path = tmp_path / "state.db"
+        real_session_db = hermes_state.SessionDB
+        db = real_session_db(db_path)
+        db.create_session("rewound-delete", "cli")
+        db.append_message("rewound-delete", "user", "retained")
+        db.append_message("rewound-delete", "assistant", "retained reply")
+        db.append_message("rewound-delete", "user", "rewound")
+        db.append_message("rewound-delete", "assistant", "rewound reply")
+        db.rewind_active_history(
+            "rewound-delete",
+            expected_history=db.get_messages("rewound-delete"),
+            truncate_before_user_ordinal=1,
+        )
+        db.close()
+    
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: real_session_db(db_path))
+        monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+        output_dir = tmp_path / "exports"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "sessions",
+                "export",
+                "--format",
+                "md",
+                "--session-id",
+                "rewound-delete",
+                "--delete-after-verified",
+                "--yes",
+                str(output_dir),
+            ],
+        )
+    
+        main_mod.main()
+    
+        output = capsys.readouterr().out
+>       assert "rewound messages not covered by the verified export" in output
+E       assert 'rewound messages not covered by the verified export' in "Exported 1 session (2 messages) to C:\\Users\\HieuKa\\AppData\\Local\\Temp\\pytest-of-HieuKa\\pytest-4228\\test_delete_after_verified_ref0\\exports\\rewound-delete-session.md\nDeleted exported session 'rewound-delete'.\n"
+
+tests\hermes_cli\test_sessions_export_md_cli.py:741: AssertionError
+_ TestGatewaySessionDbRecovery.test_rewind_session_selects_count_coordinate_inside_durable_transaction _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000001CAE74FD8C0>
+
+    def test_rewind_session_selects_count_coordinate_inside_durable_transaction(self):
+        """B-3: /undo must not pre-read a target outside the write transaction."""
+        import threading
+    
+        class AtomicOnlyDb:
+            def __init__(self):
+                self.calls = []
+    
+            def list_recent_user_messages(self, *args, **kwargs):
+                raise AssertionError("pre-transaction user-message read is forbidden")
+    
+            def rewind_to_message(self, *args, **kwargs):
+                raise AssertionError("preselected message-id rewind is forbidden")
+    
+            def rewind_recent_user_turns(self, session_id, n):
+                self.calls.append((session_id, n))
+                return {
+                    "rewound_count": 2,
+                    "turns_undone": 1,
+                    "target_message": {"content": "latest"},
+                    "target_text": "latest",
+                    "new_head_id": 4,
+                    "message_count": 4,
+                    "tool_call_count": 0,
+                }
+    
+        store = object.__new__(SessionStore)
+        store._db = AtomicOnlyDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+    
+        result = store.rewind_session("s1", 1)
+    
+>       assert result is not None
+E       assert None is not None
+
+tests\gateway\test_session.py:2515: AssertionError
+___ TestGatewaySessionDbRecovery.test_rewind_session_repairs_live_counters ____
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000001CAE74FDAE0>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4228/test_rewind_session_repairs_li0')
+
+    def test_rewind_session_repairs_live_counters(self, tmp_path):
+        """B-3: /undo counters must describe the active rows committed with it."""
+        import threading
+    
+        db = SessionDB(tmp_path / "undo-counters.db")
+        sid = "undo-counters"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "first")
+        db.append_message(
+            sid,
+            "assistant",
+            "calling",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        db.append_message(sid, "tool", "result", tool_name="search_files")
+        db.append_message(sid, "user", "second")
+        db.append_message(sid, "assistant", "second reply")
+    
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+    
+        result = store.rewind_session(sid, 1)
+        session = db.get_session(sid)
+    
+        assert result is not None
+        assert result["rewound_count"] == 2
+>       assert session["message_count"] == 3
+E       assert 5 == 3
+
+tests\gateway\test_session.py:2548: AssertionError
+_ TestGatewaySessionDbRecovery.test_rewind_session_refuses_compression_closed_session _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000001CAE73F4D50>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4228/test_rewind_session_refuses_co0')
+
+    def test_rewind_session_refuses_compression_closed_session(self, tmp_path):
+        """B-3: /undo must share /retry's compression-session guard."""
+        import threading
+    
+        db = SessionDB(tmp_path / "undo-compression.db")
+        sid = "undo-compression"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "do not archive")
+        db.append_message(sid, "assistant", "still active")
+        db.end_session(sid, end_reason="compression")
+        before = db.get_messages(sid, include_inactive=True)
+    
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+    
+        result = store.rewind_session(sid, 1)
+    
+>       assert result is None
+E       AssertionError: assert {'rewound_count': 2, 'target_text': 'do not archive', 'turns_undone': 1} is None
+
+tests\gateway\test_session.py:2573: AssertionError
+_ TestListAndCleanup.test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[locked] _
+
+self = <tests.acp.test_session.TestListAndCleanup object at 0x000001CAE821F550>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4228/test_save_session_archive_guar0')
+probe_mode = 'locked'
+
+    @pytest.mark.parametrize("probe_mode", ["locked", "stale_false"])
+    def test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked(
+        self, tmp_path, probe_mode
+    ):
+        """M-1: probe failure/staleness must never select destructive replace."""
+        import sqlite3
+    
+        db = SessionDB(tmp_path / f"state-{probe_mode}.db")
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+        db.append_message(state.session_id, "user", "retained")
+        db.append_message(state.session_id, "assistant", "retained reply")
+        db.append_message(state.session_id, "user", "rewound sentinel")
+        db.append_message(state.session_id, "assistant", "rewound tail")
+        db.rewind_active_history(
+            state.session_id,
+            expected_history=db.get_messages(state.session_id),
+            truncate_before_user_ordinal=1,
+        )
+        before = db.get_messages(state.session_id, include_inactive=True)
+    
+        if probe_mode == "locked":
+            def probe(_session_id):
+                raise sqlite3.OperationalError("database is locked")
+        else:
+            def probe(_session_id):
+                return False
+        db.has_archived_messages = probe
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = db.get_messages_as_conversation(state.session_id)
+    
+        manager.save_session(state.session_id)
+    
+        after = db.get_messages(state.session_id, include_inactive=True)
+        archived = [
+            row for row in after if row["active"] == 0 and row["compacted"] == 0
+        ]
+>       assert [row["content"] for row in archived] == [
+            "rewound sentinel",
+            "rewound tail",
+        ]
+E       AssertionError: assert [] == ['rewound sen...rewound tail']
+E         
+E         Right contains 2 more items, first extra item: 'rewound sentinel'
+E         Use -v to get more diff
+
+tests\acp\test_session.py:479: AssertionError
+------------------------------ Captured log call ------------------------------
+INFO     acp_adapter.session:session.py:217 Created ACP session a65b270e-8ca8-4937-b624-5e0f46a71521 (cwd=/work)
+_ TestListAndCleanup.test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[stale_false] _
+
+self = <tests.acp.test_session.TestListAndCleanup object at 0x000001CAE822EA80>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4228/test_save_session_archive_guar1')
+probe_mode = 'stale_false'
+
+    @pytest.mark.parametrize("probe_mode", ["locked", "stale_false"])
+    def test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked(
+        self, tmp_path, probe_mode
+    ):
+        """M-1: probe failure/staleness must never select destructive replace."""
+        import sqlite3
+    
+        db = SessionDB(tmp_path / f"state-{probe_mode}.db")
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+        db.append_message(state.session_id, "user", "retained")
+        db.append_message(state.session_id, "assistant", "retained reply")
+        db.append_message(state.session_id, "user", "rewound sentinel")
+        db.append_message(state.session_id, "assistant", "rewound tail")
+        db.rewind_active_history(
+            state.session_id,
+            expected_history=db.get_messages(state.session_id),
+            truncate_before_user_ordinal=1,
+        )
+        before = db.get_messages(state.session_id, include_inactive=True)
+    
+        if probe_mode == "locked":
+            def probe(_session_id):
+                raise sqlite3.OperationalError("database is locked")
+        else:
+            def probe(_session_id):
+                return False
+        db.has_archived_messages = probe
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = db.get_messages_as_conversation(state.session_id)
+    
+        manager.save_session(state.session_id)
+    
+        after = db.get_messages(state.session_id, include_inactive=True)
+        archived = [
+            row for row in after if row["active"] == 0 and row["compacted"] == 0
+        ]
+>       assert [row["content"] for row in archived] == [
+            "rewound sentinel",
+            "rewound tail",
+        ]
+E       AssertionError: assert [] == ['rewound sen...rewound tail']
+E         
+E         Right contains 2 more items, first extra item: 'rewound sentinel'
+E         Use -v to get more diff
+
+tests\acp\test_session.py:479: AssertionError
+------------------------------ Captured log call ------------------------------
+INFO     acp_adapter.session:session.py:217 Created ACP session d0bfc38e-c8bc-4e0f-a51d-b7d7f817e63c (cwd=/work)
+_ TestInsightsPopulated.test_insights_excludes_rewound_rows_without_excluding_compaction_archives _
+
+self = <tests.agent.test_insights.TestInsightsPopulated object at 0x000001CAE844D2B0>
+db = <hermes_state.SessionDB object at 0x000001CAE9B806B0>
+
+    def test_insights_excludes_rewound_rows_without_excluding_compaction_archives(
+        self, db
+    ):
+        """MED-5: retries are not double-counted; compaction history still counts."""
+        rewind_sid = "insights-rewind"
+        db.create_session(rewind_sid, source="cli")
+        db.append_message(rewind_sid, "user", "run it")
+        db.append_message(
+            rewind_sid,
+            "assistant",
+            "calling terminal",
+            tool_calls=[{"function": {"name": "terminal"}}],
+        )
+        db.append_message(rewind_sid, "tool", "old result", tool_name="terminal")
+        db.rewind_active_history(
+            rewind_sid,
+            expected_history=db.get_messages(rewind_sid),
+            truncate_before_user_ordinal=0,
+        )
+        db.append_message(rewind_sid, "user", "run it again")
+        db.append_message(
+            rewind_sid,
+            "assistant",
+            "calling terminal again",
+            tool_calls=[{"function": {"name": "terminal"}}],
+        )
+        db.append_message(rewind_sid, "tool", "new result", tool_name="terminal")
+    
+        compact_sid = "insights-compaction"
+        db.create_session(compact_sid, source="cli")
+        db.append_message(compact_sid, "user", "search")
+        db.append_message(
+            compact_sid,
+            "assistant",
+            "calling search",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        db.append_message(
+            compact_sid, "tool", "search result", tool_name="search_files"
+        )
+        db.archive_and_compact(
+            compact_sid, [{"role": "user", "content": "compacted summary"}]
+        )
+    
+        engine = InsightsEngine(db)
+        tools = {
+            row["tool_name"]: row["count"] for row in engine._get_tool_usage(0)
+        }
+        stats = engine._get_message_stats(0)
+    
+>       assert tools["terminal"] == 1
+E       assert 2 == 1
+
+tests\agent\test_insights.py:476: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[B-1-FIXED_ONE_WAY_CANONICAL_PROJECTION] _
+
+finding_id = 'B-1', expected_disposition = 'FIXED_ONE_WAY_CANONICAL_PROJECTION'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[B-2-FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS] _
+
+finding_id = 'B-2'
+expected_disposition = 'FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[B-3-FIXED_TRANSACTIONAL_UNDO_PARITY] _
+
+finding_id = 'B-3', expected_disposition = 'FIXED_TRANSACTIONAL_UNDO_PARITY'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[B-4-FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED] _
+
+finding_id = 'B-4'
+expected_disposition = 'FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[B-5-CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION] _
+
+finding_id = 'B-5'
+expected_disposition = 'CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[M-1-FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED] _
+
+finding_id = 'M-1'
+expected_disposition = 'FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+_ test_stage6_overturned_claims_have_explicit_dispositions[MED-5-FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED] _
+
+finding_id = 'MED-5'
+expected_disposition = 'FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED'
+
+    @pytest.mark.parametrize(
+        ("finding_id", "expected_disposition"),
+        [
+            ("B-1", "FIXED_ONE_WAY_CANONICAL_PROJECTION"),
+            ("B-2", "FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS"),
+            ("B-3", "FIXED_TRANSACTIONAL_UNDO_PARITY"),
+            ("B-4", "FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED"),
+            ("B-5", "CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION"),
+            ("M-1", "FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED"),
+            ("MED-5", "FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED"),
+        ],
+    )
+    def test_stage6_overturned_claims_have_explicit_dispositions(
+        finding_id, expected_disposition
+    ):
+        """Record corrections are acceptance behavior, not optional prose."""
+        summary = json.loads(
+            (EVIDENCE_ROOT / "BUILD-CLOSURE-SUMMARY.json").read_text(encoding="utf-8")
+        )
+        epoch = summary.get("stage6_repair_epoch_1")
+>       assert epoch is not None, "Stage 6 HOLD repair epoch is absent from closure"
+E       AssertionError: Stage 6 HOLD repair epoch is absent from closure
+E       assert None is not None
+
+.ai\builds\rewind-archive-dropped-20260810\repair-epoch-1\test_closure_reclassifications.py:30: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift
+FAILED tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_has_no_dead_round_trip_guard
+FAILED tests/hermes_cli/test_sessions_export_md_cli.py::test_delete_after_verified_refuses_rewind_rows_missing_from_export
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_selects_count_coordinate_inside_durable_transaction
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_repairs_live_counters
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_refuses_compression_closed_session
+FAILED tests/acp/test_session.py::TestListAndCleanup::test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[locked]
+FAILED tests/acp/test_session.py::TestListAndCleanup::test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[stale_false]
+FAILED tests/agent/test_insights.py::TestInsightsPopulated::test_insights_excludes_rewound_rows_without_excluding_compaction_archives
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[B-1-FIXED_ONE_WAY_CANONICAL_PROJECTION]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[B-2-FIXED_REFUSE_DESTRUCTIVE_EXPORT_WITH_UNCOVERED_REWIND_ROWS]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[B-3-FIXED_TRANSACTIONAL_UNDO_PARITY]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[B-4-FIXED_DEAD_GUARD_REMOVED_AND_M03_PROOF_RETIRED]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[B-5-CORRECTED_NARROWER_ACCEPTED_INPUT_SET_NOT_PRESERVATION]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[M-1-FIXED_FAIL_CLOSED_AND_ATOMICALLY_RECHECKED]
+FAILED .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py::test_stage6_overturned_claims_have_explicit_dispositions[MED-5-FIXED_REWOUND_ROWS_EXCLUDED_COMPACTION_ARCHIVES_RETAINED]
+16 failed in 1.77s

@@ -1,0 +1,47 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_rewind_session_selects_count_coordinate_inside_durable_transaction _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x000002422A952F10>
+
+    def test_rewind_session_selects_count_coordinate_inside_durable_transaction(self):
+        """B-3: /undo must not pre-read a target outside the write transaction."""
+        import threading
+    
+        class AtomicOnlyDb:
+            def __init__(self):
+                self.calls = []
+    
+            def list_recent_user_messages(self, *args, **kwargs):
+                raise AssertionError("pre-transaction user-message read is forbidden")
+    
+            def rewind_to_message(self, *args, **kwargs):
+                raise AssertionError("preselected message-id rewind is forbidden")
+    
+            def rewind_recent_user_turns(self, session_id, n):
+                self.calls.append((session_id, n))
+                return {
+                    "rewound_count": 2,
+                    "turns_undone": 1,
+                    "target_message": {"content": "latest"},
+                    "target_text": "latest",
+                    "new_head_id": 4,
+                    "message_count": 4,
+                    "tool_call_count": 0,
+                }
+    
+        store = object.__new__(SessionStore)
+        store._db = AtomicOnlyDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+    
+        result = store.rewind_session("s1", 1)
+    
+>       assert result is not None
+E       assert None is not None
+
+tests\gateway\test_session.py:2516: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_selects_count_coordinate_inside_durable_transaction
+1 failed in 0.32s

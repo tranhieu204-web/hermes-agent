@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "base_head": "9048fea8b930600f95790e4d25eb30f3dbdf13cb",
+  "red_command": "python -m pytest -q <9 frozen selectors>",
+  "red_exit_code": 1,
+  "red_result": "16 failed",
+  "red_output": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RED-HEAD-9048fea8b.txt",
+  "red_output_sha256": "17bc0860d0bf9f2c808287fe7beb68023009c143356e2d0cf6bafe18cc0c9215",
+  "frozen_test_bodies": [
+    {
+      "file": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/test_closure_reclassifications.py",
+      "test": "test_stage6_overturned_claims_have_explicit_dispositions",
+      "lineno": 22,
+      "end_lineno": 44,
+      "body_sha256": "d26181752965de96272c555474f8d209ee9f374cfc3ff1bc0b2fde1ff1522fb9",
+      "file_sha256": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee"
+    },
+    {
+      "file": "tests/acp/test_session.py",
+      "test": "test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked",
+      "lineno": 439,
+      "end_lineno": 484,
+      "body_sha256": "560b8e4afc06050cfc82597d18c9506769c0ddd166ab5f82bbe0f2510da0a2d1",
+      "file_sha256": "51f53d9af774c12a1847d191d5951982f33c845d5a2e9419934d100f75484101"
+    },
+    {
+      "file": "tests/agent/test_insights.py",
+      "test": "test_insights_excludes_rewound_rows_without_excluding_compaction_archives",
+      "lineno": 426,
+      "end_lineno": 481,
+      "body_sha256": "2da58c1ba5da8a341ec472f485e2047b584398e1c1b654effd36bc958556e949",
+      "file_sha256": "bb745baaccb3dbbc5b108764aa192881f6df6b05ca68cbb9a6bc01f831ec9d6c"
+    },
+    {
+      "file": "tests/gateway/test_session.py",
+      "test": "test_rewind_session_selects_count_coordinate_inside_durable_transaction",
+      "lineno": 2481,
+      "end_lineno": 2517,
+      "body_sha256": "1bc68639624320bfc4b7539d4e0eaf270abbb8815962f48104114525a50057f2",
+      "file_sha256": "c1beb2d00cb3fdbd5a404301a1601716e6e3f54e2e5f1a488fb186c99975414e"
+    },
+    {
+      "file": "tests/gateway/test_session.py",
+      "test": "test_rewind_session_repairs_live_counters",
+      "lineno": 2519,
+      "end_lineno": 2551,
+      "body_sha256": "69517f5c66c1bc6d59de8c071b0551739849b37c8822dcb8413cf0b8b6e6f5a7",
+      "file_sha256": "c1beb2d00cb3fdbd5a404301a1601716e6e3f54e2e5f1a488fb186c99975414e"
+    },
+    {
+      "file": "tests/gateway/test_session.py",
+      "test": "test_rewind_session_refuses_compression_closed_session",
+      "lineno": 2553,
+      "end_lineno": 2576,
+      "body_sha256": "c3d29bd1c361c7c63bf308d59526e3ed16533375c0b02fa00fa7bea8de4c28de",
+      "file_sha256": "c1beb2d00cb3fdbd5a404301a1601716e6e3f54e2e5f1a488fb186c99975414e"
+    },
+    {
+      "file": "tests/hermes_cli/test_sessions_export_md_cli.py",
+      "test": "test_delete_after_verified_refuses_rewind_rows_missing_from_export",
+      "lineno": 696,
+      "end_lineno": 746,
+      "body_sha256": "bbc276a72c200944f35f50f2392cfaa7f5c457fd9f162fb2777fdd974264cafc",
+      "file_sha256": "969a8d00acec3938c5e20c769187eaa9c4ed5323f75f6f269f670239d8c50ede"
+    },
+    {
+      "file": "tests/test_hermes_state.py",
+      "test": "test_rewind_history_uses_projected_content_as_canonical_without_masking_drift",
+      "lineno": 7925,
+      "end_lineno": 7966,
+      "body_sha256": "c0c0bae6106c2fb01bda92ba48c79ec3cc6ce9fd92535487086d9eebaff560d2",
+      "file_sha256": "ac74a9eb963842529b27bd6882014f2aa8cbbc3bc46572d52320b7cfac7ffa39"
+    },
+    {
+      "file": "tests/test_hermes_state.py",
+      "test": "test_retry_coordinate_has_no_dead_round_trip_guard",
+      "lineno": 7994,
+      "end_lineno": 8000,
+      "body_sha256": "516b27865a5d6224f1d440f3fe5d006293265b2564914ec4f5d1e8855b55e1f4",
+      "file_sha256": "ac74a9eb963842529b27bd6882014f2aa8cbbc3bc46572d52320b7cfac7ffa39"
+    }
+  ],
+  "protected_existing_test_bodies": [
+    {
+      "file": "tests/test_tui_gateway_server.py",
+      "test": "test_prompt_submit_rewind_archives_newly_dropped_suffix",
+      "body_sha256": "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd"
+    },
+    {
+      "file": "tests/test_tui_gateway_server.py",
+      "test": "test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix",
+      "body_sha256": "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd"
+    },
+    {
+      "file": "tests/cli/test_cli_retry.py",
+      "test": "test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue",
+      "body_sha256": "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59"
+    }
+  ],
+  "production_sources_before_implementation": [
+    {
+      "file": "hermes_state.py",
+      "preimplementation_sha256": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83"
+    },
+    {
+      "file": "hermes_cli/main.py",
+      "preimplementation_sha256": "577298a0b4378f3160bdac31a42f3c53a9e2fe190b1a7cbc3359a28ba5b3de0d"
+    },
+    {
+      "file": "gateway/session.py",
+      "preimplementation_sha256": "29b447cb6f3b0f54f980b94482ad3f00853de66b36de335b9df8cd6930ab0a40"
+    },
+    {
+      "file": "acp_adapter/session.py",
+      "preimplementation_sha256": "39f2b146e044c193e464056f58b6a8ce2e988e18ab8a5983a107247294ad2a1d"
+    },
+    {
+      "file": "agent/insights.py",
+      "preimplementation_sha256": "e03dd23d83e2d5feb601f27937b99d24c980e397c3ecc3c2c96c2c3ea7222421"
+    }
+  ]
+}

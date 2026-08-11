@@ -1,0 +1,62 @@
+.F                                                                       [100%]
+================================== FAILURES ===================================
+_ TestListAndCleanup.test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[stale_false] _
+
+self = <tests.acp.test_session.TestListAndCleanup object at 0x0000019F892D8500>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4260/test_save_session_archive_guar1')
+probe_mode = 'stale_false'
+
+    @pytest.mark.parametrize("probe_mode", ["locked", "stale_false"])
+    def test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked(
+        self, tmp_path, probe_mode
+    ):
+        """M-1: probe failure/staleness must never select destructive replace."""
+        import sqlite3
+    
+        db = SessionDB(tmp_path / f"state-{probe_mode}.db")
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="m"), db=db
+        )
+        state = manager.create_session(cwd="/work")
+        db.append_message(state.session_id, "user", "retained")
+        db.append_message(state.session_id, "assistant", "retained reply")
+        db.append_message(state.session_id, "user", "rewound sentinel")
+        db.append_message(state.session_id, "assistant", "rewound tail")
+        db.rewind_active_history(
+            state.session_id,
+            expected_history=db.get_messages(state.session_id),
+            truncate_before_user_ordinal=1,
+        )
+        before = db.get_messages(state.session_id, include_inactive=True)
+    
+        if probe_mode == "locked":
+            def probe(_session_id):
+                raise sqlite3.OperationalError("database is locked")
+        else:
+            def probe(_session_id):
+                return False
+        db.has_archived_messages = probe
+        state.agent = SimpleNamespace(
+            model="new-model", _session_db=db, _session_db_created=False
+        )
+        state.history = db.get_messages_as_conversation(state.session_id)
+    
+        manager.save_session(state.session_id)
+    
+        after = db.get_messages(state.session_id, include_inactive=True)
+        archived = [
+            row for row in after if row["active"] == 0 and row["compacted"] == 0
+        ]
+>       assert [row["content"] for row in archived] == [
+            "rewound sentinel",
+            "rewound tail",
+        ]
+E       AssertionError: assert [] == ['rewound sen...rewound tail']
+E         
+E         Right contains 2 more items, first extra item: 'rewound sentinel'
+E         Use -v to get more diff
+
+tests\acp\test_session.py:479: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/acp/test_session.py::TestListAndCleanup::test_save_session_archive_guard_is_fail_closed_and_atomically_rechecked[stale_false]
+1 failed, 1 passed in 0.56s

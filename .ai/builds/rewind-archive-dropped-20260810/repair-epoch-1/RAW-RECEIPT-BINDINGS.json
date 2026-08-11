@@ -1,0 +1,173 @@
+{
+  "schema": "sakaan.raw-receipt-bindings.v1",
+  "timestamp_ict": "2026-08-11T10:36:39+07:00",
+  "build_id": "rewind-archive-dropped-20260810",
+  "repair_epoch": 1,
+  "policy": {
+    "authoritative_receipts": "RAW_CAPTURED_BYTES",
+    "raw_receipts_modified_for_packaging": false,
+    "normalization_used_for_authoritative_hashes": false,
+    "normalized_copy_required": false,
+    "checker_resolution": "Generic Git whitespace diagnostics are scoped away from authoritative raw .txt receipts; all non-receipt packet files remain subject to git diff --check. Receipt integrity is enforced by binary SHA-256 over Path.read_bytes()."
+  },
+  "recovery_disclosure": {
+    "event": "A rejected packaging attempt had converted captured CRLF sequences to LF. No content or trailing spaces were removed. The exact captured newline topology was restored before this binding was generated.",
+    "method": "Mutation, RED, and restored-focused receipts were restored to their captured Windows CRLF bytes. FULL-GOVERNED-GATE retained bash-wrapper LF for lines 1-5 and Windows-runner CRLF for lines 6-36.",
+    "pre_normalization_anchor_matches": {
+      "FULL-GOVERNED-GATE.txt": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+      "RED-HEAD-9048fea8b.txt": "17bc0860d0bf9f2c808287fe7beb68023009c143356e2d0cf6bafe18cc0c9215"
+    }
+  },
+  "files": [
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/FULL-GOVERNED-GATE.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2571,
+      "raw_sha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
+      "raw_crlf_count": 31,
+      "raw_lf_total": 36,
+      "rejected_normalized_derivative_bytes": 2540,
+      "rejected_normalized_derivative_sha256": "9ca09397b13d359d9084e6a04067b3a9cfce208fd0cf41a3c48a10682e8b0e03"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M01_B1_REMOVE_STRING_REPLAY_PROJECTION.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 3180,
+      "raw_sha256": "4edb44f7bdda856244619115e3a3872891af7e9509736c7ea087abf6fc8df0d6",
+      "raw_crlf_count": 71,
+      "raw_lf_total": 71,
+      "rejected_normalized_derivative_bytes": 3109,
+      "rejected_normalized_derivative_sha256": "7db26dd094e97f2a18455ef090393420ff5c19ad7adc33d200ae559a5acf91b9"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M02_B1_NORMALIZE_EXPECTED_SIDE_TOO.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2321,
+      "raw_sha256": "3bf5a9d52c98261a4f66c1e9785fd5bf100646314b02f2ed24bc78319ba2d730",
+      "raw_crlf_count": 49,
+      "raw_lf_total": 49,
+      "rejected_normalized_derivative_bytes": 2272,
+      "rejected_normalized_derivative_sha256": "9c7f860db8a88849ebd07ef85b4a401901487c916ed5410ad7c3e97cc00d088c"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M03_B1_STRINGIFY_STRUCTURED_CONTENT.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 4937,
+      "raw_sha256": "818f7a5acba490870dcfc68844cc8059f803fea63af494334040cd18e11433a1",
+      "raw_crlf_count": 118,
+      "raw_lf_total": 118,
+      "rejected_normalized_derivative_bytes": 4819,
+      "rejected_normalized_derivative_sha256": "52cebccd872e8c8205d4839cc3f72c37db7b4642d9353404c91e6a309799b081"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 4937,
+      "raw_sha256": "6e273121451c50f0767f4feb9861ec7d580c00bba33c2f3edbd6aebdea6c0850",
+      "raw_crlf_count": 118,
+      "raw_lf_total": 118,
+      "rejected_normalized_derivative_bytes": 4819,
+      "rejected_normalized_derivative_sha256": "79ac63ef4d8d97c0e4c56d0167ebfecd250472d0c5183018612506a22914080d"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2860,
+      "raw_sha256": "94ac69a33d649a150981897bec1e42469d7256aa9beee93cbd56507131a71f4f",
+      "raw_crlf_count": 60,
+      "raw_lf_total": 60,
+      "rejected_normalized_derivative_bytes": 2800,
+      "rejected_normalized_derivative_sha256": "f730de8e8e652f0e872ff9a2c8b04fbc7556748fb5c48eb5f6bbfa7322db846a"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2110,
+      "raw_sha256": "7d2d8d7d30aa70b7ed9231b7ac6b6e52653f065913e259179454d32fb0871e83",
+      "raw_crlf_count": 47,
+      "raw_lf_total": 47,
+      "rejected_normalized_derivative_bytes": 2063,
+      "rejected_normalized_derivative_sha256": "6aca2e968046b2a413969535fe897e6698b3f2336e34c74e1a65ee2f5b8faaa0"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M07_B3_DISABLE_COMPRESSION_GUARD.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 1739,
+      "raw_sha256": "da9219febf988b0723f388fb6745e286c542e7fbb4bd424c0e8ab24059a09b68",
+      "raw_crlf_count": 34,
+      "raw_lf_total": 34,
+      "rejected_normalized_derivative_bytes": 1705,
+      "rejected_normalized_derivative_sha256": "9295003f6f89e1ab3a987218d948e320803ce98778541175d7e6a32230785282"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M08_B3_CORRUPT_COUNTER_RECONCILIATION.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 1927,
+      "raw_sha256": "625e8313bf1a529328da819efe31b987f85a82606babb1b5dfd5ce4f4b6d28a9",
+      "raw_crlf_count": 43,
+      "raw_lf_total": 43,
+      "rejected_normalized_derivative_bytes": 1884,
+      "rejected_normalized_derivative_sha256": "43b9fcc4437c94157a291784b6e8f16afe6c13fe093299cb9e9e16210d66e700"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2941,
+      "raw_sha256": "a306f0b214604fda0b6203c285e99b402ae1a75ca4fc90a07f07270f1d743e8f",
+      "raw_crlf_count": 62,
+      "raw_lf_total": 62,
+      "rejected_normalized_derivative_bytes": 2879,
+      "rejected_normalized_derivative_sha256": "db60d7c1b54e1ff490811cbb5524fd38056fd811d6408e7a2625018ab51d82e6"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 1209,
+      "raw_sha256": "b3cbde644d3f786be6574a2412b6cb9adba2af71e2d724772d5c35c07ac2170f",
+      "raw_crlf_count": 23,
+      "raw_lf_total": 23,
+      "rejected_normalized_derivative_bytes": 1186,
+      "rejected_normalized_derivative_sha256": "edd903f14603c3807ac21fa662e773a741dd0fd8d62890484742cdc9b9dd4bf1"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2683,
+      "raw_sha256": "50268294c49633f8b64cb05ebd2e3a6301a03f5fb433ea52390628507b2af7a1",
+      "raw_crlf_count": 64,
+      "raw_lf_total": 64,
+      "rejected_normalized_derivative_bytes": 2619,
+      "rejected_normalized_derivative_sha256": "08fd48604ed0994b7dce4969c59b08e727ead50cc475aab6a4b7162c3097cebe"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 2772,
+      "raw_sha256": "bf0fc4872ea25b27f8728bb1b4b4ea29c422870a381e5987f03f532a595bd8ce",
+      "raw_crlf_count": 66,
+      "raw_lf_total": 66,
+      "rejected_normalized_derivative_bytes": 2706,
+      "rejected_normalized_derivative_sha256": "d283d3edee81ec45cf40040654cd9640133dfae35ced20e7d947d8b3ab8ff34a"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RED-HEAD-9048fea8b.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 31892,
+      "raw_sha256": "17bc0860d0bf9f2c808287fe7beb68023009c143356e2d0cf6bafe18cc0c9215",
+      "raw_crlf_count": 652,
+      "raw_lf_total": 652,
+      "rejected_normalized_derivative_bytes": 31240,
+      "rejected_normalized_derivative_sha256": "61664a59d2fc91708a84063c08200ede58e887e8b2f0dee1c3f19159676759d0"
+    },
+    {
+      "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RESTORED-FOCUSED-GREEN.txt",
+      "authoritative": "RAW_CAPTURE",
+      "raw_bytes": 101,
+      "raw_sha256": "ff21789bbec7300827b55c414ba900fe676cce4700c876fc90ee1fd23472a06c",
+      "raw_crlf_count": 2,
+      "raw_lf_total": 2,
+      "rejected_normalized_derivative_bytes": 99,
+      "rejected_normalized_derivative_sha256": "a5013ca3f620c4c2960168f527d6773e1d802a531a175690f55a692aa6a0ece1"
+    }
+  ]
+}

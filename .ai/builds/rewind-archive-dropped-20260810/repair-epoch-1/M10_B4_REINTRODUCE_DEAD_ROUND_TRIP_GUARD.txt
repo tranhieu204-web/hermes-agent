@@ -1,0 +1,23 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRetryCoordinateConversion.test_retry_coordinate_has_no_dead_round_trip_guard _
+
+self = <tests.test_hermes_state.TestRetryCoordinateConversion object at 0x000001E91F0548D0>
+
+    def test_retry_coordinate_has_no_dead_round_trip_guard(self):
+        """B-4: do not carry an unreachable guard as mutation proof."""
+        import inspect
+    
+        source = inspect.getsource(hermes_state.retry_array_index_to_user_ordinal)
+>       assert "retry coordinate round-trip failed" not in source
+E       assert 'retry coord...-trip failed' not in 'def retry_a...rn ordinal\n'
+E         
+E         'retry coordinate round-trip failed' is contained here:
+E           inate>", "retry coordinate round-trip failed"
+E                   )
+E               return ordinal
+
+tests\test_hermes_state.py:7999: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRetryCoordinateConversion::test_retry_coordinate_has_no_dead_round_trip_guard
+1 failed in 0.31s
