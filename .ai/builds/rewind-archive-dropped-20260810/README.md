@@ -8,11 +8,11 @@ Implementation terminal before review: `daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb
 
 Stage 6 repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
-Historical Final Inspection 3 code subject: `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`
+Historical Final Inspection 4 code subject: `389640f70679257b7acf074808e44277f31fb92a`
 
-M13 candidate parent: `af49192172e1b3635490fcb019bda0e481b71292`; the new exact candidate SHA is the commit containing this record.
+M14-M16 candidate parent: `389640f70679257b7acf074808e44277f31fb92a`; the new exact candidate SHA is the commit containing this record.
 
-Status: `M13 CANDIDATE VERIFIED — PRIOR FINAL INSPECTION PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
+Status: `M14-M16 CANDIDATE VERIFIED — FINAL INSPECTION 4 PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
 
 ## What changed
 
@@ -23,7 +23,8 @@ This build replaces destructive Restore/Edit/Re-run and retry truncation with re
 - **P3** exposes read-only, one-session JSONL recovery through `hermes sessions export --include-rewound`. Recovery reads raw rows, includes active rows plus `active=0, compacted=0` rewind rows, excludes compacted history, and preserves content bytes that conversation projection would sanitize or strip.
 - **Stage 6 repair epoch 1** fixes B-1 through B-4 and M-1 and corrects B-5/F-R3 and MED-5. The independent defect-finding recheck judged all seven findings genuinely fixed but returned `RECHECK_HOLD` because the recorded B-1 guard limit was materially under-scoped. That acceptance claim is corrected in `repair-epoch-1/REPAIR-DECISION.md`; the recheck was not Final Inspection and did not clear the build.
 - **Stage 6 close-out test commit** `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` adds three executable acceptance cases in `tests/test_hermes_state.py`. Without `api_content`, the rewind guard accepts sanitizer-erased drift for a 66-byte `<memory-context>...` value and the recalled-memory `[System note: ...]` form; with `api_content`, the same memory-context-bearing value raises `RewindHistoryConflict` and leaves durable state unchanged. This commit documents a representational limit and its sidecar compensation; it does not fix a production defect.
-- **M13 assurance closure** adds a deterministic 33-case, 1,089-pair cross-product property whose oracle is independent of `_canonicalize_rewind_history`: user/assistant strings are projected by the replay path's `agent.memory_manager.sanitize_context(...).strip()`, structured values by independent canonical JSON, and `api_content` by exact authority when present. Every unequal reference projection must raise `RewindHistoryConflict`. The exact symmetric `.lower()` widening was proved RED on `upper / Alpha` versus `lower / alpha`, production bytes were restored, and permanent mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD` now fences that direction.
+- **M13 assurance closure** added the independent content/`api_content` property and permanent symmetric-fold loosening mutation. Final Inspection 4 passed exact subject `389640f70679257b7acf074808e44277f31fb92a`, reproduced its `upper / Alpha` versus `lower / alpha` witness, and credited the record's pre-disclosure that `body_sha256` means normalized-LF full-function-source hash and that the historical manifest contains classified post-generation annotations. The inspector also demonstrated that M13's old `CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY` label was too broad: role, the five `_REWIND_JSON_FIELDS`, and message order were not varied.
+- **M14-M16 assurance extension** preserves all 33 content/`api_content` cases and extends the independent corpus to 51 histories and 2,601 ordered pairs across role (`user`/`assistant`/`tool`/`system`), all five JSON fields, and one- to three-message ordering. Exactly `2,494` pairs have unequal independent projections and therefore constrain rejection. Permanent loosening mutations M14 role-drop, M15 JSON-field-drop, and M16 order-insensitive comparison each fail on a named witness and restore production source byte-identically.
 
 Default replay, export, and search remain active-only. Yuanbao recall/redaction, rotated compression, and ordinary hard replacement remain destructive.
 
@@ -50,18 +51,20 @@ Historical repair-code result at `d540eaee9764fbc3194c493946cd6624f447c3a5`: `1,
 
 Historical code-subject result at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`: the author gate passed `1,285/0` in `90.8s`; Final Inspection 3 independently passed `1,285/0` in `88.9s`, 64 workers, zero file retries. That inspection and its submission-only clearance are historical and superseded for the new candidate.
 
-Current M13 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `94.0s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m13/FULL-GOVERNED-GATE.txt`, SHA-256 `a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961`.
+Final Inspection 4 independently passed exact M13 subject `389640f70679257b7acf074808e44277f31fb92a`: `1,286/0`, `13/13` mutations killed, canary PASS, clean custody, and exact M13 witness reproduction. That submission-only clearance is historical and superseded by the M14-M16 test-code change.
 
-Repair plus M13 mutation runner:
+Current M14-M16 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `120.3s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt`, SHA-256 `4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a`.
+
+Repair plus M13-M16 mutation runner:
 
 ```bash
 ./.venv/Scripts/python.exe \
   .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/run_mutations.py
 ```
 
-Result: 13 mutations; all 13 failed their named tests, including permanent loosening mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD`; all five production sources were restored byte-for-byte; the restored focused gate passed `11/11`; runner exit `0`. Manifest SHA-256: `3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa`.
+Result: 16 mutations; all 16 failed their named tests, including permanent loosening mutations M13 symmetric fold, M14 role-drop, M15 five-JSON-field-drop, and M16 order-insensitive comparison. All five production sources restored byte-for-byte; restored focused gate exit `0`; runner exit `0`. Immutable manifest snapshot: `assurance-gap-m14-m16/MUTATION-MANIFEST.json`, SHA-256 `a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258`.
 
-M13's receipt is normalized deterministically to UTF-8/LF with pytest's presentation-only trailing spaces removed; that policy is emitted by the runner in the manifest and on every mutation entry. The historical Stage 6 first-run raw receipts and their separate raw bindings remain historical evidence and are not represented as byte-identical to the M13 regeneration.
+The runner writes all mutable receipts and its live manifest only under gitignored `tmp/rewind-m14-m16-mutation-campaign/`. It did not overwrite any committed receipt. The committed manifest is an immutable post-run byte-exact snapshot; its receipt paths intentionally identify local gitignored evidence custody.
 
 ## Recovery export
 
@@ -146,9 +149,9 @@ Any rollback is a new authority-gated transaction. The Final Inspector warned th
 
 ## Code subject and record recursion
 
-The historical Final Inspection 3 **CODE SUBJECT** is `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` (tree `2095ee450d2582f765c604bb579cc6a93397c1ee`), with inspected record head `b3880ee2253ebd12f3ae9e6fdb3c755845dfed50`. Record-only commit `af49192172e1b3635490fcb019bda0e481b71292` followed it.
+Final Inspection 4 **CODE SUBJECT** is `389640f70679257b7acf074808e44277f31fb92a` (tree `f850cb16b89bcb2629d1745eaac3631bdb254300`). It returned `PASS — CLEARED FOR SUBMISSION` for that exact subject only.
 
-M13 changes `tests/test_hermes_state.py` and the mutation/evidence record. Therefore the `c266dad38` inspection binding is no longer current: the new code/test subject is the commit containing this record. It must be read mechanically from Git after commit and must receive a new independent Final Inspection before any submission clearance can exist. No production source byte changed in M13; `hermes_state.py` remains SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
+M14-M16 changes `tests/test_hermes_state.py`, the permanent mutation runner, and the evidence record. Therefore Final Inspection 4 clearance is historical and no longer current. The new code/test subject is the commit containing this record and must receive a new independent Final Inspection before submission clearance can exist. No production source byte changed; `hermes_state.py` remains SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
 
 ## Why the B-1 limit is pinned, not normalized
 
@@ -158,26 +161,26 @@ The earlier sanitizer examples are a **known lower bound, not an exhaustive enum
 
 This decision is not permanent by assertion alone. Revisit it if expected history gains a universally carried raw authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows. The executable pin currently covers only memory-context and system-note representatives plus sidecar compensation; it does not prove or parametrize every member of the full projection-equivalence class.
 
-## CLOSED ASSURANCE GAP — rewind-guard acceptance-class widening
+## ENUMERATED ASSURANCE FENCE — rewind-history guard
 
-Classification: `CLOSED FOR THIS GUARD — NEW FINAL INSPECTION PENDING`.
+Classification: `FENCED FOR ENUMERATED DIMENSIONS — NEW FINAL INSPECTION PENDING`.
 
-The gap is closed by executable, non-circular evidence. The new deterministic property constructs a 33-case adversarial corpus—case, edge/interior whitespace, NFC/NFD, zero-width and bidi characters, sanitizer-erased memory/system/fence spans, list/dict structured content, `None`/absent/empty, and `api_content` present/absent variants—and exercises all `1,089` ordered pairs through `rewind_active_history`. Its oracle never calls `_canonicalize_rewind_history` or `_normalize_rewind_message`: it derives user/assistant strings directly from replay-path `sanitize_context(...).strip()`, structured values from independent canonical JSON, and sidecars from exact values. Any unequal reference projection must produce `RewindHistoryConflict`; equal projections remain permitted to be accepted.
+The old M13 label `CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY` was too broad. Final Inspection 4 established that M13 covered content and `api_content` on single-message user-role histories, but did not constrain role, the five `_REWIND_JSON_FIELDS`, or message ordering. The M14-M16 extension keeps every one of the original 33 content/sidecar cases and adds role variation, two values for each JSON field, and ordered multi-message histories. The resulting corpus has 51 histories, 2,601 ordered pairs, and exactly 2,494 constraining pairs whose independent projections differ and therefore must raise `RewindHistoryConflict`.
 
-The property passed on restored production code, then failed under the exact strictly weakening symmetric fold applied inside `_canonicalize_rewind_history`. The named witness was durable `upper / "Alpha"` versus expected `lower / "alpha"`. After byte-identical restoration it passed again. The frozen property body SHA-256 is `36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478`.
+Fenced dimensions are: the original content representatives; exact `api_content` when present; roles `user`, `assistant`, `tool`, and `system`; `tool_calls`, `reasoning_details`, `codex_reasoning_items`, `codex_message_items`, and `display_metadata`; and represented one-, two-, and three-message ordering including a full reversal and an adjacent transposition. The oracle remains independent of `_canonicalize_rewind_history` and `_normalize_rewind_message`.
 
-Permanent mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD` now keeps this widening direction in the campaign. All `13/13` mutations fail named tests, all five production sources restore byte-identically, and the restored focused gate passes `11/11`. Closure record: `assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json`.
+The property fails under every permanent loosening direction M13-M16. M14 witnesses `role-user` versus `role-assistant`; M15 witnesses legitimate `real_tool` versus `ATTACKER_TOOL` and also varies `display_metadata`; M16 witnesses `order-forward` versus `order-reversed` and includes adjacent transposition. Each temporary mutation restored `hermes_state.py` byte-identically. The frozen property's normalized-LF full-function-source SHA-256 is `84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae`.
 
-Scope limit: this closes the demonstrated acceptance-class-widening gap for the rewind-history guard only. The removal-only mutation shape may leave equivalent widening gaps on other guards in this build. Those guards were not audited by this work, and no broader build-wide claim is made.
+Known limits, stated without inflation: a widening inside `sanitize_context` source is undetectable because the guard and oracle share that defined replay projection; this is reasoned, not empirically proved. The property does not vary the other semantic fields (`tool_call_id`, `tool_name`, `effect_disposition`, `token_count`, `finish_reason`, `reasoning`, `reasoning_content`, `platform_message_id`/`message_id`, `observed`, `display_kind`), arbitrary lengths/permutations beyond represented cases, inactive archived-row integrity, or other guards in the build. Production currently compares those semantic fields, but this property does not claim to fence their widening.
 
-Positive assurance finding remains: mutation distribution is materially better than earlier P3, and M13 adds the previously absent loosening direction rather than replacing the existing removal-or-break coverage.
+All `16/16` mutations fail named tests; all five production sources restore byte-identically; the actual governed gate passes `1,286/0`. Closure record: `assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json`.
 
 ## Open remainders
 
-- **Final Inspection:** historical `PASS — CLEARED FOR SUBMISSION ONLY` for exact code subject `c266dad38` and record head `b3880ee22`. M13 changes test code, so that clearance is now `SUPERSEDED / NOT CURRENT`; the new commit has no submission clearance until a fresh independent Final Inspection passes it. The historical receipt remains intact at `C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json`, SHA-256 `2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de`.
-- **M13 assurance closure:** `CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY`. Independent 1,089-pair property, exact widening RED witness, restored GREEN, 13/13 permanent mutations, and 1,286/0 governed gate are recorded. Other guards remain `NOT_ASSESSED_FOR_EQUIVALENT_WIDENING_GAPS`.
+- **Final Inspection:** Attempt 4 returned `PASS — CLEARED FOR SUBMISSION ONLY` for exact subject `389640f70679257b7acf074808e44277f31fb92a`. Wrapper `eligible:true`; Opus 5/max throughout; clean custody; `1,286/0`; `13/13`; canary PASS; M13 witness reproduced. M14-M16 changes test code, so that clearance is `SUPERSEDED / NOT CURRENT`; the new commit requires a fresh independent inspection. Receipt: `C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\stdout.raw.json`, SHA-256 `8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761`.
+- **Enumerated assurance fence:** content/`api_content`, role, all five JSON fields, and represented ordering are fenced by 2,494 exact constraining pairs plus permanent M13-M16 loosening mutations. A widening inside `sanitize_context` source remains a reasoned, unproven blind spot; other semantic fields, broader history shapes, archived-row integrity, and other guards remain unassessed by this property.
 - **Independent Stage 6 recheck:** `RECHECK_HOLD`. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-recheck-20260811-104048-ICT-c4057c52`. The reviewer reproduced `1,282/0` in `90.5s`, killed `12/12` mutations with byte-identical restoration independently verified by `git hash-object`, passed the canary with all exclusions true, and reproduced RED with zero collection/import errors. All seven findings were judged genuinely fixed. The deciding HOLD item was the under-scoped B-1 acceptance wording. This was defect-finding recheck, not Final Inspection or clearance.
-- **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; M13 WIDENING FENCE ADDED; NEW FINAL INSPECTION PENDING`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. The earlier sanitizer examples are a known lower bound, not a complete characterization. The actual boundary is equality under the whole `_normalize_rewind_message` projection, including user/assistant sanitizer collapse, `_decode_content` sentinel decoding, semantic normalization of the five JSON fields, and deliberately excluded database columns; tool-role strings remain byte-exact. The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
+- **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; M13-M16 ENUMERATED WIDENING FENCE ADDED; NEW FINAL INSPECTION PENDING`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. The earlier sanitizer examples are a known lower bound, not a complete characterization. The actual boundary is equality under the whole `_normalize_rewind_message` projection, including user/assistant sanitizer collapse, `_decode_content` sentinel decoding, semantic normalization of the five JSON fields, and deliberately excluded database columns; tool-role strings remain byte-exact. The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
 - **`api_content` prevalence:** `NOT ESTABLISHED`. Code proves it is nullable and conditional: no injection or sanitization-changing content can yield zero sidecars; only the current user row is composed/stamped for injected context, run-agent stamping is conditional, gateway/branch sites forward only an existing sidecar, and content rewrites drop stale sidecars. No repository telemetry establishes a percentage, and coverage of post-write drift on originally sidecar-free rows is not established.
 - **RED weight:** 16 failed cases total and zero collection/import/syntax errors, but only 9 are genuine behavioural REDs: B-1, B-2, B-3 ×3, B-4, M-1 ×2, and MED-5. The remaining 7 are parametrizations of one closure-key assertion. B-5 has no behavioural RED because it is a record correction.
 - **B-2 / MED-4:** `FIX CONFIRMED BY RECHECK`. Destructive export refuses deletion when ordinary export did not cover rewind rows, including probe uncertainty.

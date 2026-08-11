@@ -15,9 +15,9 @@
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a"
   },
   "identities": {
-    "planner": "Hermes openai-codex gpt-5.6-sol HIGH — builder-authored execution map",
-    "builder": "Hermes openai-codex gpt-5.6-sol HIGH — sole builder-finalizer; assurance-excluded",
-    "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH — builder meta-audit; not assurance",
+    "planner": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder-authored execution map",
+    "builder": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 sole builder-finalizer; assurance-excluded",
+    "metaAuditor": "Hermes openai-codex gpt-5.6-sol HIGH \u2014 builder meta-audit; not assurance",
     "finalInspector": "PENDING same-route independent Stage 6 recheck by eligible reviewer",
     "reviewers": [
       "PENDING same-route independent Stage 6 repair recheck"
@@ -232,12 +232,12 @@
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
+    "sourceSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "state": "M13_CANDIDATE_VERIFIED_UNCOMMITTED_FINAL_INSPECTION_PENDING",
-    "workingTreeParentCommit": "af49192172e1b3635490fcb019bda0e481b71292",
-    "workingTreeParent": "af49192172e1b3635490fcb019bda0e481b71292",
+    "reverifiedSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "state": "M14_M16_CANDIDATE_COMMITTED_FINAL_INSPECTION_PENDING",
+    "workingTreeParentCommit": "389640f70679257b7acf074808e44277f31fb92a",
+    "workingTreeParent": "389640f70679257b7acf074808e44277f31fb92a",
     "committedSourceSha256": {
       "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
       "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
@@ -246,14 +246,14 @@
       "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
     },
     "committedTestSha256": {
-      "tests/test_hermes_state.py": "433e29099172515ae5a149b4c4655ea63502b3b7cac8289c663f4449861bd496"
+      "tests/test_hermes_state.py": "5e21eea8d3892ef84c36c01daada5e673584ea013f97364ef8c894edd1ad1800"
     }
   },
   "submission": {
     "verdict": "BLOCKED_NO_CURRENT_FINAL_INSPECTION_CLEARANCE",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "historicalClearedSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "scope": "NO_SUBMISSION_CLEARANCE_FOR_M13_SUBJECT",
+    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "historicalClearedSha": "389640f70679257b7acf074808e44277f31fb92a",
+    "scope": "NO_SUBMISSION_CLEARANCE_FOR_M14_M16_SUBJECT",
     "executed": false
   },
   "push": {
@@ -276,25 +276,23 @@
     "rationale": "Current authorized lifecycle is source candidate and dual-repository port only; no deploy or packaged artifact authority"
   },
   "finalInspection": {
-    "status": "HISTORICAL_PASS_SUPERSEDED_FOR_M13_NEW_INSPECTION_PENDING",
-    "exactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "inspectedRecordHead": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
-    "artifactSha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
-    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-    "receiptSha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
-    "wrapperReceipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\wrapper-receipt.json",
-    "wrapperReceiptSha256": "9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e",
+    "status": "HISTORICAL_FINAL_INSPECTION_4_PASS_SUPERSEDED_M14_M16_NEW_INSPECTION_PENDING",
+    "exactSha": "389640f70679257b7acf074808e44277f31fb92a",
+    "artifactSha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761",
+    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\stdout.raw.json",
+    "receiptSha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761",
+    "wrapperReceipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\wrapper-receipt.json",
+    "wrapperReceiptSha256": "b7209cfc289fa39c7012d176dcab674f88d1775ab2ca4bcad21e3f486c0cc573",
     "finalInspectionPerformed": true,
-    "productRuling": "PASS_EVERY_VERIFIABLE_PRODUCT_AXIS_ZERO_DIVERGENCE",
     "clearance": false,
-    "scope": "HISTORICAL_C266_ONLY_NOT_CURRENT_M13_SUBJECT",
-    "currentCandidateExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
+    "scope": "HISTORICAL_389640F70_NOT_CURRENT_M14_M16_SUBJECT",
+    "currentCandidateExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
     "currentCandidateInspection": "PENDING"
   },
   "clearance": {
-    "status": "NONE_FOR_M13_CANDIDATE",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "historicalExactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "status": "NONE_FOR_M14_M16_CANDIDATE",
+    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "historicalExactSha": "389640f70679257b7acf074808e44277f31fb92a",
     "clearance": false,
     "scope": "NEW_FINAL_INSPECTION_REQUIRED"
   },
@@ -336,21 +334,8 @@
   "remainder": [
     {
       "id": "ASSURANCE-1",
-      "state": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
-      "evidence": {
-        "mechanism": "independent deterministic 33-case 1089-pair reference-projection property",
-        "exact_widening_mutation": "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD",
-        "witness": "durable upper/Alpha versus expected lower/alpha",
-        "governed_gate": {
-          "passed": 1286,
-          "failed": 0
-        },
-        "mutation_campaign": {
-          "killed": 13,
-          "total": 13,
-          "all_sources_restored_byte_identical": true
-        }
-      },
+      "state": "HISTORICAL_M13_CONTENT_API_CONTENT_SINGLE_MESSAGE_USER_ROLE_FENCE_EXTENDED_BY_M14_M16",
+      "evidence": "M14-M16 preserves all 33 content/api_content cases and extends the independent property to role, all five JSON fields, and represented ordering: 51 histories, 2601 pairs, exactly 2494 constraining pairs.",
       "decision": "CLOSED_FOR_THIS_GUARD_NEW_FINAL_INSPECTION_PENDING"
     },
     {
@@ -433,13 +418,13 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "CODE_SUBJECT_C266DAD38_VERIFIED",
-      "receipt": "Fresh Final Inspection 3 gate at c266dad38: 1285/1285 in 88.9s, 64 workers, zero retries; product verified clean."
+      "status": "M14_M16_CANDIDATE_VERIFIED",
+      "receipt": "Author governed gate 1286/1286 in 120.3s, 64 workers, zero retries."
     },
     "adversarial": {
       "sequence": 5,
-      "status": "STAGE6_REPAIR_MUTATION_PASS",
-      "receipt": "12/12 named failures; manifest f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0; exact restoration"
+      "status": "M13_M16_MUTATION_PASS",
+      "receipt": "16/16 named failures; manifest a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258; exact restoration"
     },
     "independentReview": {
       "sequence": 6,
@@ -473,15 +458,15 @@
     },
     "finalInspection": {
       "sequence": 13,
-      "status": "PENDING_FOR_M13_CANDIDATE",
-      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-      "historicalStatus": "PASS_CLEARED_FOR_SUBMISSION_C266DAD38",
+      "status": "PENDING_FOR_M14_M16_CANDIDATE",
+      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\stdout.raw.json",
+      "historicalStatus": "PASS_CLEARED_FOR_SUBMISSION_389640F70_SUPERSEDED",
       "clearance": false
     },
     "clearance": {
       "sequence": 14,
-      "status": "PASS_SUBMISSION_ONLY",
-      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json"
+      "status": "NONE_CURRENT_HISTORICAL_PASS_SUPERSEDED",
+      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\stdout.raw.json"
     },
     "deployment": {
       "sequence": 15,
@@ -493,13 +478,13 @@
     },
     "close": {
       "sequence": 17,
-      "status": "HOLD_LATER_LIFECYCLE_PENDING",
-      "receipt": "Final Inspection PASS for submission only; integration/push/CI/artifact/deploy/live/rollback remain incomplete."
+      "status": "HOLD_FINAL_INSPECTION_AND_LATER_LIFECYCLE_PENDING",
+      "receipt": "M14-M16 candidate verified; Final Inspection 4 clearance superseded; new inspection required."
     }
   },
   "closure": {
-    "status": "M13_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD"
+    "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
+    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD"
   },
   "bindings": {
     "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
@@ -528,7 +513,7 @@
     "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
     "p3AcpResidualSha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
     "stage6RepairDecisionPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "stage6RepairDecisionSha256": "f0fa75b0d317c445c5aad9cd5064d839b09a9885e058ca80293ad34d817aea5b",
+    "stage6RepairDecisionSha256": "8da61958270078810711e1ff6d1a3363a8e0b8e4fb1c66692911a139c26fb4d9",
     "stage6RepairMutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "stage6RepairFullGateSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
     "stage6RepairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
@@ -540,14 +525,12 @@
     },
     "repairDecision": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-      "sha256": "f0fa75b0d317c445c5aad9cd5064d839b09a9885e058ca80293ad34d817aea5b"
+      "sha256": "8da61958270078810711e1ff6d1a3363a8e0b8e4fb1c66692911a139c26fb4d9"
     },
     "stage6RecheckProvenance": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/PROVENANCE.json",
       "sha256": "e349c10531916d512a13077cbe3052d1ad6000e25fca1590476b03baec93eb0b"
     },
-    "codeSubjectCommit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "codeSubjectTree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
     "stage6CloseoutTestFileSha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648",
     "finalInspectionHold": {
       "directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT",
@@ -555,12 +538,30 @@
       "wrapperReceiptSha256": "2212cc10d47f36a2c2190336b4d7c377203bd376b33cbdb1da8be591ce6d82bf"
     },
     "m13AssuranceClosurePath": "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json",
-    "m13AssuranceClosureSha256": "5fbb07e7f883e2b059decfc712a20bf75f6febedf41067d17ff4bad3fdfb94cf",
+    "m13AssuranceClosureSha256": "5f324b4b9be1edd4e61ff36ce6416532b518b1960bd98ea73eb0b17976e00f15",
     "m13PropertyFreezeSha256": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c",
     "m13FullGovernedGateSha256": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
     "m13PropertyTestBodySha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
     "m13MutationManifestPath": "assurance-gap-m13/mutation-campaign/mutation-manifest.json",
-    "m13MutationManifestSha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa"
+    "m13MutationManifestSha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
+    "currentCodeSubject": {
+      "binding": "COMMIT_CONTAINING_THIS_RECORD",
+      "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+      "parent": "389640f70679257b7acf074808e44277f31fb92a",
+      "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT"
+    },
+    "historicalFinalInspection4Subject": {
+      "commit": "389640f70679257b7acf074808e44277f31fb92a",
+      "tree": "f850cb16b89bcb2629d1745eaac3631bdb254300",
+      "status": "PASS_SUPERSEDED_BY_M14_M16"
+    },
+    "m14M16AssuranceClosurePath": "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json",
+    "m14M16AssuranceClosureSha256": "e47efbfacbddbeab298cd3f4db26fe3c173f98a263cab2bd8b3065b5e8a44b0a",
+    "m14M16PropertyFreezeSha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba",
+    "m14M16FullGovernedGateSha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a",
+    "m14M16PropertyTestBodySha256": "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae",
+    "m14M16MutationManifestPath": "assurance-gap-m14-m16/MUTATION-MANIFEST.json",
+    "m14M16MutationManifestSha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258"
   },
   "updatedAt": "2026-08-11T14:33:22+07:00",
   "planReview": {
@@ -698,9 +699,9 @@
           "reason": "This is not a user-selected rewind/truncate and has no target ordinal or dropped suffix. The agent normally appends and preserves compaction archives itself. Only when that agent does not own this SessionDB does the adapter rewrite the complete current live history; has_archived_messages selects active_only=True so existing inactive/compacted rows survive.",
           "gatingCondition": "Remains out of scope only while the caller persists the complete current live history, runs solely in the non-owner fallback, and active_only is selected whenever archived rows exist. Any user-triggered subset/truncate, existing-row loss, or target-session mismatch requires a new map revision before source work.",
           "evidence": [
-            "base 872c341302 acp_adapter/session.py:455-468 — normal agent persistence and archive_and_compact rationale",
-            "base 872c341302 acp_adapter/session.py:469-486 — non-owner fallback and archived-row guard",
-            "base 872c341302 acp_adapter/session.py:487-493 — has_archived_messages then replace_messages(... active_only=has_archived)"
+            "base 872c341302 acp_adapter/session.py:455-468 \u2014 normal agent persistence and archive_and_compact rationale",
+            "base 872c341302 acp_adapter/session.py:469-486 \u2014 non-owner fallback and archived-row guard",
+            "base 872c341302 acp_adapter/session.py:487-493 \u2014 has_archived_messages then replace_messages(... active_only=has_archived)"
           ]
         },
         {
@@ -712,9 +713,9 @@
           "reason": "The endpoint creates a new, previously non-existent child session, marks the source branched, reads the source's default active messages, and initializes the empty child with that complete live transcript. It neither truncates nor rewrites the source and has no dropped suffix to archive.",
           "gatingCondition": "Remains out of scope only while fork_id is proven absent before create_session, replace_messages targets only that newly created empty child, and source messages are copied without subset truncation. Reusing an existing child, mutating the source, or copying only a suffix/prefix requires a new map revision.",
           "evidence": [
-            "base 872c341302 gateway/platforms/api_server.py:3231-3248 — fork endpoint and non-existing fork_id check",
-            "base 872c341302 gateway/platforms/api_server.py:3250-3261 — source marked branched and new child created",
-            "base 872c341302 gateway/platforms/api_server.py:3262-3263 — source active messages copied into fork_id"
+            "base 872c341302 gateway/platforms/api_server.py:3231-3248 \u2014 fork endpoint and non-existing fork_id check",
+            "base 872c341302 gateway/platforms/api_server.py:3250-3261 \u2014 source marked branched and new child created",
+            "base 872c341302 gateway/platforms/api_server.py:3262-3263 \u2014 source active messages copied into fork_id"
           ]
         },
         {
@@ -727,9 +728,9 @@
           "implementationBinding": "Already owned by P1 through tui_gateway/server.py. P1.C3 must cover this command under I1/I2: durable compare-and-mutate commits before in-memory truncation/send; conflict, compression-closed, or storage failure leaves history/history_version unchanged and emits no send. No new file ownership, edge, or interface is introduced by this adjudication.",
           "gatingCondition": "It is accepted only when an executable P1 test proves the command archives the last active user/assistant suffix and fails closed before memory/send on every I1 failure. Treating it as memory-only or leaving durable state divergent is a P1 HOLD.",
           "evidence": [
-            "base 872c341302 tui_gateway/server.py:15360-15377 — user-facing /retry and last-user resolution",
-            "base 872c341302 tui_gateway/server.py:15378-15386 — message recovery/validation",
-            "base 872c341302 tui_gateway/server.py:15387-15392 — in-memory truncate/history_version increment and send with no persistence call",
+            "base 872c341302 tui_gateway/server.py:15360-15377 \u2014 user-facing /retry and last-user resolution",
+            "base 872c341302 tui_gateway/server.py:15378-15386 \u2014 message recovery/validation",
+            "base 872c341302 tui_gateway/server.py:15387-15392 \u2014 in-memory truncate/history_version increment and send with no persistence call",
             "execution-map-v2 P1 already solely owns tui_gateway/server.py"
           ]
         },
@@ -741,8 +742,8 @@
           "reason": "The opening-turn correction rewords the existing restoreBody and restoreBodyWipes values in the five already-owned locale files. Both keys already exist in Translations; no new translation key or type-contract change is required.",
           "gatingCondition": "Remains out of scope only if implementation changes values of the existing restoreBody/restoreBodyWipes keys. If any new key, renamed key, or type shape is proposed, stop before editing and issue a map revision that pre-authorizes types.ts.",
           "evidence": [
-            "base 872c341302 apps/desktop/src/i18n/types.ts:2287-2294 — existing restore keys, including restoreBodyWipes and restoreBody",
-            "base 872c341302 apps/desktop/src/i18n/en.ts:2704-2708 — existing opening-turn and ordinary restore copy values",
+            "base 872c341302 apps/desktop/src/i18n/types.ts:2287-2294 \u2014 existing restore keys, including restoreBodyWipes and restoreBody",
+            "base 872c341302 apps/desktop/src/i18n/en.ts:2704-2708 \u2014 existing opening-turn and ordinary restore copy values",
             "git grep at base 872c341302 confirms restoreBody and restoreBodyWipes in ar/en/ja/zh-hant/zh locale files"
           ]
         }
@@ -917,8 +918,8 @@
         "files": 5,
         "oldIrreversibleClaimsFound": 0,
         "isolatedSyntaxErrors": 0,
-        "syntaxCheckRerun": "PASS — 5 files, 0 syntax errors",
-        "temporaryJunctionResidue": "NONE — candidate node_modules absent; original clone node_modules directories present and not links/junctions",
+        "syntaxCheckRerun": "PASS \u2014 5 files, 0 syntax errors",
+        "temporaryJunctionResidue": "NONE \u2014 candidate node_modules absent; original clone node_modules directories present and not links/junctions",
         "fullTypecheck": "BLOCKED_BY_MISSING_CANDIDATE_DEPENDENCIES_AND_INCOMPLETE_BORROWED_TREE"
       },
       "next": "COMPLETED_SUPERSEDED_BY_P2_P3",
@@ -1705,23 +1706,22 @@
   },
   "updatedAtIct": "2026-08-11T14:33:22+07:00",
   "codeSubject": {
-    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
-    "scope": "M13_TEST_CODE_MUTATION_AND_RECORD_SUBJECT",
+    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "parent": "389640f70679257b7acf074808e44277f31fb92a",
+    "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT",
     "production_source_changed": false,
     "test_file": "tests/test_hermes_state.py",
-    "test_file_sha256": "433e29099172515ae5a149b4c4655ea63502b3b7cac8289c663f4449861bd496",
+    "test_file_sha256": "5e21eea8d3892ef84c36c01daada5e673584ea013f97364ef8c894edd1ad1800",
     "historical_inspected_subject": {
-      "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-      "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
-      "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M13"
+      "exact_sha": "389640f70679257b7acf074808e44277f31fb92a",
+      "tree": "f850cb16b89bcb2629d1745eaac3631bdb254300",
+      "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M14_M16"
     }
   },
   "recordRecursion": {
-    "currentSubjectExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
-    "bindingRule": "M13 test code and its evidence are committed together; exact subject is the commit containing this record.",
-    "historicalInspectedRecordHead": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "currentSubjectExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "parent": "389640f70679257b7acf074808e44277f31fb92a",
+    "bindingRule": "M14-M16 test code and evidence are committed together; exact subject is the commit containing this record.",
     "historicalClearanceApplicability": "SUPERSEDED"
   },
   "stage6CloseoutTestCommit": {
@@ -1822,19 +1822,19 @@
   },
   "finalInspectionPass": {
     "verdict": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
-    "scope": "SUBMISSION_ONLY_NO_MERGE_PUSH_DEPLOY_ACTIVATION_TRADING_ORDER_OR_ROLLBACK_AUTHORITY",
-    "code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
-    "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT",
+    "scope": "HISTORICAL_389640F70_SUBMISSION_ONLY_SUPERSEDED_BY_M14_M16_TEST_CODE",
+    "code_subject_sha": "389640f70679257b7acf074808e44277f31fb92a",
+    "code_subject_tree": "f850cb16b89bcb2629d1745eaac3631bdb254300",
+    "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT",
     "stdout_raw_json": {
-      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-      "sha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
-      "bytes": 26766
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\stdout.raw.json",
+      "sha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761",
+      "bytes": 27114
     },
     "wrapper_receipt": {
-      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\wrapper-receipt.json",
-      "sha256": "9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e",
-      "bytes": 3206,
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT\\wrapper-receipt.json",
+      "sha256": "b7209cfc289fa39c7012d176dcab674f88d1775ab2ca4bcad21e3f486c0cc573",
+      "bytes": 3207,
       "eligible": true,
       "mutation_performed": false
     },
@@ -1845,45 +1845,31 @@
       "observed_models": [
         "claude-opus-5"
       ],
-      "auxiliary_models": [],
-      "route_status": "READY_WITH_ROUTE_EVIDENCE",
-      "process_exit": 0
+      "auxiliary_models": []
     },
     "custody": {
-      "head_at_start": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
-      "head_at_end": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
       "status_at_start": "CLEAN",
       "status_at_end": "CLEAN",
       "protected_before_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
-      "protected_after_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
-      "reflog_head_move": false
+      "protected_after_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642"
     },
     "observed_gate": {
       "files": 10,
-      "passed": 1285,
-      "failed": 0,
-      "seconds": 88.9,
-      "workers": 64,
-      "file_retries": 0
+      "passed": 1286,
+      "failed": 0
     },
     "observed_mutations": {
-      "killed": 12,
-      "total": 12,
+      "killed": 13,
+      "total": 13,
       "sources_restored_byte_identical": true
     },
-    "observed_canary": "PASS_FRESH_ISOLATED_MARKER_BEARING_ROOT",
-    "map_chain": "RECOMPUTED_UNDER_MAP_CANONICALIZER",
-    "decisive_test_bodies": "THREE_BYTE_IDENTICAL_AND_UNMOVED",
-    "record_recursion": "MECHANICALLY_VERIFIED_C266DAD38_TO_B3880EE22_EXACTLY_FOUR_RECORD_PATHS_ZERO_CODE_TEST_PATHS",
-    "not_checked": [
-      "api_content numeric prevalence",
-      "rollback execution",
-      "remote and CI state",
-      "real multi-process lock contention",
-      "in-seat route receipt; externally held wrapper receipt supplies route attestation"
+    "observed_canary": "PASS",
+    "m13_widening_witness_reproduced": "upper / Alpha versus lower / alpha",
+    "record_credit": [
+      "body_sha256 full-function-source hash disclosure",
+      "PROVENANCE manifest-annotation classification"
     ],
-    "rollback": "DOCUMENTED_NEVER_EXECUTED_UNPROVEN",
-    "current_applicability": "SUPERSEDED_BY_M13_TEST_CODE_CHANGE",
+    "current_applicability": "SUPERSEDED_BY_M14_M16_TEST_CODE_CHANGE",
     "current_clearance": false
   },
   "m13AssuranceGapClosure": {
@@ -1898,7 +1884,7 @@
       "clearance": false
     },
     "assurance_gap": {
-      "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+      "status": "CLOSED_FOR_CONTENT_AND_API_CONTENT_PROJECTION_DIMENSIONS_ON_SINGLE_MESSAGE_USER_ROLE_HISTORIES",
       "mechanism": "deterministic cross-product property anchored to independent replay projection",
       "scope_limit": "Equivalent acceptance-widening gaps may remain on other guards; not audited or closed by this work",
       "other_guards": "NOT_ASSESSED"
@@ -2008,10 +1994,258 @@
     },
     "receipt_byte_policy": "UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
     "lifecycle": {
-      "candidate": "CANDIDATE_VERIFIED_UNCOMMITTED",
-      "final_inspection": "STALE_PENDING_NEW_INSPECTION",
+      "candidate": "COMMITTED_389640F70679257B7ACF074808E44277F31FB92A",
+      "final_inspection": "FINAL_INSPECTION_4_PASS_HISTORICAL_SUPERSEDED_BY_M14_M16",
       "submission_clearance": "NONE_FOR_NEW_SUBJECT",
       "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+    }
+  },
+  "historicalFinalInspectionPass3": {
+    "verdict": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
+    "scope": "SUBMISSION_ONLY_NO_MERGE_PUSH_DEPLOY_ACTIVATION_TRADING_ORDER_OR_ROLLBACK_AUTHORITY",
+    "code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT",
+    "stdout_raw_json": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
+      "sha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
+      "bytes": 26766
+    },
+    "wrapper_receipt": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\wrapper-receipt.json",
+      "sha256": "9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e",
+      "bytes": 3206,
+      "eligible": true,
+      "mutation_performed": false
+    },
+    "route": {
+      "requested_model": "claude-opus-5",
+      "requested_effort": "max",
+      "effective_effort": "max",
+      "observed_models": [
+        "claude-opus-5"
+      ],
+      "auxiliary_models": [],
+      "route_status": "READY_WITH_ROUTE_EVIDENCE",
+      "process_exit": 0
+    },
+    "custody": {
+      "head_at_start": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "head_at_end": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "status_at_start": "CLEAN",
+      "status_at_end": "CLEAN",
+      "protected_before_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
+      "protected_after_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
+      "reflog_head_move": false
+    },
+    "observed_gate": {
+      "files": 10,
+      "passed": 1285,
+      "failed": 0,
+      "seconds": 88.9,
+      "workers": 64,
+      "file_retries": 0
+    },
+    "observed_mutations": {
+      "killed": 12,
+      "total": 12,
+      "sources_restored_byte_identical": true
+    },
+    "observed_canary": "PASS_FRESH_ISOLATED_MARKER_BEARING_ROOT",
+    "map_chain": "RECOMPUTED_UNDER_MAP_CANONICALIZER",
+    "decisive_test_bodies": "THREE_BYTE_IDENTICAL_AND_UNMOVED",
+    "record_recursion": "MECHANICALLY_VERIFIED_C266DAD38_TO_B3880EE22_EXACTLY_FOUR_RECORD_PATHS_ZERO_CODE_TEST_PATHS",
+    "not_checked": [
+      "api_content numeric prevalence",
+      "rollback execution",
+      "remote and CI state",
+      "real multi-process lock contention",
+      "in-seat route receipt; externally held wrapper receipt supplies route attestation"
+    ],
+    "rollback": "DOCUMENTED_NEVER_EXECUTED_UNPROVEN",
+    "current_applicability": "SUPERSEDED_BY_M13_TEST_CODE_CHANGE",
+    "current_clearance": false
+  },
+  "m14M16AssuranceGapClosure": {
+    "schema": "rewind-assurance-gap-m14-m16-closure-v1",
+    "build_id": "rewind-archive-dropped-20260810",
+    "timestamp_ict": "2026-08-11T15:55:25+07:00",
+    "parent_inspected_subject": "389640f70679257b7acf074808e44277f31fb92a",
+    "candidate_commit": "DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+    "final_inspection_4": {
+      "verdict": "HISTORICAL_PASS_CLEARED_FOR_SUBMISSION_SUPERSEDED_BY_M14_M16_TEST_CODE",
+      "code_subject": "389640f70679257b7acf074808e44277f31fb92a",
+      "clearance_for_current_candidate": false,
+      "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT",
+      "stdout_raw_json": {
+        "bytes": 27114,
+        "sha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761"
+      },
+      "wrapper_receipt": {
+        "bytes": 3207,
+        "sha256": "b7209cfc289fa39c7012d176dcab674f88d1775ab2ca4bcad21e3f486c0cc573",
+        "eligible": true,
+        "requested_model": "claude-opus-5",
+        "effective_effort": "max",
+        "observed_models": [
+          "claude-opus-5"
+        ],
+        "auxiliary_models": [],
+        "mutation_performed": false
+      },
+      "custody": "CLEAN_BOTH_ENDS_PROTECTED_ROOT_IDENTICAL",
+      "observed_gate": "1286/0",
+      "observed_mutations": "13/13_KILLED_BYTE_IDENTICAL_RESTORATION",
+      "observed_canary": "PASS",
+      "m13_witness_reproduced": "upper / Alpha versus lower / alpha",
+      "record_credit": [
+        "REPAIR-DECISION.md:87 pre-disclosed body_sha256 fields are normalized-LF full-function-source hashes",
+        "PROVENANCE.json pre-disclosed generator-output-plus-post-generation-annotation classification"
+      ]
+    },
+    "assurance_fence": {
+      "status": "FENCED_FOR_ENUMERATED_REWIND_HISTORY_DIMENSIONS_NEW_FINAL_INSPECTION_PENDING",
+      "fenced_dimensions": [
+        "content projection representatives from M13 corpus",
+        "api_content exact authority when present",
+        "role values user/assistant/tool/system",
+        "all five _REWIND_JSON_FIELDS",
+        "ordered multi-message histories including reversal and adjacent transposition"
+      ],
+      "not_fenced_or_not_established": [
+        "widening inside sanitize_context source (reasoned, not proven; shared defined projection)",
+        "other _REWIND_SEMANTIC_FIELDS not varied by this property: tool_call_id, tool_name, effect_disposition, token_count, finish_reason, reasoning, reasoning_content, platform_message_id/message_id, observed, display_kind",
+        "history permutations or lengths beyond the represented one-, two-, and three-message cases",
+        "inactive archived-row integrity; rewind guard compares active rows only",
+        "equivalent widening protection for other guards in the build"
+      ],
+      "scope_statement": "The property fences content, api_content, role, all five _REWIND_JSON_FIELDS, and represented message ordering for the rewind-history guard. It is not an unqualified guard-wide or build-wide completeness claim."
+    },
+    "property": {
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+      "body_sha256": "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae",
+      "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS",
+      "content_api_content_cases_preserved": 33,
+      "history_cases": 51,
+      "cross_product_pairs": 2601,
+      "exact_constraining_pairs": 2494,
+      "permitted_equal_pairs": 107,
+      "restored_green": "1 passed in 13.09s",
+      "freeze_manifest": "assurance-gap-m14-m16/PROPERTY-FREEZE.json",
+      "freeze_manifest_sha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba"
+    },
+    "widening_proofs": [
+      {
+        "mutation_id": "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
+        "mutated_exit_code": 1,
+        "witness": "durable='role-user', expected='role-assistant'",
+        "gitignored_receipt": "tmp/m14-16-red/M14_DROP_ROLE.txt",
+        "receipt_sha256": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1"
+      },
+      {
+        "mutation_id": "M15_DROP_REWIND_JSON_FIELDS_FROM_PROJECTION",
+        "mutated_exit_code": 1,
+        "witness": "durable='json-tool-calls-real', expected='json-tool-calls-attacker' (real_tool -> ATTACKER_TOOL)",
+        "additional_fenced_example": "display_metadata trusted -> attacker",
+        "gitignored_receipt": "tmp/m14-16-red/M15_DROP_REWIND_JSON_FIELDS.txt",
+        "receipt_sha256": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d"
+      },
+      {
+        "mutation_id": "M16_MAKE_REWIND_COMPARISON_ORDER_INSENSITIVE",
+        "mutated_exit_code": 1,
+        "witness": "durable='order-forward', expected='order-reversed'",
+        "additional_fenced_example": "adjacent transposition order-adjacent-abc -> order-adjacent-acb",
+        "gitignored_receipt": "tmp/m14-16-red/M16_ORDER_INSENSITIVE.txt",
+        "receipt_sha256": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
+      }
+    ],
+    "mutation_campaign": {
+      "manifest": "assurance-gap-m14-m16/MUTATION-MANIFEST.json",
+      "manifest_sha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
+      "runner_evidence_directory": "tmp/rewind-m14-m16-mutation-campaign",
+      "runner_evidence_gitignored": true,
+      "committed_receipts_overwritten": false,
+      "mutation_count": 16,
+      "all_mutations_failed_named_tests": true,
+      "all_sources_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "restored_focused_exit_code": 0
+    },
+    "governed_gate": {
+      "files": 10,
+      "passed": 1286,
+      "failed": 0,
+      "seconds": 120.3,
+      "workers": 64,
+      "file_retries": 0,
+      "output": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+      "output_sha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a"
+    },
+    "protected_existing_test_bodies": [
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_prompt_submit_rewind_archives_newly_dropped_suffix",
+        "lineno": 14467,
+        "end_lineno": 14536,
+        "body_sha256": "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      },
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix",
+        "lineno": 14539,
+        "end_lineno": 14599,
+        "body_sha256": "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      },
+      {
+        "file": "tests/cli/test_cli_retry.py",
+        "test": "test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue",
+        "lineno": 89,
+        "end_lineno": 140,
+        "body_sha256": "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      }
+    ],
+    "production_source_changed": false,
+    "test_file_sha256": "5e21eea8d3892ef84c36c01daada5e673584ea013f97364ef8c894edd1ad1800",
+    "runner_sha256": "b3c65e6fa1b40305e394056ff37b708aeff927ea86744d8f6faa458c28eebf92",
+    "per_agent_token_spend": {
+      "M14_M16_Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
+      "Final_Inspection_4_claude_opus_5": {
+        "input_tokens": 160,
+        "output_tokens": 100564,
+        "cache_read_input_tokens": 9916519,
+        "cache_creation_input_tokens": 212583,
+        "auxiliary_models": []
+      }
+    },
+    "lifecycle": {
+      "candidate": "COMMITTED_SUBJECT_DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+      "final_inspection": "PENDING_NEW_INSPECTION_M14_M16",
+      "submission_clearance": "NONE_FOR_NEW_SUBJECT",
+      "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+    }
+  },
+  "authoritativeCurrentState": {
+    "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
+    "subject_binding": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "parent": "389640f70679257b7acf074808e44277f31fb92a",
+    "current_clearance": false,
+    "reason": "Final Inspection 4 PASS is exact-subject historical and was knowingly superseded by M14-M16 test code.",
+    "negative_lifecycle": {
+      "merge": false,
+      "push": false,
+      "deploy": false,
+      "activation": false,
+      "trading": false,
+      "orders": false
     }
   }
 }

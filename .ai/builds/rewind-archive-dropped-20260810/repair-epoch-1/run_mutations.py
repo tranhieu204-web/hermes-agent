@@ -10,18 +10,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
-EVIDENCE = (
-    ROOT
-    / ".ai"
-    / "builds"
-    / "rewind-archive-dropped-20260810"
-    / "assurance-gap-m13"
-    / "mutation-campaign"
-)
+EVIDENCE = ROOT / "tmp" / "rewind-m14-m16-mutation-campaign"
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-BASE_COMMIT = "af49192172e1b3635490fcb019bda0e481b71292"
+BASE_COMMIT = "389640f70679257b7acf074808e44277f31fb92a"
 PROPERTY_TEST_BODY_SHA256 = (
-    "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478"
+    "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae"
 )
 
 
@@ -141,6 +134,47 @@ MUTATIONS = [
         "            ).encode(\"utf-8\").lower()",
         "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
     ),
+    Mutation(
+        "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
+        "hermes_state.py",
+        "        for field in cls._REWIND_SEMANTIC_FIELDS:",
+        "        for field in (\n"
+        "            item for item in cls._REWIND_SEMANTIC_FIELDS if item != \"role\"\n"
+        "        ):",
+        "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    ),
+    Mutation(
+        "M15_DROP_REWIND_JSON_FIELDS_FROM_PROJECTION",
+        "hermes_state.py",
+        "        for field in cls._REWIND_SEMANTIC_FIELDS:",
+        "        for field in (\n"
+        "            item\n"
+        "            for item in cls._REWIND_SEMANTIC_FIELDS\n"
+        "            if item not in cls._REWIND_JSON_FIELDS\n"
+        "        ):",
+        "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    ),
+    Mutation(
+        "M16_MAKE_REWIND_COMPARISON_ORDER_INSENSITIVE",
+        "hermes_state.py",
+        "        try:\n"
+        "            return json.dumps(\n"
+        "                projected,",
+        "        try:\n"
+        "            projected = sorted(\n"
+        "                projected,\n"
+        "                key=lambda item: json.dumps(\n"
+        "                    item,\n"
+        "                    ensure_ascii=False,\n"
+        "                    sort_keys=True,\n"
+        "                    separators=(\",\", \":\"),\n"
+        "                    allow_nan=False,\n"
+        "                ),\n"
+        "            )\n"
+        "            return json.dumps(\n"
+        "                projected,",
+        "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    ),
 ]
 
 RESTORED_SELECTORS = sorted({mutation.selector for mutation in MUTATIONS})
@@ -240,11 +274,20 @@ def main() -> int:
         final_sha = {path: sha256((ROOT / path).read_bytes()) for path in touched}
         all_restored = final_sha == baseline_sha
         manifest = {
-            "schema": "rewind-m13-assurance-mutation-manifest-v1",
+            "schema": "rewind-m13-m16-assurance-mutation-manifest-v1",
             "base_commit": BASE_COMMIT,
-            "campaign_scope": "stage6 repair guards plus M13 acceptance-class widening fence",
+            "campaign_scope": (
+                "stage6 repair guards plus M13 content/api_content, M14 role, "
+                "M15 rewind JSON-field and M16 history-order widening fences"
+            ),
             "property_test_body_sha256": PROPERTY_TEST_BODY_SHA256,
-            "widening_mutations": ["M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD"],
+            "widening_mutations": [
+                "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD",
+                "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
+                "M15_DROP_REWIND_JSON_FIELDS_FROM_PROJECTION",
+                "M16_MAKE_REWIND_COMPARISON_ORDER_INSENSITIVE",
+            ],
+            "evidence_custody": "GITIGNORED_LOCAL_TMP_NOT_COMMITTED",
             "mutation_count": len(results),
             "all_mutations_failed_named_tests": all(
                 result["named_test_failed"] for result in results

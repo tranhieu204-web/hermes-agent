@@ -10,9 +10,9 @@
     "clearance": false
   },
   "assurance_gap": {
-    "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+    "status": "CLOSED_FOR_CONTENT_AND_API_CONTENT_PROJECTION_DIMENSIONS_ON_SINGLE_MESSAGE_USER_ROLE_HISTORIES",
     "mechanism": "deterministic cross-product property anchored to independent replay projection",
-    "scope_limit": "Equivalent acceptance-widening gaps may remain on other guards; not audited or closed by this work",
+    "scope_limit": "Historical M13 scope only: role, five _REWIND_JSON_FIELDS, and transcript ordering were not varied until M14-M16; sanitize_context-source widening remains undetectable by the shared defined projection.",
     "other_guards": "NOT_ASSESSED"
   },
   "property": {
@@ -120,9 +120,14 @@
   },
   "receipt_byte_policy": "UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
   "lifecycle": {
-    "candidate": "CANDIDATE_VERIFIED_UNCOMMITTED",
-    "final_inspection": "STALE_PENDING_NEW_INSPECTION",
-    "submission_clearance": "NONE_FOR_NEW_SUBJECT",
+    "candidate": "COMMITTED_389640F70679257B7ACF074808E44277F31FB92A",
+    "final_inspection": "FINAL_INSPECTION_4_PASS_HISTORICAL_SUPERSEDED_BY_M14_M16",
+    "submission_clearance": "NONE_FOR_M14_M16_SUCCESSOR_SUBJECT",
     "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+  },
+  "historical_scope_correction": {
+    "recorded_ict": "2026-08-11T15:55:25+07:00",
+    "reason": "Final Inspection 4 proved role, five JSON-field, and order-insensitive widenings escaped the M13 single-message user-role content/api_content corpus.",
+    "m14_m16_closure": "../assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json"
   }
 }

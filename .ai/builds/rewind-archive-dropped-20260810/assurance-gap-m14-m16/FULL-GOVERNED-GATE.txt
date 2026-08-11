@@ -1,0 +1,36 @@
+▶ no local venv — using Nix dev venv via HERMES_PYTHON: ./.venv/Scripts/python.exe
+▶ running per-file parallel test suite via run_tests_parallel.py
+  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)
+▶ pre-compiling bytecode cache
+▶ launching test runner
+Discovered 10 test files (~1222 tests) under ['tests\\test_hermes_state.py', 'tests\\gateway\\test_dedupe_user_turns.py', 'tests\\test_tui_gateway_server.py', 'tests\\cli\\test_cli_retry.py', 'tests\\gateway\\test_retry_response.py', 'tests\\gateway\\test_session.py', 'tests\\hermes_cli\\test_sessions_export_rewound.py', 'tests\\acp\\test_session.py', 'tests\\hermes_cli\\test_sessions_export_md_cli.py', 'tests\\agent\\test_insights.py']; running with -j 64
+[  0.5% |     6/~1222 | ✓13 | ✗ 0] ✓ tests\hermes_cli\test_sessions_export_rewound.py (13✓, 3.3s)
+[  0.7% |     9/~1222 | ✓16 | ✗ 0] ✓ tests\cli\test_cli_retry.py (3✓, 3.6s)
+[  2.4% |    29/~1222 | ✓36 | ✗ 0] ✓ tests\hermes_cli\test_sessions_export_md_cli.py (20✓, 4.5s)
+[  2.7% |    33/~1222 | ✓40 | ✗ 0] ✓ tests\gateway\test_retry_response.py (4✓, 5.1s)
+[  3.4% |    41/~1222 | ✓48 | ✗ 0] ✓ tests\gateway\test_dedupe_user_turns.py (8✓, 6.5s)
+[ 15.9% |   194/~1222 | ✓203 | ✗  0] ✓ tests\gateway\test_session.py (155✓, 13.1s)
+[ 19.7% |   241/~1222 | ✓251 | ✗  0] ✓ tests\acp\test_session.py (48✓, 13.5s)
+[ 24.6% |   301/~1222 | ✓311 | ✗  0] ✓ tests\agent\test_insights.py (60✓, 17.3s)
+[ 62.5% |   764/~1222 | ✓786 | ✗  0] ✓ tests\test_tui_gateway_server.py (475✓, 118.7s)
+[100.0% |  1222/~1222 | ✓1286 | ✗   0] ✓ tests\test_hermes_state.py (500✓, 120.3s)
+
+=== Summary: 10 files, 1286 tests passed, 0 failed (100% complete) in 120.3s (64 workers) ===
+  Durations cached to test_durations.json (10 files)
+
+=== Per-file subprocess time distribution ===
+  Files:   10
+  Total subprocess CPU-wall: 306.0s  (runner wall: 120.3s, parallelism: 64x)
+  P50: 13.12s  P90: 120.30s  P95: 120.30s  P99: 120.30s  Max: 120.30s
+  <1s: 0 files (0%)  <2s: 0 files (0%)
+  Top 10 slowest:
+    120.30s  tests\test_hermes_state.py
+    118.68s  tests\test_tui_gateway_server.py
+     17.34s  tests\agent\test_insights.py
+     13.52s  tests\acp\test_session.py
+     13.12s  tests\gateway\test_session.py
+      6.49s  tests\gateway\test_dedupe_user_turns.py
+      5.11s  tests\gateway\test_retry_response.py
+      4.50s  tests\hermes_cli\test_sessions_export_md_cli.py
+      3.58s  tests\cli\test_cli_retry.py
+      3.32s  tests\hermes_cli\test_sessions_export_rewound.py

@@ -5,11 +5,11 @@
   "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
   "branch": "sakaan/rewind-archive-dropped-20260810",
   "lifecycle": {
-    "implementation": "M13_TEST_CODE_CANDIDATE_VERIFIED_UNCOMMITTED",
-    "independent_build_review": "HISTORICAL_FINAL_INSPECTION_PASS_SUPERSEDED_NEW_INSPECTION_PENDING",
-    "clearance": "NONE_FOR_M13_CANDIDATE",
+    "implementation": "M14_M16_TEST_CODE_CANDIDATE_VERIFIED_COMMITTED_SUBJECT_BINDING",
+    "independent_build_review": "HISTORICAL_FINAL_INSPECTION_4_PASS_SUPERSEDED_NEW_INSPECTION_PENDING",
+    "clearance": "NONE_FOR_M14_M16_CANDIDATE",
     "pipeline_closure": "HOLD_FINAL_INSPECTION_AND_LATER_LIFECYCLE_PENDING",
-    "closure_record_git_state": "M13_CODE_TEST_AND_RECORD_COMMIT_PENDING"
+    "closure_record_git_state": "M14_M16_CODE_TEST_AND_RECORD_COMMIT_CONTAINS_SELF_BINDING"
   },
   "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
   "actual_implementation_commits": [
@@ -57,32 +57,23 @@
     "independent_plan_review": "PASS"
   },
   "build_review": {
-    "status": "M13_CANDIDATE_VERIFIED_NEW_FINAL_INSPECTION_PENDING",
-    "reviewed_implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-    "repair_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "statement": "Historical Final Inspection 3 PASS remains true only for c266dad38. M13 changes test code and therefore supersedes that clearance for the new subject.",
-    "repair_recheck_status": "RECHECK_HOLD_ACCEPTANCE_CLAIM_UNDER_SCOPED",
-    "repair_recheck_scope": "INDEPENDENT_DEFECT_FINDING_NOT_FINAL_INSPECTION_NOT_CLEARANCE",
-    "repair_recheck_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\reviewer-output-verbatim.txt",
-    "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M13",
+    "status": "M14_M16_CANDIDATE_VERIFIED_NEW_FINAL_INSPECTION_PENDING",
+    "statement": "Final Inspection 4 PASS remains true only for exact 389640f70. M14-M16 changes test code and knowingly supersedes that clearance.",
+    "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M14_M16",
     "current_clearance": "NONE",
-    "reviewed_code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "final_inspection_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
-    "current_candidate": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD"
+    "current_candidate": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD"
   },
   "final_governed_gate": {
+    "exact_code_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
     "files": 10,
     "passed": 1286,
     "failed": 0,
-    "seconds": 94.0,
+    "seconds": 120.3,
     "workers": 64,
     "file_retries": 0,
-    "exact_code_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "parent_sha": "af49192172e1b3635490fcb019bda0e481b71292",
-    "evidence": "assurance-gap-m13/FULL-GOVERNED-GATE.txt",
-    "evidence_sha256": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
-    "source": "M13_AUTHOR_ACTUAL_RUNNER_OUTPUT"
+    "evidence": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+    "sha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a",
+    "source": "M14_M16_AUTHOR_ACTUAL_RUNNER_OUTPUT"
   },
   "mutation_manifests": {
     "P1.C2": {
@@ -136,6 +127,26 @@
       },
       "receipt_byte_policy": "PYTHON_SUBPROCESS_TEXT_CAPTURE_UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
       "widening_mutation": "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD"
+    },
+    "M14_M16_ASSURANCE_EXTENSION": {
+      "count": 16,
+      "sha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "evidence_custody": "RUNNER_OUTPUT_GITIGNORED_COMMITTED_MANIFEST_IS_BYTE_EXACT_SNAPSHOT",
+      "widening_mutations": [
+        "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD",
+        "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
+        "M15_DROP_REWIND_JSON_FIELDS_FROM_PROJECTION",
+        "M16_MAKE_REWIND_COMPARISON_ORDER_INSENSITIVE"
+      ]
     }
   },
   "receipts_sha256": {
@@ -157,8 +168,8 @@
   "open_remainders": [
     {
       "id": "ASSURANCE-1",
-      "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
-      "detail": "Independent deterministic 33-case/1089-pair reference projection property rejects every unequal projection and kills exact symmetric widening mutation M13.",
+      "status": "FENCED_FOR_ENUMERATED_DIMENSIONS_M14_M16",
+      "detail": "Content/api_content, role, all five JSON fields, and represented ordering are constrained by 2494 exact mismatch pairs and permanent M13-M16 loosening mutations; known limits remain explicit.",
       "decision": "CLOSED_NEW_FINAL_INSPECTION_PENDING"
     },
     {
@@ -209,11 +220,11 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "0977effe85b37020d0abd500fb02635c2777005b17d36b9fa838e9579f46ffcb",
-    "ledger.json": "3c8e232fae44da5b9271207f4362e75e286670b16df328da6765a4a56071f9d9",
+    "README.md": "a903c97b681e3190f5f9f5776661acf0d8c381d3134f0e27577f1584a2b2d624",
+    "ledger.json": "c64fc2c25e18e7da645d254020abccf138c828a210b57cdce6e68412ff39487d",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
-    "repair-epoch-1/REPAIR-DECISION.md": "f0fa75b0d317c445c5aad9cd5064d839b09a9885e058ca80293ad34d817aea5b",
-    "repair-epoch-1/run_mutations.py": "0835ec8a850319be0ce2b56704e14eaabe12e4e8c146c1ac2b980b81c4319817",
+    "repair-epoch-1/REPAIR-DECISION.md": "8da61958270078810711e1ff6d1a3363a8e0b8e4fb1c66692911a139c26fb4d9",
+    "repair-epoch-1/run_mutations.py": "b3c65e6fa1b40305e394056ff37b708aeff927ea86744d8f6faa458c28eebf92",
     "repair-epoch-1/test_closure_reclassifications.py": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee",
     "repair-epoch-1/mutation-manifest.json": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "repair-epoch-1/RAW-RECEIPT-BINDINGS.json": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
@@ -224,12 +235,16 @@
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/result.json": "635297a2600144570719e2ad665e9d0384c3de321c4d71635e719f45f74417cb",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/reviewer-output-verbatim.txt": "e5fd5b3ed57de6615f37bf6264dbfc0990c425275d3cc716e79cfacf86a647a7",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-    "P3-FINAL-BINDING.json": "a67a447f6445e7fad2c5d5a14d2cf18adf7e805078873e108870ddd62d801190",
-    "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5fbb07e7f883e2b059decfc712a20bf75f6febedf41067d17ff4bad3fdfb94cf",
+    "P3-FINAL-BINDING.json": "74ba1de3748dba739b7b4ffbaab4334f0645978089115271a38e7ce654b30ef4",
+    "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5f324b4b9be1edd4e61ff36ce6416532b518b1960bd98ea73eb0b17976e00f15",
     "assurance-gap-m13/M13-PROPERTY-FREEZE.json": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c",
     "assurance-gap-m13/FULL-GOVERNED-GATE.txt": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
     "assurance-gap-m13/mutation-campaign/mutation-manifest.json": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
-    "repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt": "b7b6bc010f9a4c7257f78b76c1ead81cdb0a9515c204d8b1e7a63d4f589ec92c"
+    "repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt": "b7b6bc010f9a4c7257f78b76c1ead81cdb0a9515c204d8b1e7a63d4f589ec92c",
+    "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json": "e47efbfacbddbeab298cd3f4db26fe3c173f98a263cab2bd8b3065b5e8a44b0a",
+    "assurance-gap-m14-m16/PROPERTY-FREEZE.json": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba",
+    "assurance-gap-m14-m16/MUTATION-MANIFEST.json": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
+    "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a"
   },
   "per_agent_token_spend": {
     "Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
@@ -258,19 +273,22 @@
       "note": "result.json top-level usage fields; cost includes the wrapper modelUsage total, while token fields align with the primary Opus entry rather than summing the auxiliary Haiku entry."
     },
     "M13_Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
-    "M13_external_agents_invoked": "NONE"
+    "M13_external_agents_invoked": "NONE",
+    "M14_M16_Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
+    "Final_Inspection_4_claude_opus_5": {
+      "input_tokens": 160,
+      "output_tokens": 100564,
+      "cache_read_input_tokens": 9916519,
+      "cache_creation_input_tokens": 212583,
+      "auxiliary_models": []
+    }
   },
   "pipeline_gate": {
     "status": "HOLD_NEW_FINAL_INSPECTION_AND_LATER_LIFECYCLE",
-    "exit_code": 1,
     "material_blockers": [
-      "M13_NEW_CODE_TEST_SUBJECT_HAS_NO_FINAL_INSPECTION",
-      "NO_CURRENT_SUBMISSION_CLEARANCE",
-      "INTEGRATION_MERGE_PUSH_REMOTE_CI_ARTIFACT_DEPLOY_LIVE_ABSENT",
-      "ROLLBACK_NOT_PROVEN"
-    ],
-    "historical_schema_findings_retained": true,
-    "bypassed": false
+      "M14_M16_NEW_CODE_TEST_SUBJECT_HAS_NO_FINAL_INSPECTION",
+      "NO_CURRENT_SUBMISSION_CLEARANCE"
+    ]
   },
   "read_path_audit": {
     "scope": "READ_PATH_ONLY",
@@ -882,24 +900,22 @@
   },
   "updated_at_ict": "2026-08-11T14:33:22+07:00",
   "code_subject": {
-    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
-    "scope": "M13_TEST_CODE_MUTATION_AND_RECORD_SUBJECT",
+    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "parent": "389640f70679257b7acf074808e44277f31fb92a",
+    "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT",
     "production_source_changed": false,
     "test_file": "tests/test_hermes_state.py",
-    "test_file_sha256": "433e29099172515ae5a149b4c4655ea63502b3b7cac8289c663f4449861bd496",
-    "property_test_body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
+    "test_file_sha256": "5e21eea8d3892ef84c36c01daada5e673584ea013f97364ef8c894edd1ad1800",
     "historical_inspected_subject": {
-      "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-      "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
-      "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M13"
+      "exact_sha": "389640f70679257b7acf074808e44277f31fb92a",
+      "tree": "f850cb16b89bcb2629d1745eaac3631bdb254300",
+      "final_inspection": "PASS_SUPERSEDED_FOR_M14_M16"
     }
   },
   "record_recursion": {
-    "current_subject_exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
-    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
-    "binding_rule": "M13 test code and evidence are committed together; exact subject is the commit containing this record.",
-    "historical_inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "current_subject_exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "parent": "389640f70679257b7acf074808e44277f31fb92a",
+    "binding_rule": "M14-M16 test code and evidence are committed together; exact subject is the commit containing this record.",
     "historical_clearance_applicability": "SUPERSEDED"
   },
   "stage6_closeout_test_commit": {
@@ -1084,9 +1100,9 @@
   },
   "open_assurance_gap": {
     "id": "ASSURANCE-1",
-    "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+    "status": "FENCED_FOR_ENUMERATED_DIMENSIONS_M14_M16",
     "classification": "ASSURANCE_GAP_CLOSED_NEW_FINAL_INSPECTION_PENDING",
-    "mechanism": "Independent deterministic 33-case, 1089-pair replay-reference projection property plus permanent symmetric widening mutation M13.",
+    "mechanism": "Independent deterministic 51-history, 2601-pair projection property with exact 2494 constraining-pair assertion and permanent M13-M16 loosening mutations.",
     "exact_widening_witness": "durable upper/Alpha versus expected lower/alpha",
     "property_test_body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
     "scope_limit": "Equivalent acceptance-widening gaps on other guards were not assessed or closed."
@@ -1173,7 +1189,7 @@
       "clearance": false
     },
     "assurance_gap": {
-      "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+      "status": "CLOSED_FOR_CONTENT_AND_API_CONTENT_PROJECTION_DIMENSIONS_ON_SINGLE_MESSAGE_USER_ROLE_HISTORIES",
       "mechanism": "deterministic cross-product property anchored to independent replay projection",
       "scope_limit": "Equivalent acceptance-widening gaps may remain on other guards; not audited or closed by this work",
       "other_guards": "NOT_ASSESSED"
@@ -1283,10 +1299,223 @@
     },
     "receipt_byte_policy": "UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
     "lifecycle": {
-      "candidate": "CANDIDATE_VERIFIED_UNCOMMITTED",
-      "final_inspection": "STALE_PENDING_NEW_INSPECTION",
+      "candidate": "COMMITTED_389640F70679257B7ACF074808E44277F31FB92A",
+      "final_inspection": "FINAL_INSPECTION_4_PASS_HISTORICAL_SUPERSEDED_BY_M14_M16",
       "submission_clearance": "NONE_FOR_NEW_SUBJECT",
       "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+    }
+  },
+  "final_inspection_pass_4": {
+    "verdict": "PASS_CLEARED_FOR_SUBMISSION",
+    "exact_code_subject_sha": "389640f70679257b7acf074808e44277f31fb92a",
+    "current_applicability": "SUPERSEDED_BY_M14_M16_TEST_CODE_CHANGE",
+    "current_clearance": false,
+    "receipt_sha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761",
+    "wrapper_receipt_sha256": "b7209cfc289fa39c7012d176dcab674f88d1775ab2ca4bcad21e3f486c0cc573",
+    "wrapper_eligible": true,
+    "model": "claude-opus-5",
+    "effort": "max",
+    "gate": "1286/0",
+    "mutations": "13/13",
+    "canary": "PASS",
+    "m13_witness_reproduced": true,
+    "record_credit": [
+      "body_sha256 full-function-source hash disclosure",
+      "manifest annotation classification disclosure"
+    ]
+  },
+  "m14_m16_assurance_gap_closure": {
+    "schema": "rewind-assurance-gap-m14-m16-closure-v1",
+    "build_id": "rewind-archive-dropped-20260810",
+    "timestamp_ict": "2026-08-11T15:55:25+07:00",
+    "parent_inspected_subject": "389640f70679257b7acf074808e44277f31fb92a",
+    "candidate_commit": "DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+    "final_inspection_4": {
+      "verdict": "HISTORICAL_PASS_CLEARED_FOR_SUBMISSION_SUPERSEDED_BY_M14_M16_TEST_CODE",
+      "code_subject": "389640f70679257b7acf074808e44277f31fb92a",
+      "clearance_for_current_candidate": false,
+      "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-4-20260811-145322-ICT",
+      "stdout_raw_json": {
+        "bytes": 27114,
+        "sha256": "8781b13a0c588cecdd915701c522a683598a7be8034e5911b3ce407b2afc4761"
+      },
+      "wrapper_receipt": {
+        "bytes": 3207,
+        "sha256": "b7209cfc289fa39c7012d176dcab674f88d1775ab2ca4bcad21e3f486c0cc573",
+        "eligible": true,
+        "requested_model": "claude-opus-5",
+        "effective_effort": "max",
+        "observed_models": [
+          "claude-opus-5"
+        ],
+        "auxiliary_models": [],
+        "mutation_performed": false
+      },
+      "custody": "CLEAN_BOTH_ENDS_PROTECTED_ROOT_IDENTICAL",
+      "observed_gate": "1286/0",
+      "observed_mutations": "13/13_KILLED_BYTE_IDENTICAL_RESTORATION",
+      "observed_canary": "PASS",
+      "m13_witness_reproduced": "upper / Alpha versus lower / alpha",
+      "record_credit": [
+        "REPAIR-DECISION.md:87 pre-disclosed body_sha256 fields are normalized-LF full-function-source hashes",
+        "PROVENANCE.json pre-disclosed generator-output-plus-post-generation-annotation classification"
+      ]
+    },
+    "assurance_fence": {
+      "status": "FENCED_FOR_ENUMERATED_REWIND_HISTORY_DIMENSIONS_NEW_FINAL_INSPECTION_PENDING",
+      "fenced_dimensions": [
+        "content projection representatives from M13 corpus",
+        "api_content exact authority when present",
+        "role values user/assistant/tool/system",
+        "all five _REWIND_JSON_FIELDS",
+        "ordered multi-message histories including reversal and adjacent transposition"
+      ],
+      "not_fenced_or_not_established": [
+        "widening inside sanitize_context source (reasoned, not proven; shared defined projection)",
+        "other _REWIND_SEMANTIC_FIELDS not varied by this property: tool_call_id, tool_name, effect_disposition, token_count, finish_reason, reasoning, reasoning_content, platform_message_id/message_id, observed, display_kind",
+        "history permutations or lengths beyond the represented one-, two-, and three-message cases",
+        "inactive archived-row integrity; rewind guard compares active rows only",
+        "equivalent widening protection for other guards in the build"
+      ],
+      "scope_statement": "The property fences content, api_content, role, all five _REWIND_JSON_FIELDS, and represented message ordering for the rewind-history guard. It is not an unqualified guard-wide or build-wide completeness claim."
+    },
+    "property": {
+      "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+      "body_sha256": "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae",
+      "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS",
+      "content_api_content_cases_preserved": 33,
+      "history_cases": 51,
+      "cross_product_pairs": 2601,
+      "exact_constraining_pairs": 2494,
+      "permitted_equal_pairs": 107,
+      "restored_green": "1 passed in 13.09s",
+      "freeze_manifest": "assurance-gap-m14-m16/PROPERTY-FREEZE.json",
+      "freeze_manifest_sha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba"
+    },
+    "widening_proofs": [
+      {
+        "mutation_id": "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
+        "mutated_exit_code": 1,
+        "witness": "durable='role-user', expected='role-assistant'",
+        "gitignored_receipt": "tmp/m14-16-red/M14_DROP_ROLE.txt",
+        "receipt_sha256": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1"
+      },
+      {
+        "mutation_id": "M15_DROP_REWIND_JSON_FIELDS_FROM_PROJECTION",
+        "mutated_exit_code": 1,
+        "witness": "durable='json-tool-calls-real', expected='json-tool-calls-attacker' (real_tool -> ATTACKER_TOOL)",
+        "additional_fenced_example": "display_metadata trusted -> attacker",
+        "gitignored_receipt": "tmp/m14-16-red/M15_DROP_REWIND_JSON_FIELDS.txt",
+        "receipt_sha256": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d"
+      },
+      {
+        "mutation_id": "M16_MAKE_REWIND_COMPARISON_ORDER_INSENSITIVE",
+        "mutated_exit_code": 1,
+        "witness": "durable='order-forward', expected='order-reversed'",
+        "additional_fenced_example": "adjacent transposition order-adjacent-abc -> order-adjacent-acb",
+        "gitignored_receipt": "tmp/m14-16-red/M16_ORDER_INSENSITIVE.txt",
+        "receipt_sha256": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
+      }
+    ],
+    "mutation_campaign": {
+      "manifest": "assurance-gap-m14-m16/MUTATION-MANIFEST.json",
+      "manifest_sha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
+      "runner_evidence_directory": "tmp/rewind-m14-m16-mutation-campaign",
+      "runner_evidence_gitignored": true,
+      "committed_receipts_overwritten": false,
+      "mutation_count": 16,
+      "all_mutations_failed_named_tests": true,
+      "all_sources_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "restored_focused_exit_code": 0
+    },
+    "governed_gate": {
+      "files": 10,
+      "passed": 1286,
+      "failed": 0,
+      "seconds": 120.3,
+      "workers": 64,
+      "file_retries": 0,
+      "output": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+      "output_sha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a"
+    },
+    "protected_existing_test_bodies": [
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_prompt_submit_rewind_archives_newly_dropped_suffix",
+        "lineno": 14467,
+        "end_lineno": 14536,
+        "body_sha256": "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      },
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix",
+        "lineno": 14539,
+        "end_lineno": 14599,
+        "body_sha256": "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      },
+      {
+        "file": "tests/cli/test_cli_retry.py",
+        "test": "test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue",
+        "lineno": 89,
+        "end_lineno": 140,
+        "body_sha256": "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59",
+        "hash_semantics": "NORMALIZED_LF_FULL_FUNCTION_SOURCE_INCLUDING_DEF_AND_DECORATORS"
+      }
+    ],
+    "production_source_changed": false,
+    "test_file_sha256": "5e21eea8d3892ef84c36c01daada5e673584ea013f97364ef8c894edd1ad1800",
+    "runner_sha256": "b3c65e6fa1b40305e394056ff37b708aeff927ea86744d8f6faa458c28eebf92",
+    "per_agent_token_spend": {
+      "M14_M16_Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
+      "Final_Inspection_4_claude_opus_5": {
+        "input_tokens": 160,
+        "output_tokens": 100564,
+        "cache_read_input_tokens": 9916519,
+        "cache_creation_input_tokens": 212583,
+        "auxiliary_models": []
+      }
+    },
+    "lifecycle": {
+      "candidate": "COMMITTED_SUBJECT_DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+      "final_inspection": "PENDING_NEW_INSPECTION_M14_M16",
+      "submission_clearance": "NONE_FOR_NEW_SUBJECT",
+      "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+    }
+  },
+  "authoritative_current_state": {
+    "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
+    "subject_binding": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "current_clearance": false,
+    "fenced_dimensions": [
+      "content projection representatives from M13 corpus",
+      "api_content exact authority when present",
+      "role values user/assistant/tool/system",
+      "all five _REWIND_JSON_FIELDS",
+      "ordered multi-message histories including reversal and adjacent transposition"
+    ],
+    "known_limits": [
+      "widening inside sanitize_context source (reasoned, not proven; shared defined projection)",
+      "other _REWIND_SEMANTIC_FIELDS not varied by this property: tool_call_id, tool_name, effect_disposition, token_count, finish_reason, reasoning, reasoning_content, platform_message_id/message_id, observed, display_kind",
+      "history permutations or lengths beyond the represented one-, two-, and three-message cases",
+      "inactive archived-row integrity; rewind guard compares active rows only",
+      "equivalent widening protection for other guards in the build"
+    ],
+    "negative_lifecycle": {
+      "merged": false,
+      "pushed": false,
+      "deployed": false,
+      "activated": false,
+      "trading": false,
+      "orders": false
     }
   }
 }
