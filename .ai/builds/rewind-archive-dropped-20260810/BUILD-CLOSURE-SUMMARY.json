@@ -1,15 +1,15 @@
 {
   "schema": "sakaan.build-closure-summary.v1",
   "build_id": "rewind-archive-dropped-20260810",
-  "timestamp_ict": "2026-08-11T13:36:58+07:00",
+  "timestamp_ict": "2026-08-11T14:33:22+07:00",
   "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
   "branch": "sakaan/rewind-archive-dropped-20260810",
   "lifecycle": {
-    "implementation": "CODE_SUBJECT_COMMITTED_C266DAD38",
-    "independent_build_review": "FINAL_INSPECTION_PASS",
-    "clearance": "CLEARED_FOR_SUBMISSION_ONLY",
-    "pipeline_closure": "HOLD_LATER_LIFECYCLE_PENDING",
-    "closure_record_git_state": "CONTIGUOUS_RECORD_ONLY_ENVELOPE_AFTER_C266DAD38"
+    "implementation": "M13_TEST_CODE_CANDIDATE_VERIFIED_UNCOMMITTED",
+    "independent_build_review": "HISTORICAL_FINAL_INSPECTION_PASS_SUPERSEDED_NEW_INSPECTION_PENDING",
+    "clearance": "NONE_FOR_M13_CANDIDATE",
+    "pipeline_closure": "HOLD_FINAL_INSPECTION_AND_LATER_LIFECYCLE_PENDING",
+    "closure_record_git_state": "M13_CODE_TEST_AND_RECORD_COMMIT_PENDING"
   },
   "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
   "actual_implementation_commits": [
@@ -57,30 +57,32 @@
     "independent_plan_review": "PASS"
   },
   "build_review": {
-    "status": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
+    "status": "M13_CANDIDATE_VERIFIED_NEW_FINAL_INSPECTION_PENDING",
     "reviewed_implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
     "repair_code_sha": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "statement": "Final Inspection 3 reproduced every product claim with zero divergence and cleared exact code subject c266dad38 for submission only. No merge, push, deploy, activation, trading, order, or rollback authority follows.",
+    "statement": "Historical Final Inspection 3 PASS remains true only for c266dad38. M13 changes test code and therefore supersedes that clearance for the new subject.",
     "repair_recheck_status": "RECHECK_HOLD_ACCEPTANCE_CLAIM_UNDER_SCOPED",
     "repair_recheck_scope": "INDEPENDENT_DEFECT_FINDING_NOT_FINAL_INSPECTION_NOT_CLEARANCE",
     "repair_recheck_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\reviewer-output-verbatim.txt",
-    "final_inspection": "PERFORMED_RESULT_PASS_CLEARED_FOR_SUBMISSION",
-    "current_clearance": "CLEARED_FOR_SUBMISSION_ONLY",
+    "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M13",
+    "current_clearance": "NONE",
     "reviewed_code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
     "final_inspection_receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50"
+    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "current_candidate": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD"
   },
   "final_governed_gate": {
     "files": 10,
-    "passed": 1285,
+    "passed": 1286,
     "failed": 0,
-    "seconds": 88.9,
+    "seconds": 94.0,
     "workers": 64,
     "file_retries": 0,
-    "exact_code_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "evidence": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
-    "evidence_sha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
-    "source": "FRESH_FINAL_INSPECTION_3_PASS"
+    "exact_code_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
+    "parent_sha": "af49192172e1b3635490fcb019bda0e481b71292",
+    "evidence": "assurance-gap-m13/FULL-GOVERNED-GATE.txt",
+    "evidence_sha256": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
+    "source": "M13_AUTHOR_ACTUAL_RUNNER_OUTPUT"
   },
   "mutation_manifests": {
     "P1.C2": {
@@ -106,7 +108,7 @@
       "all_mutations_failed_named_tests": true,
       "source_restored_byte_identical": true
     },
-    "STAGE6_REPAIR_EPOCH_1": {
+    "STAGE6_REPAIR_EPOCH_1_HISTORICAL": {
       "count": 12,
       "sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
       "all_mutations_failed_named_tests": true,
@@ -119,6 +121,21 @@
         "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
       },
       "receipt_byte_policy": "RAW_CAPTURE_AUTHORITATIVE_NO_NORMALIZATION"
+    },
+    "M13_ASSURANCE_CLOSURE": {
+      "count": 13,
+      "sha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "receipt_byte_policy": "PYTHON_SUBPROCESS_TEXT_CAPTURE_UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
+      "widening_mutation": "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD"
     }
   },
   "receipts_sha256": {
@@ -126,7 +143,7 @@
     "P1.C3": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
     "P2": "420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
     "P3": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
-    "P3_final_binding": "e03c8ab4de14b2d6c0634a16278debb2eb7d620cfc3995993d48d273564f9863"
+    "P3_final_binding": "a67a447f6445e7fad2c5d5a14d2cf18adf7e805078873e108870ddd62d801190"
   },
   "rollback": {
     "status": "DOCUMENTED_NOT_EXECUTED",
@@ -140,9 +157,9 @@
   "open_remainders": [
     {
       "id": "ASSURANCE-1",
-      "status": "OPEN_ASSURANCE_GAP_NOT_PRODUCT_DEFECT",
-      "detail": "The suite is example-based and contains no property/generative invariant preventing the guard from accepting more durable drift than the committed acceptance class.",
-      "decision": "SAKAAN_DECISION_REQUIRED_NOT_AUTHORIZED"
+      "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+      "detail": "Independent deterministic 33-case/1089-pair reference projection property rejects every unequal projection and kills exact symmetric widening mutation M13.",
+      "decision": "CLOSED_NEW_FINAL_INSPECTION_PENDING"
     },
     {
       "id": "M-1",
@@ -174,6 +191,11 @@
       "name": "SWALLOWED_ROLLBACK_CAUSE",
       "classification": "PRE_EXISTING_NOT_REGRESSION_NOT_CORRECTNESS_NOT_DATA_LOSS",
       "detail": "At code subject c266dad38, _execute_write discards a rollback exception at hermes_state.py:2139-2141. If retry follows a failed rollback, BEGIN IMMEDIATE at :2133 can produce a transaction-nesting error that propagates fail-closed through :2161-2162, hiding the rollback cause. No v1 fix is proposed."
+    },
+    {
+      "id": "ASSURANCE-OTHER-GUARDS",
+      "status": "NOT_ASSESSED",
+      "detail": "Equivalent acceptance-widening gaps may remain on other guards whose mutation evidence is removal-or-break only. M13 does not audit or close them."
     }
   ],
   "negative_lifecycle": {
@@ -187,11 +209,11 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "b3cc07c1d2bb69c6782c92a766de316a56f8cd6f42c82e9404bbd29c76a49542",
-    "ledger.json": "e6a04bd1970615a970cbd3d7d56a681b26094234d09c25c69461cf11f66dec0e",
+    "README.md": "0977effe85b37020d0abd500fb02635c2777005b17d36b9fa838e9579f46ffcb",
+    "ledger.json": "3c8e232fae44da5b9271207f4362e75e286670b16df328da6765a4a56071f9d9",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
-    "repair-epoch-1/REPAIR-DECISION.md": "b1932716a5262cbff0feb88a2c8478cc0121935bbab1bd7a577bfd7144541be0",
-    "repair-epoch-1/run_mutations.py": "2f306d055eb0cf0dc0dab7627b23dc8b176440973d6d654b9072fbf268e21067",
+    "repair-epoch-1/REPAIR-DECISION.md": "f0fa75b0d317c445c5aad9cd5064d839b09a9885e058ca80293ad34d817aea5b",
+    "repair-epoch-1/run_mutations.py": "0835ec8a850319be0ce2b56704e14eaabe12e4e8c146c1ac2b980b81c4319817",
     "repair-epoch-1/test_closure_reclassifications.py": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee",
     "repair-epoch-1/mutation-manifest.json": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "repair-epoch-1/RAW-RECEIPT-BINDINGS.json": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
@@ -201,7 +223,13 @@
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/PROVENANCE.json": "e349c10531916d512a13077cbe3052d1ad6000e25fca1590476b03baec93eb0b",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/result.json": "635297a2600144570719e2ad665e9d0384c3de321c4d71635e719f45f74417cb",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/reviewer-output-verbatim.txt": "e5fd5b3ed57de6615f37bf6264dbfc0990c425275d3cc716e79cfacf86a647a7",
-    "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "P3-FINAL-BINDING.json": "a67a447f6445e7fad2c5d5a14d2cf18adf7e805078873e108870ddd62d801190",
+    "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5fbb07e7f883e2b059decfc712a20bf75f6febedf41067d17ff4bad3fdfb94cf",
+    "assurance-gap-m13/M13-PROPERTY-FREEZE.json": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c",
+    "assurance-gap-m13/FULL-GOVERNED-GATE.txt": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
+    "assurance-gap-m13/mutation-campaign/mutation-manifest.json": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
+    "repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt": "b7b6bc010f9a4c7257f78b76c1ead81cdb0a9515c204d8b1e7a63d4f589ec92c"
   },
   "per_agent_token_spend": {
     "Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
@@ -228,16 +256,18 @@
       "cache_read_input_tokens": 2689420,
       "output_tokens": 53865,
       "note": "result.json top-level usage fields; cost includes the wrapper modelUsage total, while token fields align with the primary Opus entry rather than summing the auxiliary Haiku entry."
-    }
+    },
+    "M13_Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
+    "M13_external_agents_invoked": "NONE"
   },
   "pipeline_gate": {
-    "status": "HOLD_LATER_LIFECYCLE_AND_FAIL_CLOSED_MECHANICAL_CHECKER",
+    "status": "HOLD_NEW_FINAL_INSPECTION_AND_LATER_LIFECYCLE",
     "exit_code": 1,
     "material_blockers": [
-      "SUBMISSION_CLEARED_BUT_NOT_EXECUTED",
+      "M13_NEW_CODE_TEST_SUBJECT_HAS_NO_FINAL_INSPECTION",
+      "NO_CURRENT_SUBMISSION_CLEARANCE",
       "INTEGRATION_MERGE_PUSH_REMOTE_CI_ARTIFACT_DEPLOY_LIVE_ABSENT",
-      "ROLLBACK_NOT_PROVEN",
-      "MECHANICAL_CHECKER_EXTERNAL_EVIDENCE_UNVERIFIED_BY_DESIGN"
+      "ROLLBACK_NOT_PROVEN"
     ],
     "historical_schema_findings_retained": true,
     "bypassed": false
@@ -481,7 +511,9 @@
     "clearance": "CLEARED_FOR_SUBMISSION_ONLY",
     "formal_independent_stage6_recheck": "PERFORMED_DEFECT_FINDING_RECHECK_RESULT_RECHECK_HOLD_NOT_FINAL_INSPECTION",
     "owner_execution_confirmation": "PASS_SEPARATE_FROM_STAGE6_RECHECK",
-    "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+    "raw_receipt_bindings_sha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+    "current_applicability": "HISTORICAL_C266_SUBJECT_SUPERSEDED_FOR_M13",
+    "current_clearance": false
   },
   "stage6_repair_epoch_1": {
     "lifecycle": "FINAL_INSPECTION_PASS_SUBMISSION_ONLY",
@@ -751,7 +783,9 @@
       "decisive_test_bodies": "THREE_BYTE_IDENTICAL",
       "deciding_gap": "The committed record stopped at d540eaee9 and omitted executable B-1 boundary assertion commit c266dad38.",
       "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY"
-    }
+    },
+    "current_applicability": "HISTORICAL_C266_SUBJECT_SUPERSEDED_FOR_M13",
+    "current_clearance": false
   },
   "raw_receipt_custody": {
     "authority": "RAW_CAPTURED_BYTES",
@@ -846,34 +880,27 @@
     "reviewer_regenerated_unannotated_manifest": "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/mutation-manifest.generator-output.json",
     "note": "The committed first-run manifest was augmented after generation. The byte-policy fields are annotations, not generator output; substantive mutation and source-restoration claims regenerate independently."
   },
-  "updated_at_ict": "2026-08-11T12:25:36+07:00",
+  "updated_at_ict": "2026-08-11T14:33:22+07:00",
   "code_subject": {
-    "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
-    "parent": "1d5c57f41162ea1b8be53dd25375054dc7277254",
-    "scope": "CODE_AND_TEST_SUBJECT_THROUGH_C266DAD38",
-    "production_repair_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "boundary_test_commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "boundary_test_file": "tests/test_hermes_state.py",
-    "boundary_test_file_sha256": "a60f440da69a709a4becf34e865be0d4b914a776d5a7b405756b948ccb209648",
-    "boundary_test_diff_sha256_from_parent": "29147a4791a4b6c7f3d98ceedfb86c7a880ec8c61f70f7b821c6d7de897086d2",
-    "functional_commits": [
-      "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
-      "bc6c801a5734d30543a908c18233728b691e9e9e",
-      "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
-      "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
-      "d540eaee9764fbc3194c493946cd6624f447c3a5",
-      "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463"
-    ],
-    "record_boundary": "The code subject is the code and tests as committed at c266dad38. The evidence-only commit containing this record is the record OF that subject and is not part of the code subject."
+    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
+    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
+    "scope": "M13_TEST_CODE_MUTATION_AND_RECORD_SUBJECT",
+    "production_source_changed": false,
+    "test_file": "tests/test_hermes_state.py",
+    "test_file_sha256": "433e29099172515ae5a149b4c4655ea63502b3b7cac8289c663f4449861bd496",
+    "property_test_body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
+    "historical_inspected_subject": {
+      "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
+      "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M13"
+    }
   },
   "record_recursion": {
-    "code_subject_exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
-    "record_envelope_head_identity": "DISCOVER_AS_TIP_OF_CONTIGUOUS_RECORD_ONLY_CHAIN_AFTER_C266DAD38",
-    "record_commit_role": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
-    "binding_rule": "Subject fields bind c266dad38. A finite contiguous c266dad38..HEAD chain is valid only when every changed path is under .ai/builds/rewind-archive-dropped-20260810/ and no code/test path changes.",
-    "fail_closed_rule": "Any code/test byte change after c266dad38 creates a new subject and stales the inspection evidence; do not recursively rebind the code subject to record-only commits."
+    "current_subject_exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
+    "parent": "af49192172e1b3635490fcb019bda0e481b71292",
+    "binding_rule": "M13 test code and evidence are committed together; exact subject is the commit containing this record.",
+    "historical_inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "historical_clearance_applicability": "SUPERSEDED"
   },
   "stage6_closeout_test_commit": {
     "commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
@@ -1051,28 +1078,18 @@
       "real multi-process lock contention",
       "in-seat route receipt; externally held wrapper receipt supplies route attestation"
     ],
-    "rollback": "DOCUMENTED_NEVER_EXECUTED_UNPROVEN"
+    "rollback": "DOCUMENTED_NEVER_EXECUTED_UNPROVEN",
+    "current_applicability": "SUPERSEDED_BY_M13_TEST_CODE_CHANGE",
+    "current_clearance": false
   },
   "open_assurance_gap": {
     "id": "ASSURANCE-1",
-    "status": "OPEN_ASSURANCE_GAP",
-    "classification": "NOT_A_PRODUCT_DEFECT_NOT_CLOSED",
-    "severity": "ASSURANCE_OPEN",
-    "name": "REWIND_GUARD_ACCEPTANCE_CLASS_WIDENING_NOT_CONSTRAINED",
-    "mechanism": "The suite is example-based and contains no property/generative invariant preventing the guard from accepting more durable drift than the committed acceptance class.",
-    "experiment": {
-      "valid_mutation": "strictly weakening symmetric lowercase of both canonicalized sides",
-      "effect": "accepts case-differing durable drift rejected by committed guard",
-      "governed_gate": {
-        "passed": 1285,
-        "failed": 0
-      },
-      "first_asymmetric_attempt": "CAUGHT_FOR_FALSE_REJECTIONS_NOT_A_VALID_WIDENING_ONLY_EXPERIMENT"
-    },
-    "history": "Same structural property under which B-1 survived the 1195-test gate and 62 mutations (14+19+13+16); it persists after repair.",
-    "repair_mutation_limit": "All 12 repair mutations are removal-or-break mutations. They prove existing behavior is load-bearing but cannot constrain acceptance-class widening.",
-    "candidate_remedy": "PROPOSAL_ONLY_PROPERTY_BASED_DIFFERENTIAL_OR_GENERATIVE_ACCEPTANCE_BOUNDARY_CHECK",
-    "authority": "SAKAAN_DECISION_REQUIRED_NOT_AUTHORIZED_NOT_IMPLEMENTED"
+    "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+    "classification": "ASSURANCE_GAP_CLOSED_NEW_FINAL_INSPECTION_PENDING",
+    "mechanism": "Independent deterministic 33-case, 1089-pair replay-reference projection property plus permanent symmetric widening mutation M13.",
+    "exact_widening_witness": "durable upper/Alpha versus expected lower/alpha",
+    "property_test_body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
+    "scope_limit": "Equivalent acceptance-widening gaps on other guards were not assessed or closed."
   },
   "positive_assurance_finding": {
     "status": "POSITIVE_ASSURANCE_FINDING",
@@ -1142,6 +1159,134 @@
         "correction": "marked superseded by Stage 6 M-1 defect fix"
       }
     ],
-    "p3_final_binding_sha256": "e03c8ab4de14b2d6c0634a16278debb2eb7d620cfc3995993d48d273564f9863"
+    "p3_final_binding_sha256": "a67a447f6445e7fad2c5d5a14d2cf18adf7e805078873e108870ddd62d801190"
+  },
+  "m13_assurance_gap_closure": {
+    "schema": "rewind-assurance-gap-m13-closure-v1",
+    "build_id": "rewind-archive-dropped-20260810",
+    "parent_record_head": "af49192172e1b3635490fcb019bda0e481b71292",
+    "candidate_commit": "DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+    "prior_final_inspection": {
+      "code_subject": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "verdict": "HISTORICAL_PASS_SUPERSEDED_BY_NEW_TEST_CODE_SUBJECT",
+      "clearance": false
+    },
+    "assurance_gap": {
+      "status": "CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY",
+      "mechanism": "deterministic cross-product property anchored to independent replay projection",
+      "scope_limit": "Equivalent acceptance-widening gaps may remain on other guards; not audited or closed by this work",
+      "other_guards": "NOT_ASSESSED"
+    },
+    "property": {
+      "test": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+      "body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
+      "corpus_cases": 33,
+      "cross_product_pairs": 1089,
+      "reference_projection": {
+        "string_content": "agent.memory_manager.sanitize_context(content).strip() imported directly",
+        "structured_content": "independent canonical json.dumps of decoded input data",
+        "api_content": "independent exact value comparison when present",
+        "forbidden_calls": [
+          "SessionDB._canonicalize_rewind_history",
+          "SessionDB._normalize_rewind_message"
+        ]
+      },
+      "baseline_green": {
+        "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+        "exit_code": 0,
+        "output": "M13-PROPERTY-RESTORED-GREEN.txt",
+        "output_sha256": "1e715b444f393f8dab4ceed7a60e7c6f1c25eef12fdf7565f03e14b94f50e8a0"
+      },
+      "freeze_manifest": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/M13-PROPERTY-FREEZE.json",
+      "freeze_manifest_sha256": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c"
+    },
+    "exact_widening_proof": {
+      "mutation_id": "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD",
+      "operation": "append .lower() to both canonical histories returned by _canonicalize_rewind_history",
+      "mutated_exit_code": 1,
+      "caught_pair": {
+        "durable": "upper / Alpha",
+        "expected": "lower / alpha"
+      },
+      "manual_red_receipt": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD-RED-PROOF.txt",
+      "manual_red_receipt_sha256": "a900a598dde5dfee40e1c25dd15a852674cd6f32490a952f1bc3eb69c5371387",
+      "permanent_mutation_receipt": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/mutation-campaign/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt",
+      "permanent_mutation_receipt_sha256": "c2c09f2701c51422b181d92e52934c0fc0070e46f07544e927f5664ebea741bf",
+      "source_restored_sha256": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf",
+      "source_restored_byte_identical": true
+    },
+    "mutation_campaign": {
+      "manifest": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/mutation-campaign/mutation-manifest.json",
+      "manifest_sha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
+      "mutation_count": 13,
+      "all_mutations_failed_named_tests": true,
+      "all_sources_restored_byte_identical": true,
+      "per_file_source_restored_sha256": {
+        "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+        "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+        "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+        "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+        "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+      },
+      "stdout": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/M13-MUTATION-CAMPAIGN-STDOUT.txt",
+      "stdout_sha256": "cb9e2443631ffff82d80ce45240c5420e08308fca0e288bcc14e34816095e677",
+      "historical_stage6_receipts_preserved_at_original_paths": true,
+      "initial_pre_separation_m13_receipt": {
+        "status": "SUPERSEDED_BY_CANONICAL_ASSURANCE_GAP_M13_MUTATION_CAMPAIGN_RETAINED_FOR_CUSTODY",
+        "path": "repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt",
+        "sha256": "b7b6bc010f9a4c7257f78b76c1ead81cdb0a9515c204d8b1e7a63d4f589ec92c"
+      }
+    },
+    "governed_gate": {
+      "files": 10,
+      "passed": 1286,
+      "failed": 0,
+      "seconds": 94.0,
+      "workers": 64,
+      "file_retries": 0,
+      "output": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/FULL-GOVERNED-GATE.txt",
+      "output_sha256": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961"
+    },
+    "protected_existing_test_bodies": [
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_prompt_submit_rewind_archives_newly_dropped_suffix",
+        "lineno": 14467,
+        "end_lineno": 14536,
+        "body_sha256": "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd",
+        "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+      },
+      {
+        "file": "tests/test_tui_gateway_server.py",
+        "test": "test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix",
+        "lineno": 14539,
+        "end_lineno": 14599,
+        "body_sha256": "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd",
+        "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+      },
+      {
+        "file": "tests/cli/test_cli_retry.py",
+        "test": "test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue",
+        "lineno": 89,
+        "end_lineno": 140,
+        "body_sha256": "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59",
+        "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+      }
+    ],
+    "production_source_sha256": {
+      "acp_adapter/session.py": "c94ddf3adce6bb074ac6ec97d92dc8b417e98500059f1053871c844e5ecb5ce6",
+      "agent/insights.py": "059ffa96b37426d972333b860c6f5f3c210a18140bfdb9e3f09e24dc5217132e",
+      "gateway/session.py": "3ee9899e25bdf9254b1915c70aeac9c23d3e72f54c5641cded779c1cb1330921",
+      "hermes_cli/main.py": "662063d8cc5982a160f7c4b5d8231827dd27b592a6af3802d76ec6b4c9eef1c0",
+      "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+    },
+    "receipt_byte_policy": "UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
+    "lifecycle": {
+      "candidate": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "final_inspection": "STALE_PENDING_NEW_INSPECTION",
+      "submission_clearance": "NONE_FOR_NEW_SUBJECT",
+      "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
+    }
   }
 }

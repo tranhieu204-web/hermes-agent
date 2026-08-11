@@ -10,9 +10,19 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[4]
-EVIDENCE = Path(__file__).resolve().parent
+EVIDENCE = (
+    ROOT
+    / ".ai"
+    / "builds"
+    / "rewind-archive-dropped-20260810"
+    / "assurance-gap-m13"
+    / "mutation-campaign"
+)
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
-BASE_COMMIT = "d540eaee9764fbc3194c493946cd6624f447c3a5"
+BASE_COMMIT = "af49192172e1b3635490fcb019bda0e481b71292"
+PROPERTY_TEST_BODY_SHA256 = (
+    "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478"
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +122,25 @@ MUTATIONS = [
         "tests/agent/test_insights.py::TestInsightsPopulated::test_insights_excludes_rewound_rows_without_excluding_compaction_archives",
         replace_all=True,
     ),
+    Mutation(
+        "M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD",
+        "hermes_state.py",
+        "            return json.dumps(\n"
+        "                projected,\n"
+        "                ensure_ascii=False,\n"
+        "                sort_keys=True,\n"
+        "                separators=(\",\", \":\"),\n"
+        "                allow_nan=False,\n"
+        "            ).encode(\"utf-8\")",
+        "            return json.dumps(\n"
+        "                projected,\n"
+        "                ensure_ascii=False,\n"
+        "                sort_keys=True,\n"
+        "                separators=(\",\", \":\"),\n"
+        "                allow_nan=False,\n"
+        "            ).encode(\"utf-8\").lower()",
+        "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    ),
 ]
 
 RESTORED_SELECTORS = sorted({mutation.selector for mutation in MUTATIONS})
@@ -126,6 +155,14 @@ INVALID_FAILURE_MARKERS = (
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def receipt_bytes(text: str) -> bytes:
+    """Stable UTF-8/LF evidence without pytest's presentation-only trailing spaces."""
+    normalized = "\n".join(line.rstrip(" \t\r") for line in text.splitlines())
+    if text.endswith(("\n", "\r")):
+        normalized += "\n"
+    return normalized.encode("utf-8")
 
 
 def run_pytest(selectors: list[str]) -> subprocess.CompletedProcess[str]:
@@ -163,7 +200,7 @@ def main() -> int:
             output_path = EVIDENCE / f"{mutation.mutation_id}.txt"
             try:
                 completed = run_pytest([mutation.selector])
-                output_path.write_text(completed.stdout, encoding="utf-8")
+                output_path.write_bytes(receipt_bytes(completed.stdout))
             finally:
                 path.write_bytes(original)
             restored_sha = sha256(path.read_bytes())
@@ -184,6 +221,7 @@ def main() -> int:
                 "output_sha256": sha256(output_path.read_bytes()),
                 "source_restored_sha256": restored_sha,
                 "source_restored_byte_identical": restored_sha == baseline_sha[mutation.path],
+                "output_byte_policy": "PYTHON_SUBPROCESS_TEXT_CAPTURE_UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
             }
             results.append(result)
             print(
@@ -195,20 +233,24 @@ def main() -> int:
 
         restored = run_pytest(RESTORED_SELECTORS)
         restored_path = EVIDENCE / "RESTORED-FOCUSED-GREEN.txt"
-        restored_path.write_text(restored.stdout, encoding="utf-8")
+        restored_path.write_bytes(receipt_bytes(restored.stdout))
         if restored.returncode != 0:
             raise RuntimeError("restored focused gate failed")
 
         final_sha = {path: sha256((ROOT / path).read_bytes()) for path in touched}
         all_restored = final_sha == baseline_sha
         manifest = {
-            "schema": "rewind-stage6-repair-mutation-manifest-v1",
+            "schema": "rewind-m13-assurance-mutation-manifest-v1",
             "base_commit": BASE_COMMIT,
+            "campaign_scope": "stage6 repair guards plus M13 acceptance-class widening fence",
+            "property_test_body_sha256": PROPERTY_TEST_BODY_SHA256,
+            "widening_mutations": ["M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD"],
             "mutation_count": len(results),
             "all_mutations_failed_named_tests": all(
                 result["named_test_failed"] for result in results
             ),
             "all_sources_restored_byte_identical": all_restored,
+            "receipt_byte_policy": "PYTHON_SUBPROCESS_TEXT_CAPTURE_UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE",
             "per_file_source_baseline_sha256": baseline_sha,
             "per_file_source_restored_sha256": final_sha,
             "mutations": results,
@@ -220,7 +262,9 @@ def main() -> int:
             },
         }
         manifest_path = EVIDENCE / "mutation-manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        manifest_path.write_bytes(
+            (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
+        )
         print(
             json.dumps(
                 {

@@ -1,8 +1,8 @@
 # Stage 6 Repair Epoch 1 Decision and Evidence
 
-Timestamp (ICT): `2026-08-11T13:36:58+07:00`
+Timestamp (ICT): `2026-08-11T14:33:22+07:00`
 
-Lifecycle: `FINAL_INSPECTION PASS — CLEARED FOR SUBMISSION ONLY — PIPELINE NOT CLOSED`
+Lifecycle: `M13 CANDIDATE VERIFIED — PRIOR FINAL INSPECTION SUPERSEDED — NEW FINAL INSPECTION PENDING`
 
 Repair base: `9048fea8b930600f95790e4d25eb30f3dbdf13cb`
 
@@ -18,7 +18,7 @@ This is the same single authorized bounded repair epoch. It is not a second atte
 
 ## B-1 — canonical representation and guard limit
 
-Disposition: `CODE_FIX_CONFIRMED_BY_FINAL_INSPECTION — CLEARED_FOR_SUBMISSION_ONLY`.
+Disposition: `CODE_FIX_CONFIRMED; M13_WIDENING_FENCE_VERIFIED; NEW_FINAL_INSPECTION_PENDING`.
 
 The v3.2 plan required a byte-exact comparison but did not state which representation was canonical. That omission was the plan-level cause of B-1. Durable rows may contain a raw string such as `"answer text\n"`, while the in-memory replay history already contains `"answer text"` after `sanitize_context(content).strip()`. Comparing those unlike representations made `/retry` fail forever with `RewindHistoryConflict`, incorrectly blaming a state change.
 
@@ -160,7 +160,7 @@ External receipt directory: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\r
 
 The historical Final Inspection 2 verdict remains HOLD. Its sole record-gap finding was repaired by `b3880ee2253ebd12f3ae9e6fdb3c755845dfed50`; it is not rewritten as a PASS.
 
-## Final Inspection 3 — PASS and submission-only clearance
+## Final Inspection 3 — historical PASS, superseded for M13
 
 Fresh Final Inspection 3 ran on `claude-opus-5`/max against code subject `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` and inspected record head `b3880ee2253ebd12f3ae9e6fdb3c755845dfed50`.
 
@@ -183,14 +183,28 @@ External evidence directory:
 
 The PASS is scoped to **submission only**. It does not authorize merge, push, remote publication, deploy, activation, trading, orders, or rollback. Rollback remains documented and unexecuted, therefore unproven. The inspector could not establish numeric `api_content` prevalence, rollback behavior, remote/CI state, or real multi-process lock contention. Its in-seat route receipt was not self-verifiable; the external wrapper receipt supplies the route attestation separately.
 
-## OPEN ASSURANCE GAP — acceptance-class widening
+## M13 closure — acceptance-class widening for the rewind guard
 
-Classification: `OPEN_ASSURANCE_GAP — NOT A PRODUCT DEFECT — NOT CLOSED`.
+Classification: `CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY — NEW_FINAL_INSPECTION_PENDING`.
 
-Final Inspection applied a strictly weakening symmetric mutation: both canonicalized sides were lowercased, widening the guard to accept case-differing durable drift that the committed guard rejects. The full governed gate still passed `1,285/0`. A first asymmetric fold was caught because it also caused false rejections; it was not a valid widening-only experiment.
+Sakaan authorized a RED-first test/code closure after Final Inspection 3 demonstrated that a symmetric `.lower()` fold inside `_canonicalize_rewind_history` could widen acceptance while all `1,285` governed tests passed. This authorization knowingly superseded the submission-only PASS bound to `c266dad38`.
 
-The gap survived the repair. It is the same structural property under which B-1 survived `1,195` tests and 62 mutations (`14+19+13+16`). All 12 repair mutations are removal-or-break: they prove current behavior is load-bearing but cannot detect the guard accepting more. The suite is example-based; it pins classes already found and has no property or generative invariant over acceptance-class widening.
+The new property is deliberately non-circular. It never calls `_canonicalize_rewind_history` or `_normalize_rewind_message`. It independently projects user/assistant strings through the replay path's `agent.memory_manager.sanitize_context(...).strip()`, structured values through canonical JSON, and `api_content` through exact present-value comparison. A deterministic 33-case corpus covers case, whitespace, NFC/NFD, zero-width, bidi, sanitizer-erased memory/system/fence spans, list/dict content, `None`/absent/empty, and sidecar present/absent forms. Its ordered cross-product exercises `1,089` pairs; every unequal independent projection must raise `RewindHistoryConflict`, while equal projections may be accepted.
 
-Candidate remedy, **proposal requiring Sakaan's decision**: a property-based, differential, or generative check that constrains the rewind guard from unintended widening while preserving explicitly accepted projection equivalences. This cleanup authorizes no code/test implementation, and none was made.
+Evidence sequence:
 
-Positive assurance finding: the repair mutation campaign is materially less clustered than P3. P3 had `11/16` mutations in `hermes_cli/main.py`, 9 on two option-rejection assertions, and only 6 distinct named tests. The repair has 12 mutations across 5 files, 9 distinct named tests, at least 11 distinct code anchors, at most 2 per named test, and 7 `hermes_state.py` mutations at 7 different sites. The campaign is substantive, not clustered; that positive does not close the widening-direction gap.
+1. Restored current code: property `PASS`.
+2. Exact symmetric widening: property `FAIL`; witness durable `upper / Alpha`, expected `lower / alpha`.
+3. Byte-identical source restoration: property `PASS`.
+4. Frozen property body SHA-256: `36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478`.
+5. Permanent `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD`: named test failed, source restored SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
+6. Full governed gate: `1,286 passed / 0 failed` in `94.0s`, 64 workers, zero retries.
+7. Full mutation campaign: `13/13` failed named tests; five production sources restored byte-identically; restored focused gate `11/11`.
+
+The three decisive existing bodies remain exact at `11fad7cd…`, `55660025…`, and `772c2b7b…`. Authoritative closure data and exact hashes are in `../assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json`.
+
+Scope limit: this closes the demonstrated widening blind spot for this rewind-history guard. The same removal-only mutation shape may conceal equivalent acceptance-widening gaps on other guards in this build. They were not audited or closed here. No build-wide widening-assurance claim is made.
+
+The historical Final Inspection 3 PASS remains a true fact about `c266dad38` only. The new test-code commit is a new subject with no current submission clearance until independently inspected.
+
+Positive assurance finding remains: the repair campaign is materially less clustered than P3, and M13 adds the previously absent loosening direction to the existing removal-or-break coverage.

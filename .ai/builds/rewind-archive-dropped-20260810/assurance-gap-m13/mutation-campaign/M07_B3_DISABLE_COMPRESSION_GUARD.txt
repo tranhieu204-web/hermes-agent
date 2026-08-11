@@ -1,0 +1,34 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestGatewaySessionDbRecovery.test_rewind_session_refuses_compression_closed_session _
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000020315C78A50>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4376/test_rewind_session_refuses_co0')
+
+    def test_rewind_session_refuses_compression_closed_session(self, tmp_path):
+        """B-3: /undo must share /retry's compression-session guard."""
+        import threading
+
+        db = SessionDB(tmp_path / "undo-compression.db")
+        sid = "undo-compression"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "do not archive")
+        db.append_message(sid, "assistant", "still active")
+        db.end_session(sid, end_reason="compression")
+        before = db.get_messages(sid, include_inactive=True)
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+
+        result = store.rewind_session(sid, 1)
+
+>       assert result is None
+E       AssertionError: assert {'rewound_count': 2, 'target_text': 'do not archive', 'turns_undone': 1} is None
+
+tests\gateway\test_session.py:2574: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_refuses_compression_closed_session
+1 failed in 0.48s

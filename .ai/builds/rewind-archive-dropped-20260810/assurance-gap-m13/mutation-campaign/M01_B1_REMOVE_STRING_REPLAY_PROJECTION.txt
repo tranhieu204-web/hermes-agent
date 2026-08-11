@@ -1,0 +1,71 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_rewind_history_uses_projected_content_as_canonical_without_masking_drift _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x00000150C4FED8D0>
+db = <hermes_state.SessionDB object at 0x00000150C63F9BE0>
+
+    def test_rewind_history_uses_projected_content_as_canonical_without_masking_drift(
+        self, db
+    ):
+        """B-1: durable rows project one-way; expected history stays byte-exact."""
+        sid = "rewind-projection-canonical"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "first")
+        db.append_message(sid, "assistant", "answer text\n")
+        db.append_message(sid, "user", "retry")
+        db.append_message(sid, "assistant", "stale reply")
+
+        expected = db.get_messages_as_conversation(sid)
+        assert expected[1]["content"] == "answer text"
+>       result = db.rewind_active_history(
+            sid,
+            expected_history=expected,
+            truncate_before_user_ordinal=1,
+        )
+
+tests\test_hermes_state.py:7938:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+hermes_state.py:7603: in rewind_active_history
+    return self._execute_write(_do)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_state.py:2135: in _execute_write
+    result = fn(self._conn)
+             ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+conn = <sqlite3.Connection object at 0x00000150C64194E0>
+
+    def _do(conn):
+        session = conn.execute(
+            "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if (
+            session is not None
+            and session["ended_at"] is not None
+            and session["end_reason"] == "compression"
+        ):
+            raise CompressionSessionClosedError(session_id)
+
+        active_rows = conn.execute(
+            "SELECT * FROM messages "
+            "WHERE session_id = ? AND active = 1 ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        persisted_bytes = self._canonicalize_rewind_history(
+            session_id, list(active_rows), persisted=True
+        )
+        expected_bytes = self._canonicalize_rewind_history(
+            session_id, expected_history, persisted=False
+        )
+        if persisted_bytes != expected_bytes:
+>           raise RewindHistoryConflict(
+                session_id, "expected history does not match active durable rows"
+            )
+E           hermes_state.RewindHistoryConflict: Rewind conflict for session 'rewind-projection-canonical': expected history does not match active durable rows
+
+hermes_state.py:7550: RewindHistoryConflict
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift
+1 failed in 0.57s

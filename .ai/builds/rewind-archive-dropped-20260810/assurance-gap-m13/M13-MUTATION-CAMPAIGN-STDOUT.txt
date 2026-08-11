@@ -1,0 +1,21 @@
+M01_B1_REMOVE_STRING_REPLAY_PROJECTION: exit=1 named_failure=True restored=True
+M02_B1_NORMALIZE_EXPECTED_SIDE_TOO: exit=1 named_failure=True restored=True
+M03_B1_STRINGIFY_STRUCTURED_CONTENT: exit=1 named_failure=True restored=True
+M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY: exit=1 named_failure=True restored=True
+M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD: exit=1 named_failure=True restored=True
+M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH: exit=1 named_failure=True restored=True
+M07_B3_DISABLE_COMPRESSION_GUARD: exit=1 named_failure=True restored=True
+M08_B3_CORRUPT_COUNTER_RECONCILIATION: exit=1 named_failure=True restored=True
+M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK: exit=1 named_failure=True restored=True
+M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD: exit=1 named_failure=True restored=True
+M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS: exit=1 named_failure=True restored=True
+M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS: exit=1 named_failure=True restored=True
+M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD: exit=1 named_failure=True restored=True
+{
+  "manifest": ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/mutation-campaign/mutation-manifest.json",
+  "manifest_sha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
+  "mutation_count": 13,
+  "all_mutations_failed_named_tests": true,
+  "all_sources_restored_byte_identical": true,
+  "restored_focused_exit_code": 0
+}

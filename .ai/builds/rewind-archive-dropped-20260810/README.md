@@ -8,9 +8,11 @@ Implementation terminal before review: `daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb
 
 Stage 6 repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
-Reviewed code subject through: `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`
+Historical Final Inspection 3 code subject: `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`
 
-Status: `FINAL_INSPECTION PASS — CLEARED FOR SUBMISSION ONLY — LATER LIFECYCLE ACTIONS NOT AUTHORIZED`
+M13 candidate parent: `af49192172e1b3635490fcb019bda0e481b71292`; the new exact candidate SHA is the commit containing this record.
+
+Status: `M13 CANDIDATE VERIFIED — PRIOR FINAL INSPECTION PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
 
 ## What changed
 
@@ -21,6 +23,7 @@ This build replaces destructive Restore/Edit/Re-run and retry truncation with re
 - **P3** exposes read-only, one-session JSONL recovery through `hermes sessions export --include-rewound`. Recovery reads raw rows, includes active rows plus `active=0, compacted=0` rewind rows, excludes compacted history, and preserves content bytes that conversation projection would sanitize or strip.
 - **Stage 6 repair epoch 1** fixes B-1 through B-4 and M-1 and corrects B-5/F-R3 and MED-5. The independent defect-finding recheck judged all seven findings genuinely fixed but returned `RECHECK_HOLD` because the recorded B-1 guard limit was materially under-scoped. That acceptance claim is corrected in `repair-epoch-1/REPAIR-DECISION.md`; the recheck was not Final Inspection and did not clear the build.
 - **Stage 6 close-out test commit** `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` adds three executable acceptance cases in `tests/test_hermes_state.py`. Without `api_content`, the rewind guard accepts sanitizer-erased drift for a 66-byte `<memory-context>...` value and the recalled-memory `[System note: ...]` form; with `api_content`, the same memory-context-bearing value raises `RewindHistoryConflict` and leaves durable state unchanged. This commit documents a representational limit and its sidecar compensation; it does not fix a production defect.
+- **M13 assurance closure** adds a deterministic 33-case, 1,089-pair cross-product property whose oracle is independent of `_canonicalize_rewind_history`: user/assistant strings are projected by the replay path's `agent.memory_manager.sanitize_context(...).strip()`, structured values by independent canonical JSON, and `api_content` by exact authority when present. Every unequal reference projection must raise `RewindHistoryConflict`. The exact symmetric `.lower()` widening was proved RED on `upper / Alpha` versus `lower / alpha`, production bytes were restored, and permanent mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD` now fences that direction.
 
 Default replay, export, and search remain active-only. Yuanbao recall/redaction, rotated compression, and ordinary hard replacement remain destructive.
 
@@ -45,20 +48,20 @@ HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Sc
 
 Historical repair-code result at `d540eaee9764fbc3194c493946cd6624f447c3a5`: `1,282 passed / 0 failed` across ten files in `88.0s`, with 64 workers and zero file retries. The authoritative raw runner output is bound at `repair-epoch-1/FULL-GOVERNED-GATE.txt` SHA-256 `5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887`.
 
-Current code-subject result at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`: the author gate passed `1,285/0` in `90.8s`; fresh Final Inspection 3 independently passed `1,285/0` in `88.9s`, 64 workers, zero file retries. The Final Inspection PASS receipt is `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-final-inspection-3-20260811-124215-ICT\stdout.raw.json`, SHA-256 `2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de`; wrapper SHA-256 `9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e`.
+Historical code-subject result at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`: the author gate passed `1,285/0` in `90.8s`; Final Inspection 3 independently passed `1,285/0` in `88.9s`, 64 workers, zero file retries. That inspection and its submission-only clearance are historical and superseded for the new candidate.
 
-Stage 6 repair mutation runner:
+Current M13 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `94.0s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m13/FULL-GOVERNED-GATE.txt`, SHA-256 `a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961`.
+
+Repair plus M13 mutation runner:
 
 ```bash
 ./.venv/Scripts/python.exe \
   .ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/run_mutations.py
 ```
 
-Result: 12 mutations; every mutation failed its named test, all five production sources were restored byte-for-byte, the restored focused gate passed `10/10`, and the runner exited `0`. Manifest SHA-256: `f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0`.
+Result: 13 mutations; all 13 failed their named tests, including permanent loosening mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD`; all five production sources were restored byte-for-byte; the restored focused gate passed `11/11`; runner exit `0`. Manifest SHA-256: `3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa`.
 
-Manifest provenance: `run_mutations.py` does not emit `receipt_byte_policy`, per-mutation `output_byte_policy`, or `restored_focused_gate.output_byte_policy`. The committed first-run manifest is therefore generator output plus post-generation annotation; those three byte-policy field groups are annotations. The reviewer's unannotated regeneration is preserved separately under `repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/`.
-
-Captured receipt bytes are authoritative, including trailing whitespace and mixed line endings. They are bound in `repair-epoch-1/RAW-RECEIPT-BINDINGS.json` SHA-256 `51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527`. A rejected packaging attempt had changed CRLF sequences to LF; the exact capture topology was restored before binding, and the full-gate and RED hashes match their pre-normalization anchors. No normalized receipt copy is required or presented as evidence.
+M13's receipt is normalized deterministically to UTF-8/LF with pytest's presentation-only trailing spaces removed; that policy is emitted by the runner in the manifest and on every mutation entry. The historical Stage 6 first-run raw receipts and their separate raw bindings remain historical evidence and are not represented as byte-identical to the M13 regeneration.
 
 ## Recovery export
 
@@ -143,9 +146,9 @@ Any rollback is a new authority-gated transaction. The Final Inspector warned th
 
 ## Code subject and record recursion
 
-The reviewed **CODE SUBJECT** is the code and tests exactly as committed at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` (tree `2095ee450d2582f765c604bb579cc6a93397c1ee`). Commit `b3880ee2253ebd12f3ae9e6fdb3c755845dfed50` is the inspected evidence-only record envelope for that subject. This cleanup is another record-only commit in the same contiguous envelope; no record commit is part of the code subject.
+The historical Final Inspection 3 **CODE SUBJECT** is `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463` (tree `2095ee450d2582f765c604bb579cc6a93397c1ee`), with inspected record head `b3880ee2253ebd12f3ae9e6fdb3c755845dfed50`. Record-only commit `af49192172e1b3635490fcb019bda0e481b71292` followed it.
 
-Therefore `candidate.sourceSha`, `candidate.workingTreeParent`, `closure.exactSha`, `clearance.exactSha`, and `finalInspection.exactSha` intentionally bind `c266dad38`, not the later record-envelope HEAD. This is sound only while the complete `c266dad38..HEAD` diff—whether one record commit or a finite contiguous chain—contains exclusively paths under `.ai/builds/rewind-archive-dropped-20260810/` and no code or test path. Any code/test byte change after `c266dad38` creates a new subject and invalidates this binding. The inspected record head remains `b3880ee22`; later cleanup-record HEAD identity is discovered from Git history rather than recursively embedded in its own subject fields.
+M13 changes `tests/test_hermes_state.py` and the mutation/evidence record. Therefore the `c266dad38` inspection binding is no longer current: the new code/test subject is the commit containing this record. It must be read mechanically from Git after commit and must receive a new independent Final Inspection before any submission clearance can exist. No production source byte changed in M13; `hermes_state.py` remains SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
 
 ## Why the B-1 limit is pinned, not normalized
 
@@ -155,23 +158,26 @@ The earlier sanitizer examples are a **known lower bound, not an exhaustive enum
 
 This decision is not permanent by assertion alone. Revisit it if expected history gains a universally carried raw authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows. The executable pin currently covers only memory-context and system-note representatives plus sidecar compensation; it does not prove or parametrize every member of the full projection-equivalence class.
 
-## OPEN ASSURANCE GAP — rewind-guard acceptance-class widening
+## CLOSED ASSURANCE GAP — rewind-guard acceptance-class widening
 
-Classification: `OPEN_ASSURANCE_GAP — NOT A PRODUCT DEFECT — NOT CLOSED`.
+Classification: `CLOSED FOR THIS GUARD — NEW FINAL INSPECTION PENDING`.
 
-Final Inspection applied a strictly weakening, **symmetric** mutation that lowercased both canonicalized sides of the rewind-history comparison. That mutation widened the guard's acceptance class by allowing case-differing durable drift that the committed guard rejects, yet the full governed gate still passed `1,285/0` with zero failures. An earlier asymmetric fold was caught only because it also introduced false rejections; that was not a valid widening-only experiment. The symmetric experiment is the decisive evidence.
+The gap is closed by executable, non-circular evidence. The new deterministic property constructs a 33-case adversarial corpus—case, edge/interior whitespace, NFC/NFD, zero-width and bidi characters, sanitizer-erased memory/system/fence spans, list/dict structured content, `None`/absent/empty, and `api_content` present/absent variants—and exercises all `1,089` ordered pairs through `rewind_active_history`. Its oracle never calls `_canonicalize_rewind_history` or `_normalize_rewind_message`: it derives user/assistant strings directly from replay-path `sanitize_context(...).strip()`, structured values from independent canonical JSON, and sidecars from exact values. Any unequal reference projection must produce `RewindHistoryConflict`; equal projections remain permitted to be accepted.
 
-This is the same structural blind spot that allowed B-1 to survive the earlier `1,195`-test gate and `62` mutations (`14+19+13+16`). It persists after the repair. All 12 repair mutations are removal-or-break mutations: they establish that existing behavior is load-bearing, but none constrains the guard against accepting **more**. The repair fixtures are example-based and pin the classes already found; they do not provide a property or generative invariant over the acceptance boundary and cannot detect the next Class B.
+The property passed on restored production code, then failed under the exact strictly weakening symmetric fold applied inside `_canonicalize_rewind_history`. The named witness was durable `upper / "Alpha"` versus expected `lower / "alpha"`. After byte-identical restoration it passed again. The frozen property body SHA-256 is `36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478`.
 
-Candidate remedy, **proposal only**: add a property-based, differential, or generative check that constrains `_normalize_rewind_message`/rewind comparison against unintended widening of its accepted-drift class while preserving explicitly documented projection equivalences. This requires Sakaan's decision and a separately authorized build/test change. It is not authorized by this record cleanup and is not implemented here.
+Permanent mutation `M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD` now keeps this widening direction in the campaign. All `13/13` mutations fail named tests, all five production sources restore byte-identically, and the restored focused gate passes `11/11`. Closure record: `assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json`.
 
-Positive assurance finding: mutation clustering is materially better than the earlier P3 campaign. P3 placed `11/16` mutations in `hermes_cli/main.py`, including 9 on two option-rejection assertions, and exercised only 6 distinct named tests. The repair's 12 mutations span 5 files, 9 distinct named tests, at least 11 distinct code anchors, and no more than 2 mutations per named test; its 7 `hermes_state.py` mutations hit 7 genuinely different sites. This campaign is substantive, not clustered, even though the widening-direction assurance gap remains open.
+Scope limit: this closes the demonstrated acceptance-class-widening gap for the rewind-history guard only. The removal-only mutation shape may leave equivalent widening gaps on other guards in this build. Those guards were not audited by this work, and no broader build-wide claim is made.
+
+Positive assurance finding remains: mutation distribution is materially better than earlier P3, and M13 adds the previously absent loosening direction rather than replacing the existing removal-or-break coverage.
 
 ## Open remainders
 
-- **Final Inspection:** `PASS — CLEARED FOR SUBMISSION ONLY`. Fresh `claude-opus-5`/max inspection of code subject `c266dad38` and inspected record head `b3880ee22` reproduced `1,285/0`, `12/12` mutations with byte-identical restoration, a fresh marker-bearing canary, map chain and structure roots under the map canonicalizer, the three decisive bodies, five production hashes, and all seven dispositions with zero divergence. Wrapper `eligible:true`, `mutation_performed:false`, zero auxiliary models, identical custody roots, clean status at both ends, and no reflog move. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-final-inspection-3-20260811-124215-ICT\stdout.raw.json`, SHA-256 `2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de`; wrapper SHA-256 `9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e`. Scope is submission only; no merge, push, deploy, activation, trading, order, or rollback authority follows.
+- **Final Inspection:** historical `PASS — CLEARED FOR SUBMISSION ONLY` for exact code subject `c266dad38` and record head `b3880ee22`. M13 changes test code, so that clearance is now `SUPERSEDED / NOT CURRENT`; the new commit has no submission clearance until a fresh independent Final Inspection passes it. The historical receipt remains intact at `C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json`, SHA-256 `2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de`.
+- **M13 assurance closure:** `CLOSED_FOR_REWIND_HISTORY_GUARD_ONLY`. Independent 1,089-pair property, exact widening RED witness, restored GREEN, 13/13 permanent mutations, and 1,286/0 governed gate are recorded. Other guards remain `NOT_ASSESSED_FOR_EQUIVALENT_WIDENING_GAPS`.
 - **Independent Stage 6 recheck:** `RECHECK_HOLD`. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-recheck-20260811-104048-ICT-c4057c52`. The reviewer reproduced `1,282/0` in `90.5s`, killed `12/12` mutations with byte-identical restoration independently verified by `git hash-object`, passed the canary with all exclusions true, and reproduced RED with zero collection/import errors. All seven findings were judged genuinely fixed. The deciding HOLD item was the under-scoped B-1 acceptance wording. This was defect-finding recheck, not Final Inspection or clearance.
-- **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; FINAL INSPECTION PASS`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. The earlier sanitizer examples are a known lower bound, not a complete characterization. The actual boundary is equality under the whole `_normalize_rewind_message` projection, including user/assistant sanitizer collapse, `_decode_content` sentinel decoding, semantic normalization of the five JSON fields, and deliberately excluded database columns; tool-role strings remain byte-exact. The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
+- **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; M13 WIDENING FENCE ADDED; NEW FINAL INSPECTION PENDING`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. The earlier sanitizer examples are a known lower bound, not a complete characterization. The actual boundary is equality under the whole `_normalize_rewind_message` projection, including user/assistant sanitizer collapse, `_decode_content` sentinel decoding, semantic normalization of the five JSON fields, and deliberately excluded database columns; tool-role strings remain byte-exact. The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
 - **`api_content` prevalence:** `NOT ESTABLISHED`. Code proves it is nullable and conditional: no injection or sanitization-changing content can yield zero sidecars; only the current user row is composed/stamped for injected context, run-agent stamping is conditional, gateway/branch sites forward only an existing sidecar, and content rewrites drop stale sidecars. No repository telemetry establishes a percentage, and coverage of post-write drift on originally sidecar-free rows is not established.
 - **RED weight:** 16 failed cases total and zero collection/import/syntax errors, but only 9 are genuine behavioural REDs: B-1, B-2, B-3 ×3, B-4, M-1 ×2, and MED-5. The remaining 7 are parametrizations of one closure-key assertion. B-5 has no behavioural RED because it is a record correction.
 - **B-2 / MED-4:** `FIX CONFIRMED BY RECHECK`. Destructive export refuses deletion when ordinary export did not cover rewind rows, including probe uncertainty.
@@ -227,6 +233,6 @@ Audit limit:
 
 ## Mechanical closure gate
 
-Final Inspection 3 returned `PASS — CLEARED FOR SUBMISSION` for exact code subject `c266dad38` and inspected record head `b3880ee22`. That clearance is submission-only. The mechanical pipeline checker remains fail-closed, submission itself has not been executed, and integration, merge, push, remote readback, CI, artifact, deployment, activation, trading, orders, and rollback proof remain absent or unauthorized. The build is not pipeline-closed and the PASS must not be read as shipping authority.
+The historical Final Inspection 3 PASS remains valid only for exact code subject `c266dad38` and inspected record head `b3880ee22`; it is superseded for the M13 candidate because `tests/test_hermes_state.py` changed. The new commit has no submission clearance and requires fresh independent Final Inspection. The mechanical pipeline checker remains fail-closed; integration, merge, push, remote readback, CI, artifact, deployment, activation, trading, orders, and rollback proof remain absent or unauthorized.
 
-See `BUILD-CLOSURE-SUMMARY.json` and `repair-epoch-1/REPAIR-DECISION.md` for the bound repair record. This cleanup records the PASS, corrects five LOW record defects, and preserves the open widening-direction assurance gap; it changes no code or test.
+See `assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json`, `BUILD-CLOSURE-SUMMARY.json`, and `repair-epoch-1/REPAIR-DECISION.md`. M13 closes the demonstrated widening-direction gap for the rewind-history guard only and explicitly does not claim equivalent coverage for other guards.

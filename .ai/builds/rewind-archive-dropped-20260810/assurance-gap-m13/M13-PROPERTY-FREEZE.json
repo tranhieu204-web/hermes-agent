@@ -1,0 +1,59 @@
+{
+  "schema": "rewind-m13-property-freeze-v1",
+  "base_head": "af49192172e1b3635490fcb019bda0e481b71292",
+  "property_test": {
+    "file": "tests/test_hermes_state.py",
+    "test": "test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    "lineno": 8054,
+    "end_lineno": 8191,
+    "body_sha256": "36bf16189b09cd05f0c06513c7b7c01a86a32ad3fbb8e0431d714158965cb478",
+    "classification": "NEW_INDEPENDENT_REFERENCE_PROPERTY"
+  },
+  "corpus_cases": 33,
+  "cross_product_pairs": 1089,
+  "oracle_independence": {
+    "string_content": "agent.memory_manager.sanitize_context(content).strip() imported directly",
+    "structured_content": "independent canonical json.dumps of decoded input data",
+    "api_content": "independent exact value comparison when present",
+    "forbidden_calls": [
+      "SessionDB._canonicalize_rewind_history",
+      "SessionDB._normalize_rewind_message"
+    ]
+  },
+  "baseline_green": {
+    "selector": "tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_guard_rejects_every_independent_reference_projection_mismatch",
+    "exit_code": 0,
+    "output": "M13-PROPERTY-RESTORED-GREEN.txt",
+    "output_sha256": "1e715b444f393f8dab4ceed7a60e7c6f1c25eef12fdf7565f03e14b94f50e8a0"
+  },
+  "protected_existing_test_bodies": [
+    {
+      "file": "tests/test_tui_gateway_server.py",
+      "test": "test_prompt_submit_rewind_archives_newly_dropped_suffix",
+      "lineno": 14467,
+      "end_lineno": 14536,
+      "body_sha256": "11fad7cdeeae0973a70444515592e736a18d7603eafaf39b250a456bb669d6cd",
+      "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+    },
+    {
+      "file": "tests/test_tui_gateway_server.py",
+      "test": "test_retry_command_converts_array_index_to_user_ordinal_and_archives_suffix",
+      "lineno": 14539,
+      "end_lineno": 14599,
+      "body_sha256": "55660025556b02cd44f5b3ef317595ba023aa5162f28027a4031186ed24bdabd",
+      "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+    },
+    {
+      "file": "tests/cli/test_cli_retry.py",
+      "test": "test_cli_retry_converts_array_index_to_user_ordinal_and_archives_suffix_before_requeue",
+      "lineno": 89,
+      "end_lineno": 140,
+      "body_sha256": "772c2b7bafaee60eb7b9e00abba60b2ee19bd18fe415e12a010eba4dc3686c59",
+      "classification": "PROTECTED_EXISTING_DECISIVE_BODY"
+    }
+  ],
+  "production_source_sha256": {
+    "hermes_state.py": "57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf"
+  },
+  "receipt_byte_policy": "UTF8_LF_RSTRIP_PRESENTATION_WHITESPACE"
+}
