@@ -225,7 +225,7 @@
     "sourceSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
     "reverifiedSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "state": "CODE_SUBJECT_C266DAD38_FINAL_INSPECTION_HOLD_RECORD_GAP",
+    "state": "CODE_SUBJECT_C266DAD38_FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
     "workingTreeParentCommit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
     "workingTreeParent": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
     "committedSourceSha256": {
@@ -240,9 +240,11 @@
     }
   },
   "submission": {
-    "verdict": "HOLD_FINAL_INSPECTION_RECORD_GAP",
+    "verdict": "GO_CLEARED_FOR_SUBMISSION_NOT_EXECUTED",
     "exactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json"
+    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
+    "scope": "SUBMISSION_ONLY",
+    "executed": false
   },
   "push": {
     "status": "PENDING",
@@ -264,22 +266,26 @@
     "rationale": "Current authorized lifecycle is source candidate and dual-repository port only; no deploy or packaged artifact authority"
   },
   "finalInspection": {
-    "status": "HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
+    "status": "PASS_CLEARED_FOR_SUBMISSION",
     "exactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "artifactSha256": "3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2",
-    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json",
-    "receiptSha256": "3956958d9f90bdf53700a4a73a3c3f173b00f3d3799bce470b7d99300c1b37c2",
-    "wrapperReceiptSha256": "2212cc10d47f36a2c2190336b4d7c377203bd376b33cbdb1da8be591ce6d82bf",
+    "inspectedRecordHead": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "artifactSha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
+    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
+    "receiptSha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
+    "wrapperReceipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\wrapper-receipt.json",
+    "wrapperReceiptSha256": "9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e",
     "finalInspectionPerformed": true,
     "productRuling": "PASS_EVERY_VERIFIABLE_PRODUCT_AXIS_ZERO_DIVERGENCE",
-    "decidingGap": "Committed record stopped at d540eaee9 and omitted c266dad38.",
-    "clearance": false
+    "clearance": true,
+    "scope": "SUBMISSION_ONLY"
   },
   "clearance": {
-    "status": "HOLD",
+    "status": "CLEARED_FOR_SUBMISSION_ONLY",
     "exactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json",
-    "reason": "Fresh Final Inspection passed the product but returned HOLD because the committed record did not cover the code subject at c266dad38. This record update resolves bookkeeping only and does not self-grant clearance."
+    "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
+    "receiptSha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
+    "clearance": true,
+    "scope": "NO_MERGE_PUSH_DEPLOY_ACTIVATION_TRADING_ORDER_OR_ROLLBACK_AUTHORITY"
   },
   "deployment": {
     "required": false,
@@ -318,6 +324,20 @@
   ],
   "remainder": [
     {
+      "id": "ASSURANCE-1",
+      "state": "OPEN_ASSURANCE_GAP_NOT_PRODUCT_DEFECT",
+      "evidence": {
+        "valid_mutation": "strictly weakening symmetric lowercase of both canonicalized sides",
+        "effect": "accepts case-differing durable drift rejected by committed guard",
+        "governed_gate": {
+          "passed": 1285,
+          "failed": 0
+        },
+        "first_asymmetric_attempt": "CAUGHT_FOR_FALSE_REJECTIONS_NOT_A_VALID_WIDENING_ONLY_EXPERIMENT"
+      },
+      "decision": "SAKAAN_DECISION_REQUIRED_NOT_AUTHORIZED"
+    },
+    {
       "id": "F-R3",
       "state": "NARROWS_ACCEPTED_INPUT_SET",
       "evidence": "Corrected record: pre-I1 4004 for present non-integer prompt ordinal narrows accepted input; it is not preservation."
@@ -341,12 +361,12 @@
       "id": "LOW-1",
       "state": "OBSERVED_LOW_DIAGNOSABILITY_V1",
       "severity": "LOW",
-      "evidence": "SWALLOWED_ROLLBACK_CAUSE. hermes_state.py _execute_write lines 2145-2150 discard a rollback exception. A lock/busy retry can then surface a transaction-nesting error at line 2170 rather than the rollback cause. This fails closed; it is pre-existing, not introduced by this build, and is neither correctness nor data loss. No v1 fix proposed; suggested remedy is to log or preserve the rollback exception instead of pass."
+      "evidence": "At code subject c266dad38, _execute_write lines 2139-2141 discard a rollback exception. Retry can then surface a transaction-nesting error from BEGIN IMMEDIATE at 2133, propagating fail-closed through 2161-2162. Pre-existing diagnosability-only observation; no v1 fix proposed."
     },
     {
       "id": "B-1",
-      "state": "CODE_FIX_CONFIRMED_ACCEPTANCE_CLAIM_CORRECTED_BUILD_HOLD",
-      "evidence": "For ordinary string content without an api_content sidecar, the comparison cannot detect any difference that sanitize_context(...).strip() collapses. This is broader than whitespace: it includes arbitrary-length <memory-context>...</memory-context> spans removed by _INTERNAL_CONTEXT_RE, recalled-memory [System note: ...] forms removed by _INTERNAL_NOTE_RE, and fence tags removed by _FENCE_TAG_RE. See agent/memory_manager.py:163-181, including 168-181. api_content is exact only when present; numeric prevalence and post-write-drift coverage are NOT ESTABLISHED."
+      "state": "CODE_FIX_CONFIRMED_ACCEPTANCE_CLAIM_CORRECTED_FINAL_INSPECTION_PASS",
+      "evidence": "Known lower bound, not exhaustive enumeration: for user/assistant string content without api_content, differences collapsed by sanitize_context(...).strip() are undetectable, including memory-context, recalled-memory system-note, fence-tag, and final-strip differences. The complete abstract boundary is equivalence under the whole _normalize_rewind_message projection. Known additional collapse classes include _decode_content sentinel decoding, semantic decoding of the five _REWIND_JSON_FIELDS (discarding JSON byte formatting and key order), and the deliberately excluded id, session_id, active, compacted, and timestamp columns. Tool-role string content remains byte-exact. api_content is exact when present; numeric prevalence and post-write-drift coverage remain NOT_ESTABLISHED."
     },
     {
       "id": "B-2",
@@ -393,7 +413,7 @@
     "buildGreen": {
       "sequence": 4,
       "status": "CODE_SUBJECT_C266DAD38_VERIFIED",
-      "receipt": "Fresh Final Inspection gate at c266dad38: 1285/1285 in 89.5s, 64 workers, zero retries; product verified clean."
+      "receipt": "Fresh Final Inspection 3 gate at c266dad38: 1285/1285 in 88.9s, 64 workers, zero retries; product verified clean."
     },
     "adversarial": {
       "sequence": 5,
@@ -411,7 +431,8 @@
     },
     "submission": {
       "sequence": 8,
-      "status": "PENDING"
+      "status": "CLEARED_NOT_EXECUTED",
+      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json"
     },
     "integration": {
       "sequence": 9,
@@ -431,12 +452,13 @@
     },
     "finalInspection": {
       "sequence": 13,
-      "status": "HOLD_RECORD_DOES_NOT_COVER_SUBJECT_HEAD",
-      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-2-20260811-114827-ICT\\stdout.raw.json"
+      "status": "PASS_CLEARED_FOR_SUBMISSION",
+      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json"
     },
     "clearance": {
       "sequence": 14,
-      "status": "HOLD_NOT_CLEARED"
+      "status": "PASS_SUBMISSION_ONLY",
+      "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json"
     },
     "deployment": {
       "sequence": 15,
@@ -448,12 +470,12 @@
     },
     "close": {
       "sequence": 17,
-      "status": "FINAL_INSPECTION_HOLD_RECORD_GAP",
-      "receipt": "Product passed; record stopped before c266dad38. This update binds the code subject and explicitly resolves record-commit recursion; a fresh inspector must decide clearance."
+      "status": "HOLD_LATER_LIFECYCLE_PENDING",
+      "receipt": "Final Inspection PASS for submission only; integration/push/CI/artifact/deploy/live/rollback remain incomplete."
     }
   },
   "closure": {
-    "status": "FINAL_INSPECTION_HOLD_RECORD_GAP_REPAIRED_IN_EVIDENCE_ENVELOPE_NOT_SELF_CLEARED",
+    "status": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION_LATER_LIFECYCLE_PENDING",
     "exactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463"
   },
   "bindings": {
@@ -481,9 +503,9 @@
     "p3MutationManifestSha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
     "p3CanaryRunsSha256": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
     "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
-    "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5",
+    "p3AcpResidualSha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
     "stage6RepairDecisionPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "stage6RepairDecisionSha256": "ac5f37812444fd3f7e9fe0d6d393eef46413c9aaa01a303445792379613166ed",
+    "stage6RepairDecisionSha256": "b1932716a5262cbff0feb88a2c8478cc0121935bbab1bd7a577bfd7144541be0",
     "stage6RepairMutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "stage6RepairFullGateSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
     "stage6RepairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
@@ -495,7 +517,7 @@
     },
     "repairDecision": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-      "sha256": "ac5f37812444fd3f7e9fe0d6d393eef46413c9aaa01a303445792379613166ed"
+      "sha256": "b1932716a5262cbff0feb88a2c8478cc0121935bbab1bd7a577bfd7144541be0"
     },
     "stage6RecheckProvenance": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/PROVENANCE.json",
@@ -980,25 +1002,24 @@
     }
   },
   "closureRecord": {
-    "stage": "18b",
-    "status": "DOCUMENTED_RECHECK_HOLD_ACCEPTANCE_CLAIM_CORRECTED_NOT_CLEARED",
+    "stage": "18c",
+    "status": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION_LATER_LIFECYCLE_PENDING",
     "readme": ".ai/builds/rewind-archive-dropped-20260810/README.md",
     "summary": ".ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
     "implementationCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
-    "independentBuildReview": "RECHECK_HOLD_RECORDED_NOT_FINAL_INSPECTION_NOT_CLEARANCE",
+    "independentBuildReview": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
     "merged": false,
     "pushed": false,
     "deployed": false,
     "activated": false,
     "pipelineGate": {
-      "status": "HOLD_FRESH_FINAL_INSPECTION_REQUIRED_AFTER_RECORD_EXTENSION",
+      "status": "HOLD_LATER_LIFECYCLE_AND_FAIL_CLOSED_MECHANICAL_CHECKER",
       "exitCode": 1,
       "materialBlockers": [
-        "FRESH_FINAL_INSPECTION_REQUIRED_AFTER_RECORD_EXTENSION",
-        "FINAL_INSPECTION_CLEARANCE_ABSENT_AFTER_RECORD_GAP_HOLD",
-        "SUBMISSION_NOT_GO",
-        "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
-        "ROLLBACK_NOT_PROVEN"
+        "SUBMISSION_CLEARED_BUT_NOT_EXECUTED",
+        "INTEGRATION_MERGE_PUSH_REMOTE_CI_ARTIFACT_DEPLOY_LIVE_ABSENT",
+        "ROLLBACK_NOT_PROVEN",
+        "MECHANICAL_CHECKER_EXTERNAL_EVIDENCE_UNVERIFIED_BY_DESIGN"
       ],
       "bypassAttempted": false
     },
@@ -1010,17 +1031,18 @@
       "positiveFinding": "SEARCH_FILTERING_CORRECT_AND_CONSISTENT",
       "searchEvidence": {
         "named_fts_lines": [
-          7904,
-          8087,
-          8186
+          8035,
+          8218,
+          8317
         ],
         "predicate": "(m.active = 1 OR m.compacted = 1)",
         "effect": "rewind rows excluded; compaction archives retained",
         "additional_filtered_lines": [
-          8275,
-          8369,
-          8611
-        ]
+          8406,
+          8500,
+          8742
+        ],
+        "coordinateBasis": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463"
       },
       "independentBuildReview": "HISTORICAL_HOLD_RECHECK_WAS_PENDING_NOW_RECHECK_HOLD",
       "notCoveredAtThatEpoch": [
@@ -1050,14 +1072,14 @@
         "id": "LOW-1",
         "severity": "LOW",
         "classification": "PRE_EXISTING_DIAGNOSABILITY_ONLY_NOT_REGRESSION_NOT_CORRECTNESS_NOT_DATA_LOSS",
-        "cause": "rollback exception swallowed at hermes_state.py:2148-2149",
-        "failureMode": "following BEGIN IMMEDIATE can raise transaction-nesting error which propagates fail-closed at line 2170",
+        "cause": "rollback exception swallowed at hermes_state.py:2139-2141",
+        "failureMode": "following BEGIN IMMEDIATE at 2133 can raise transaction-nesting error which propagates fail-closed through 2161-2162",
         "v1Fix": "NONE_PROPOSED",
         "suggestedRemedy": "log or preserve rollback exception instead of pass"
       },
       "verifiedSafe": {
-        "retryPath": "rollback precedes retry; successful rollback means callback re-runs against unchanged DB; rollback failure fails closed",
-        "i1Toctou": "BEGIN IMMEDIATE at 2141 encloses compare at 7493 and mutation at 7511-7515",
+        "retryPath": "At c266dad38, rollback 2139 precedes retry; successful rollback means unchanged DB; rollback failure fails closed through BEGIN 2133 / propagation 2161-2162.",
+        "i1Toctou": "BEGIN IMMEDIATE at 2133 encloses comparison 7543-7552 and mutation 7565-7570.",
         "normalizer": "non-mapping, unknown-field, alias-disagreement, non-serializable and non-finite values refused; _REWIND_MISSING distinguishes absent from None; observed default is deliberate",
         "ordinalBoundaries": "empty active-user set fails closed; zero is valid whole-transcript archive behind upstream 4028 confirmation; negative/non-integer/bool refused with type(x) is not int",
         "mutationSpotCheck": "COO changed type(x) is not int to not isinstance(x, int); only test_rejects_invalid_ordinal_without_any_mutation[True] failed; restored source SHA-256 8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83"
@@ -1067,15 +1089,16 @@
         "status": "PLAN_DEFECT_CONFIRMED_AS_B1_REPAIRED_RECHECK_HOLD_RECORDED",
         "reason": "v3.2 omitted canonical representation; independent defect-finding recheck judged code fixed but returned RECHECK_HOLD on under-scoped acceptance wording."
       },
-      "independentBuildReview": "RECHECK_HOLD_RECORDED_NOT_FINAL_INSPECTION"
+      "independentBuildReview": "RECHECK_HOLD_RECORDED_NOT_FINAL_INSPECTION",
+      "coordinateBasis": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463"
     },
     "repairEpoch1": {
-      "lifecycle": "BUILD_REVIEW_HOLD",
+      "lifecycle": "FINAL_INSPECTION_PASS_SUBMISSION_ONLY",
       "codeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
       "B-1": {
         "disposition": "FIXED",
         "canonicalRepresentation": "projected_content",
-        "guardLimit": "For ordinary string content without an api_content sidecar, the comparison cannot detect any difference that sanitize_context(...).strip() collapses. This is broader than whitespace: it includes arbitrary-length <memory-context>...</memory-context> spans removed by _INTERNAL_CONTEXT_RE, recalled-memory [System note: ...] forms removed by _INTERNAL_NOTE_RE, and fence tags removed by _FENCE_TAG_RE. See agent/memory_manager.py:163-181, including 168-181. api_content is exact only when present; numeric prevalence and post-write-drift coverage are NOT ESTABLISHED.",
+        "guardLimit": "Known lower bound, not exhaustive enumeration: for user/assistant string content without api_content, differences collapsed by sanitize_context(...).strip() are undetectable, including memory-context, recalled-memory system-note, fence-tag, and final-strip differences. The complete abstract boundary is equivalence under the whole _normalize_rewind_message projection. Known additional collapse classes include _decode_content sentinel decoding, semantic decoding of the five _REWIND_JSON_FIELDS (discarding JSON byte formatting and key order), and the deliberately excluded id, session_id, active, compacted, and timestamp columns. Tool-role string content remains byte-exact. api_content is exact when present; numeric prevalence and post-write-drift coverage remain NOT_ESTABLISHED.",
         "rootCause": "Byte-exact comparison was specified without stating which representation is canonical."
       },
       "B-2": {
@@ -1109,13 +1132,18 @@
         "failed": 0
       },
       "mutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
-      "clearance": "NOT_CLEARED_FINAL_INSPECTION_HOLD_RECORD_GAP",
+      "clearance": "CLEARED_FOR_SUBMISSION_ONLY",
       "formalIndependentStage6Recheck": "PERFORMED_DEFECT_FINDING_RECHECK_RESULT_RECHECK_HOLD_NOT_FINAL_INSPECTION",
       "ownerExecutionConfirmation": "PASS_SEPARATE_FROM_STAGE6_RECHECK",
-      "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527"
+      "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
+      "finalInspectionPass": {
+        "status": "PASS_CLEARED_FOR_SUBMISSION",
+        "exactCodeSubjectSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+        "receiptRef": "$.finalInspectionPass"
+      }
     },
     "stage6RepairEpoch1": {
-      "lifecycle": "BUILD_REVIEW_HOLD",
+      "lifecycle": "FINAL_INSPECTION_PASS_SUBMISSION_ONLY",
       "codeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
       "findings": [
         {
@@ -1123,7 +1151,7 @@
           "severity": "HIGH",
           "disposition": "FIXED_ONE_WAY_CANONICAL_PROJECTION",
           "canonical_representation": "projected_content",
-          "guard_limit": "For ordinary string content without an api_content sidecar, the comparison cannot detect any difference that sanitize_context(...).strip() collapses. This is broader than whitespace: it includes arbitrary-length <memory-context>...</memory-context> spans removed by _INTERNAL_CONTEXT_RE, recalled-memory [System note: ...] forms removed by _INTERNAL_NOTE_RE, and fence tags removed by _FENCE_TAG_RE. The equivalence class is defined by agent/memory_manager.py:163-181 (including the requested source window 168-181), not by whitespace normalization. api_content is compared exactly when present.",
+          "guard_limit": "Known lower bound, not exhaustive enumeration: for user/assistant string content without api_content, differences collapsed by sanitize_context(...).strip() are undetectable, including memory-context, recalled-memory system-note, fence-tag, and final-strip differences. The complete abstract boundary is equivalence under the whole _normalize_rewind_message projection. Known additional collapse classes include _decode_content sentinel decoding, semantic decoding of the five _REWIND_JSON_FIELDS (discarding JSON byte formatting and key order), and the deliberately excluded id, session_id, active, compacted, and timestamp columns. Tool-role string content remains byte-exact. api_content is exact when present; numeric prevalence and post-write-drift coverage remain NOT_ESTABLISHED.",
           "root_cause": "Byte-exact comparison was specified without stating which representation is canonical.",
           "guard_limit_source": "agent/memory_manager.py:163-181",
           "apiContentPresence": {
@@ -1172,7 +1200,7 @@
         "failed": 0
       },
       "mutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
-      "clearance": "NOT_CLEARED_FINAL_INSPECTION_HOLD_RECORD_GAP",
+      "clearance": "CLEARED_FOR_SUBMISSION_ONLY",
       "formalIndependentStage6Recheck": "PERFORMED_DEFECT_FINDING_RECHECK_RESULT_RECHECK_HOLD_NOT_FINAL_INSPECTION",
       "ownerExecutionConfirmation": "PASS_SEPARATE_FROM_STAGE6_RECHECK",
       "rawReceiptBindingsSha256": "51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527",
@@ -1279,7 +1307,17 @@
         "note": "Reviewer-run duplicates do not overwrite or replace the authoritative first-run receipts."
       },
       "acceptanceClaimCorrection": "APPLIED; EXECUTABLE_BOUNDARY_ASSERTION_COMMITTED_AT_C266DAD38; FINAL_INSPECTION_HOLD_IS_RECORD_COMPLETENESS_ONLY",
-      "codeCorrectnessRuling": "PASS_ALL_SEVEN_FINDINGS_GENUINELY_FIXED"
+      "codeCorrectnessRuling": "PASS_ALL_SEVEN_FINDINGS_GENUINELY_FIXED",
+      "finalInspectionPass": {
+        "status": "PASS_CLEARED_FOR_SUBMISSION",
+        "exactCodeSubjectSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+        "receiptRef": "$.finalInspectionPass"
+      },
+      "finalInspection": {
+        "status": "PASS_CLEARED_FOR_SUBMISSION",
+        "exactCodeSubjectSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+        "receiptRef": "$.finalInspectionPass"
+      }
     },
     "ownerExecutionConfirmation": {
       "status": "PASS",
@@ -1430,12 +1468,12 @@
       "record_boundary": "The code subject is the code and tests as committed at c266dad38. The evidence-only commit containing this record is the record OF that subject and is not part of the code subject."
     },
     "recordRecursion": {
-      "code_subject_exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-      "record_commit_parent": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-      "record_commit_identity": "DISCOVER_AS_THE_COMMIT_THAT_FIRST_INTRODUCES_THIS_RECORD_UPDATE",
-      "record_commit_role": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
-      "binding_rule": "candidate.sourceSha, candidate.workingTreeParent, closure.exactSha, clearance.exactSha, and finalInspection.exactSha bind the code subject c266dad38, not the later evidence-envelope HEAD. After this record is committed, a one-commit HEAD difference is intentional only when the complete c266dad38..HEAD diff is record-only and contains no code or test path.",
-      "fail_closed_rule": "Any code/test byte change after c266dad38 creates a new code subject and stales this inspection evidence. Do not recursively rebind the code subject to an evidence-only record commit."
+      "codeSubjectExactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "inspectedRecordHead": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "recordEnvelopeHeadIdentity": "DISCOVER_AS_TIP_OF_CONTIGUOUS_RECORD_ONLY_CHAIN_AFTER_C266DAD38",
+      "recordCommitRole": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
+      "bindingRule": "Subject fields bind c266dad38; any finite contiguous c266dad38..HEAD chain is valid only if every changed path is under .ai/builds/rewind-archive-dropped-20260810/ and no code/test path changes.",
+      "failClosedRule": "Any code/test byte change creates a new subject and stales inspection evidence."
     },
     "stage6CloseoutTestCommit": {
       "commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
@@ -1461,7 +1499,7 @@
           "detail": "With api_content present, the same memory-context-bearing durable value conflicts and the failed rewind leaves durable state unchanged."
         }
       ],
-      "coverage_limit": "The executable pin covers memory-context and system-note representatives plus the sidecar compensation. It does not claim every member of the broader sanitize_context(...).strip() equivalence class is separately parametrized.",
+      "coverage_limit": "Representative lower bound only: executable cases cover memory-context and system-note sanitizer collapse plus sidecar compensation. They do not exhaust the whole _normalize_rewind_message projection-equivalence class, including _decode_content sentinel decoding, JSON-field semantic normalization, and deliberately excluded columns.",
       "decision": "PIN_THE_FORCED_REPRESENTATIONAL_LIMIT_DO_NOT_CHANGE_PRODUCTION",
       "reasoning": "expected_history already contains the replay projection and no longer carries erased raw bytes. Detecting every sanitizer collision without a raw authority would require changing the contract to preserve a universal raw representation or comparing unlike raw/projected strings, which would reintroduce B-1 and make legitimate retry/rewind histories such as trailing-newline projection differences fail forever. The no-sidecar acceptance pin documents that forced information limit; the companion api_content case pins the available exact-byte compensation. On replay the erased span is also absent from model-visible history, so the residual exposure is durable-record/export fidelity rather than model behavior.",
       "revisit_when": "Revisit if expected_history gains a universally carried raw-content authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows.",
@@ -1526,9 +1564,110 @@
       "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY"
     },
     "currentExactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "clearance": "NOT_CLEARED_FINAL_INSPECTION_HOLD_RECORD_GAP"
+    "clearance": "CLEARED_FOR_SUBMISSION_ONLY",
+    "finalInspectionPass": {
+      "status": "PASS_CLEARED_FOR_SUBMISSION",
+      "exactCodeSubjectSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+      "receiptRef": "$.finalInspectionPass"
+    },
+    "openAssuranceGap": {
+      "id": "ASSURANCE-1",
+      "status": "OPEN_ASSURANCE_GAP",
+      "classification": "NOT_A_PRODUCT_DEFECT_NOT_CLOSED",
+      "severity": "ASSURANCE_OPEN",
+      "name": "REWIND_GUARD_ACCEPTANCE_CLASS_WIDENING_NOT_CONSTRAINED",
+      "mechanism": "The suite is example-based and contains no property/generative invariant preventing the guard from accepting more durable drift than the committed acceptance class.",
+      "experiment": {
+        "valid_mutation": "strictly weakening symmetric lowercase of both canonicalized sides",
+        "effect": "accepts case-differing durable drift rejected by committed guard",
+        "governed_gate": {
+          "passed": 1285,
+          "failed": 0
+        },
+        "first_asymmetric_attempt": "CAUGHT_FOR_FALSE_REJECTIONS_NOT_A_VALID_WIDENING_ONLY_EXPERIMENT"
+      },
+      "history": "Same structural property under which B-1 survived the 1195-test gate and 62 mutations (14+19+13+16); it persists after repair.",
+      "repair_mutation_limit": "All 12 repair mutations are removal-or-break mutations. They prove existing behavior is load-bearing but cannot constrain acceptance-class widening.",
+      "candidate_remedy": "PROPOSAL_ONLY_PROPERTY_BASED_DIFFERENTIAL_OR_GENERATIVE_ACCEPTANCE_BOUNDARY_CHECK",
+      "authority": "SAKAAN_DECISION_REQUIRED_NOT_AUTHORIZED_NOT_IMPLEMENTED"
+    },
+    "positiveAssuranceFinding": {
+      "status": "POSITIVE_ASSURANCE_FINDING",
+      "name": "REPAIR_MUTATIONS_SUBSTANTIVE_NOT_CLUSTERED",
+      "prior_p3": {
+        "mutations": 16,
+        "in_hermes_cli_main": 11,
+        "on_two_option_rejection_assertions": 9,
+        "distinct_named_tests": 6
+      },
+      "repair": {
+        "mutations": 12,
+        "files": 5,
+        "distinct_named_tests": 9,
+        "distinct_code_anchors_minimum": 11,
+        "max_per_named_test": 2,
+        "hermes_state_mutations": 7,
+        "hermes_state_distinct_sites": 7
+      }
+    },
+    "recordCleanupAfterFinalInspectionPass": {
+      "timestamp_ict": "2026-08-11T13:36:58+07:00",
+      "scope": "RECORD_ONLY_NO_CODE_OR_TEST_CHANGE",
+      "findings": [
+        {
+          "id": "LOW-R1",
+          "status": "RESOLVED",
+          "name": "STALE_SUBJECT_COORDINATES",
+          "basis": "c266dad38",
+          "search_lines": [
+            8035,
+            8218,
+            8317,
+            8406,
+            8500,
+            8742
+          ],
+          "ordinal_guard_line": 7556,
+          "rollback_lines": [
+            2139,
+            2140,
+            2141
+          ]
+        },
+        {
+          "id": "LOW-R2",
+          "status": "RESOLVED",
+          "name": "MISQUOTED_66_BYTE_LITERAL",
+          "correct_literal": "answer \\r\\n<memory-context>EXFIL: arbitrary payload</memory-context>"
+        },
+        {
+          "id": "LOW-R3",
+          "status": "RESOLVED",
+          "name": "CANARY_INVOCATION_MISSING_MARKER",
+          "required_marker": "p3-canary"
+        },
+        {
+          "id": "LOW-R4",
+          "status": "RESOLVED",
+          "name": "B1_ENUMERATION_WAS_LOWER_BOUND",
+          "correction": "whole _normalize_rewind_message projection equivalence"
+        },
+        {
+          "id": "LOW-R5",
+          "status": "RESOLVED",
+          "name": "STALE_P3_M1_RESIDUAL",
+          "correction": "marked superseded by Stage 6 M-1 defect fix"
+        }
+      ]
+    },
+    "p3M1ResidualSupersession": {
+      "historicalDisposition": "ACCEPTED_RESIDUAL_NOT_CLEARED",
+      "currentDisposition": "SUPERSEDED_BY_STAGE6_M1_DEFECT_FIX",
+      "record": ".ai/builds/rewind-archive-dropped-20260810/P3-M1-ACP-RESIDUAL.md",
+      "sha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4"
+    }
   },
-  "updatedAtIct": "2026-08-11T12:25:36+07:00",
+  "updatedAtIct": "2026-08-11T13:36:58+07:00",
   "codeSubject": {
     "exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
     "tree": "2095ee450d2582f765c604bb579cc6a93397c1ee",
@@ -1550,12 +1689,12 @@
     "record_boundary": "The code subject is the code and tests as committed at c266dad38. The evidence-only commit containing this record is the record OF that subject and is not part of the code subject."
   },
   "recordRecursion": {
-    "code_subject_exact_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "record_commit_parent": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
-    "record_commit_identity": "DISCOVER_AS_THE_COMMIT_THAT_FIRST_INTRODUCES_THIS_RECORD_UPDATE",
-    "record_commit_role": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
-    "binding_rule": "candidate.sourceSha, candidate.workingTreeParent, closure.exactSha, clearance.exactSha, and finalInspection.exactSha bind the code subject c266dad38, not the later evidence-envelope HEAD. After this record is committed, a one-commit HEAD difference is intentional only when the complete c266dad38..HEAD diff is record-only and contains no code or test path.",
-    "fail_closed_rule": "Any code/test byte change after c266dad38 creates a new code subject and stales this inspection evidence. Do not recursively rebind the code subject to an evidence-only record commit."
+    "codeSubjectExactSha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "inspectedRecordHead": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "recordEnvelopeHeadIdentity": "DISCOVER_AS_TIP_OF_CONTIGUOUS_RECORD_ONLY_CHAIN_AFTER_C266DAD38",
+    "recordCommitRole": "EVIDENCE_ENVELOPE_ONLY_RECORD_OF_CODE_SUBJECT_NOT_PART_OF_CODE_SUBJECT",
+    "bindingRule": "Subject fields bind c266dad38; any finite contiguous c266dad38..HEAD chain is valid only if every changed path is under .ai/builds/rewind-archive-dropped-20260810/ and no code/test path changes.",
+    "failClosedRule": "Any code/test byte change creates a new subject and stales inspection evidence."
   },
   "stage6CloseoutTestCommit": {
     "commit": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
@@ -1581,7 +1720,7 @@
         "detail": "With api_content present, the same memory-context-bearing durable value conflicts and the failed rewind leaves durable state unchanged."
       }
     ],
-    "coverage_limit": "The executable pin covers memory-context and system-note representatives plus the sidecar compensation. It does not claim every member of the broader sanitize_context(...).strip() equivalence class is separately parametrized.",
+    "coverage_limit": "Representative lower bound only: executable cases cover memory-context and system-note sanitizer collapse plus sidecar compensation. They do not exhaust the whole _normalize_rewind_message projection-equivalence class, including _decode_content sentinel decoding, JSON-field semantic normalization, and deliberately excluded columns.",
     "decision": "PIN_THE_FORCED_REPRESENTATIONAL_LIMIT_DO_NOT_CHANGE_PRODUCTION",
     "reasoning": "expected_history already contains the replay projection and no longer carries erased raw bytes. Detecting every sanitizer collision without a raw authority would require changing the contract to preserve a universal raw representation or comparing unlike raw/projected strings, which would reintroduce B-1 and make legitimate retry/rewind histories such as trailing-newline projection differences fail forever. The no-sidecar acceptance pin documents that forced information limit; the companion api_content case pins the available exact-byte compensation. On replay the erased span is also absent from model-visible history, so the residual exposure is durable-record/export fidelity rather than model behavior.",
     "revisit_when": "Revisit if expected_history gains a universally carried raw-content authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows.",
@@ -1643,11 +1782,78 @@
     "observed_canary": "PASS_FRESH_P3_CANARY_ALL_RECORDED_FIELDS_AND_REFUSAL_GUARDS",
     "decisive_test_bodies": "THREE_BYTE_IDENTICAL",
     "deciding_gap": "The committed record stopped at d540eaee9 and omitted executable B-1 boundary assertion commit c266dad38.",
-    "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY"
+    "scope": "FINAL_INSPECTION_HOLD_NOT_CLEARANCE_NOT_INTEGRATION_AUTHORITY",
+    "historical": true,
+    "supersededBy": "finalInspectionPass",
+    "currentClearanceEffect": false
   },
   "historicalD540Bindings": {
     "classification": "HISTORICAL_REPAIR_CODE_BINDINGS_NOT_CURRENT_CODE_SUBJECT",
     "repairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
     "note": "Remaining d540eaee9 references identify the Stage 6 repair implementation, its 1282-test repair gate, mutation/checkpoint receipts, and owner execution confirmation. Current candidate, submission, closure, clearance, Final Inspection, and governed-gate subject bindings are c266dad38."
+  },
+  "finalInspectionPass": {
+    "verdict": "FINAL_INSPECTION_PASS_CLEARED_FOR_SUBMISSION",
+    "scope": "SUBMISSION_ONLY_NO_MERGE_PUSH_DEPLOY_ACTIVATION_TRADING_ORDER_OR_ROLLBACK_AUTHORITY",
+    "code_subject_sha": "c266dad38dcf1cbf1bcb67b859bd1ff8d0892463",
+    "inspected_record_head": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+    "receipt_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT",
+    "stdout_raw_json": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json",
+      "sha256": "2a679056e0bdd6647747e66d8ebf6803d13fce136f60e30d06d6058b7d1718de",
+      "bytes": 26766
+    },
+    "wrapper_receipt": {
+      "path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\wrapper-receipt.json",
+      "sha256": "9e6e702c13c3a2b94d8fdd53fcbc7a82db332468d543e3d4e1de8bde9553e58e",
+      "bytes": 3206,
+      "eligible": true,
+      "mutation_performed": false
+    },
+    "route": {
+      "requested_model": "claude-opus-5",
+      "requested_effort": "max",
+      "effective_effort": "max",
+      "observed_models": [
+        "claude-opus-5"
+      ],
+      "auxiliary_models": [],
+      "route_status": "READY_WITH_ROUTE_EVIDENCE",
+      "process_exit": 0
+    },
+    "custody": {
+      "head_at_start": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "head_at_end": "b3880ee2253ebd12f3ae9e6fdb3c755845dfed50",
+      "status_at_start": "CLEAN",
+      "status_at_end": "CLEAN",
+      "protected_before_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
+      "protected_after_root": "ed63228fd1e6cf32284325ad4c08ed679af9afa18b5f68ef4ff7665867220642",
+      "reflog_head_move": false
+    },
+    "observed_gate": {
+      "files": 10,
+      "passed": 1285,
+      "failed": 0,
+      "seconds": 88.9,
+      "workers": 64,
+      "file_retries": 0
+    },
+    "observed_mutations": {
+      "killed": 12,
+      "total": 12,
+      "sources_restored_byte_identical": true
+    },
+    "observed_canary": "PASS_FRESH_ISOLATED_MARKER_BEARING_ROOT",
+    "map_chain": "RECOMPUTED_UNDER_MAP_CANONICALIZER",
+    "decisive_test_bodies": "THREE_BYTE_IDENTICAL_AND_UNMOVED",
+    "record_recursion": "MECHANICALLY_VERIFIED_C266DAD38_TO_B3880EE22_EXACTLY_FOUR_RECORD_PATHS_ZERO_CODE_TEST_PATHS",
+    "not_checked": [
+      "api_content numeric prevalence",
+      "rollback execution",
+      "remote and CI state",
+      "real multi-process lock contention",
+      "in-seat route receipt; externally held wrapper receipt supplies route attestation"
+    ],
+    "rollback": "DOCUMENTED_NEVER_EXECUTED_UNPROVEN"
   }
 }

@@ -14,7 +14,7 @@
     ".ai/builds/rewind-archive-dropped-20260810/P3-C1-TEST-BODY-HASHES.json": "fcfe962bb275e6e3b9e1d3f8f08ffd4d34e42fefa2a3bfe35bfe3dda2bb269b2",
     ".ai/builds/rewind-archive-dropped-20260810/P3-C2-RECEIPT.md": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
     ".ai/builds/rewind-archive-dropped-20260810/P3-MED4-DELETE-AFTER-VERIFIED-DECISION.md": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
-    ".ai/builds/rewind-archive-dropped-20260810/P3-M1-ACP-RESIDUAL.md": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5",
+    ".ai/builds/rewind-archive-dropped-20260810/P3-M1-ACP-RESIDUAL.md": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
     ".ai/builds/rewind-archive-dropped-20260810/P3-CANARY-RUNS.json": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
     ".ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
     ".ai/builds/rewind-archive-dropped-20260810/mutation-p3/manifest.json": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
@@ -55,7 +55,7 @@
     "live_profile_used": false
   },
   "med4": "ACCEPTED_CONSEQUENCE_V1",
-  "acp_residual": "ACCEPTED_RESIDUAL_NOT_CLEARED",
+  "acp_residual": "HISTORICAL_ACCEPTED_RESIDUAL_SUPERSEDED_BY_STAGE6_M1_DEFECT_FIX",
   "forbidden_actions": {
     "p3_commit": false,
     "push": false,
@@ -76,5 +76,16 @@
     "full_gate_failed": 0,
     "canary_status": "PASS",
     "mutation_harness_rerun_count": 16
+  },
+  "historical_artifact_sha256": {
+    ".ai/builds/rewind-archive-dropped-20260810/P3-M1-ACP-RESIDUAL.md": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
+  },
+  "acp_residual_historical_disposition": "ACCEPTED_RESIDUAL_NOT_CLEARED",
+  "record_supersession": {
+    "status": "P3_M1_RESIDUAL_SUPERSEDED",
+    "superseded_by": "Stage 6 M-1 defect fix at d540eaee9764fbc3194c493946cd6624f447c3a5",
+    "current_record": "P3-M1-ACP-RESIDUAL.md",
+    "current_sha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
+    "historical_sha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
   }
 }
