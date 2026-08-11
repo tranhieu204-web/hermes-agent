@@ -1,0 +1,231 @@
+{
+  "schema": "sakaan.build-closure-summary.v1",
+  "build_id": "rewind-archive-dropped-20260810",
+  "timestamp_ict": "2026-08-11T08:16:48+07:00",
+  "repo_root": "C:/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810",
+  "branch": "sakaan/rewind-archive-dropped-20260810",
+  "lifecycle": {
+    "implementation": "COMMITTED",
+    "independent_build_review": "PENDING",
+    "clearance": "NOT_CLEARED",
+    "pipeline_closure": "OPEN",
+    "closure_record_git_state": "COMMITTED_ON_BRANCH"
+  },
+  "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+  "actual_implementation_commits": [
+    {
+      "role": "P1 prerequisite / P1.C2",
+      "sha": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+      "tree": "0012bb4470cf4df144e00c57e9f6c7e5d68c6975"
+    },
+    {
+      "role": "P1 terminal / P1.C3",
+      "sha": "bc6c801a5734d30543a908c18233728b691e9e9e",
+      "tree": "de2923606b99df52b21d66f4b82e661792845716"
+    },
+    {
+      "role": "P2 terminal",
+      "sha": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+      "tree": "08c50727431c9a3a910430c79e2ee611ebae1dab"
+    },
+    {
+      "role": "P3 terminal",
+      "sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+      "tree": "be2895ad670abce1a7e139332be8ea3ab1274348"
+    }
+  ],
+  "three_package_terminal_shas": {
+    "P1": "bc6c801a5734d30543a908c18233728b691e9e9e",
+    "P2": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "P3": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb"
+  },
+  "plan": {
+    "map": "execution-map-v3.2.json",
+    "structure_root": "f9797c045646be5349f0a9b70f88770414f14cef606fc8efa200b24736a118a7",
+    "artifact_sha256": "a29b4219580ee4fb8f9713c91a457b08f80c383fcdaca8e80ce649ce9b0dbca5",
+    "independent_plan_review": "PASS"
+  },
+  "build_review": {
+    "status": "PENDING",
+    "statement": "Only the plan was independently reviewed. No independent review of committed build daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb has occurred."
+  },
+  "final_governed_gate": {
+    "files": 8,
+    "passed": 1195,
+    "failed": 0,
+    "coo_independent_reproduction": {
+      "passed": 1195,
+      "failed": 0
+    }
+  },
+  "mutation_manifests": {
+    "P1.C2": {
+      "count": 14,
+      "sha256": "ffbbb3ac207ad3025fde70b3312f5f1617c0680cb5d0c39bf5962e3aad1fde5c",
+      "all_mutations_failed_named_tests": true
+    },
+    "P1.C3": {
+      "count": 19,
+      "sha256": "867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true
+    },
+    "P2": {
+      "count": 13,
+      "sha256": "b9f7fcc48c702b3c80f772ccc36a3cfd5e1404f53809a266e68901d69d5008b1",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true
+    },
+    "P3": {
+      "count": 16,
+      "sha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
+      "all_mutations_failed_named_tests": true,
+      "source_restored_byte_identical": true
+    }
+  },
+  "receipts_sha256": {
+    "P1.C2": "d1453c6a13315cfae63467c13e2e4dbdfa8c67f919e55d67cfcd76e3ae069fbf",
+    "P1.C3": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+    "P2": "420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
+    "P3": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+    "P3_final_binding": "30fc8cbf6cb9e894690e05a03df2c4bccfdcf7e93f4c879441549427d6c5683e"
+  },
+  "rollback": {
+    "status": "DOCUMENTED_NOT_EXECUTED",
+    "three_package_terminal_command": "git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e",
+    "full_to_base_command": "git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
+    "three_commit_effect": "Destructive Restore/Edit/Re-run and retry behavior returns; P3 recovery export is removed; P1.C2 archival primitive remains uncalled.",
+    "full_effect": "All four implementation commits are forward-reverted toward base behavior.",
+    "proof": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY"
+  },
+  "open_remainders": [
+    {
+      "id": "INDEPENDENT_BUILD_REVIEW",
+      "status": "PENDING",
+      "detail": "Stage 6 has not happened; plan review is not build review."
+    },
+    {
+      "id": "M-1",
+      "status": "OPEN_ACCEPTED_RESIDUAL",
+      "detail": "ACP archive probe is fail-open for destruction on exception and TOCTOU-exposed."
+    },
+    {
+      "id": "MED-4",
+      "status": "ACCEPTED_CONSEQUENCE_V1",
+      "detail": "delete-after-verified verifies active-only export before whole-session deletion; recovery export is incompatible."
+    },
+    {
+      "id": "F-R3",
+      "status": "PRESERVE_4004_PRE_I1",
+      "detail": "Present non-integer prompt ordinal keeps pre-I1 error code 4004."
+    },
+    {
+      "id": "MED-5",
+      "status": "ACCEPTED_CONSEQUENCE_V1",
+      "name": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY",
+      "detail": "Insights analytics count rewound turns because all eight agent/insights.py message reads omit active/compacted filters. This is not a regression: the file is byte-identical at base and P3, with zero such filters at both revisions, and already counted compacted inactive rows. The build changes the population by retaining active=0, compacted=0 rewind rows. No v1 code change is proposed; a future change must explicitly add an active filter or declare that insights intentionally count executed activity."
+    }
+  ],
+  "negative_lifecycle": {
+    "merged": false,
+    "pushed": false,
+    "remote_readback": false,
+    "ci_for_integrated_sha": false,
+    "deployed": false,
+    "activated": false,
+    "trading": false,
+    "orders": false
+  },
+  "durable_files": {
+    "README.md": "3985f119baa3e336f4b0c47605830e4be04c0eeb44a278191dbb926616403e20",
+    "ledger.json": "9b1d04529ea9fc03eaab41f6d9519a4ef82f56f22b0d434ce83deb956516462b",
+    "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d"
+  },
+  "per_agent_token_spend": {
+    "Hermes openai-codex gpt-5.6-sol": "UNKNOWN_NOT_EXPOSED",
+    "external_agents": "NONE_INVOKED"
+  },
+  "pipeline_gate": {
+    "status": "HOLD_PIPELINE_GATE_FAILED",
+    "exit_code": 1,
+    "material_blockers": [
+      "INDEPENDENT_BUILD_REVIEW_PENDING",
+      "SUBMISSION_NOT_GO",
+      "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
+      "FINAL_INSPECTION_CLEARANCE_ABSENT",
+      "ROLLBACK_NOT_PROVEN"
+    ],
+    "historical_schema_findings_retained": true,
+    "bypassed": false
+  },
+  "read_path_audit": {
+    "scope": "READ_PATH_ONLY",
+    "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+    "auditor": "COO",
+    "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
+    "insights_accepted_consequence": {
+      "id": "MED-5",
+      "classification": "ACCEPTED_CONSEQUENCE_V1_NOT_REGRESSION",
+      "base_sha": "872c341302b5ed8941f280c3b7939cabba930b5a",
+      "implementation_sha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+      "agent_insights_diff_empty": true,
+      "message_reads": 8,
+      "base_m_active_occurrences": 0,
+      "current_m_active_occurrences": 0,
+      "base_m_compacted_occurrences": 0,
+      "current_m_compacted_occurrences": 0,
+      "preexisting_population": "active=0, compacted=1 compaction rows were already counted",
+      "new_population": "active=0, compacted=0 rewind rows are now retained and counted",
+      "affected_analytics": [
+        "tool usage",
+        "tool-call totals"
+      ],
+      "v1_code_change": "NONE_PROPOSED",
+      "future_alternatives": [
+        "explicit m.active filter",
+        "intentional declaration that insights count executed activity"
+      ]
+    },
+    "positive_search_finding": {
+      "status": "DIRECT_VERIFIED",
+      "predicate": "(m.active = 1 OR m.compacted = 1)",
+      "named_fts_paths": [
+        {
+          "name": "trigram",
+          "line": 7904
+        },
+        {
+          "name": "main",
+          "line": 8087
+        },
+        {
+          "name": "CJK",
+          "line": 8186
+        }
+      ],
+      "additional_filtered_paths": [
+        {
+          "name": "later trigram fallback",
+          "line": 8275
+        },
+        {
+          "name": "LIKE fallback",
+          "line": 8369
+        },
+        {
+          "name": "unindexed gap",
+          "line": 8611
+        }
+      ],
+      "effect": "rewind rows are excluded while compaction archives are retained"
+    },
+    "not_covered": [
+      "I1 atomicity under the _execute_write locked-retry path",
+      "whether the normalizer can mask a genuine mismatch",
+      "coordinate-conversion boundaries",
+      "mutation spot-checks",
+      "the anchoring question of whether the cleared plan was itself wrong"
+    ],
+    "stage_6_independent_build_review": "OPEN_UNAFFECTED"
+  }
+}

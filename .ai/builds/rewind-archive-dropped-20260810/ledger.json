@@ -205,12 +205,12 @@
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "sourceSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
-    "state": "P3_CANDIDATE_VERIFIED_UNCOMMITTED",
-    "workingTreeParentCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
-    "workingTreeParent": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
+    "reverifiedSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "state": "IMPLEMENTATION_COMMITTED_BUILD_REVIEW_PENDING",
+    "workingTreeParentCommit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "workingTreeParent": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
     "uncommittedSourceSha256": {
       "hermes_cli/main.py": "577298a0b4378f3160bdac31a42f3c53a9e2fe190b1a7cbc3359a28ba5b3de0d",
       "hermes_state.py": "8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83",
@@ -218,9 +218,9 @@
     }
   },
   "submission": {
-    "verdict": "PENDING",
-    "exactSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "receipt": "No builder submission yet"
+    "verdict": "PENDING_BUILD_REVIEW",
+    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "receipt": "Implementation committed locally; not cleared for submission"
   },
   "push": {
     "status": "PENDING",
@@ -242,15 +242,15 @@
     "rationale": "Current authorized lifecycle is source candidate and dual-repository port only; no deploy or packaged artifact authority"
   },
   "finalInspection": {
-    "status": "PENDING",
-    "exactSha": null,
+    "status": "PENDING_BUILD_REVIEW",
+    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
     "artifactSha256": "NOT_APPLICABLE",
-    "receipt": "PENDING fresh assurance invocation"
+    "receipt": "No independent build review or final inspection"
   },
   "clearance": {
     "status": "PENDING",
-    "exactSha": null,
-    "receipt": "PENDING Sakaan clearance"
+    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "receipt": "No build clearance"
   },
   "deployment": {
     "required": false,
@@ -266,11 +266,11 @@
     "consumerTest": "PENDING"
   },
   "rollback": {
-    "command": "PENDING exact candidate-specific revert/port rollback command",
-    "testStatus": "PENDING",
+    "command": "Behavioral rollback of package terminal commits: git revert --no-edit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb 1e8bf80feefd668c247e0c569e28131ae0a2bce4 bc6c801a5734d30543a908c18233728b691e9e9e. Full rollback to base also reverts prerequisite 3235e6b1d41b3b225bc41c5ac8eed4c662a8666e.",
+    "testStatus": "NOT_EXECUTED_NO_ROLLBACK_AUTHORITY",
     "priorIdentity": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "postRollbackReadback": "PENDING",
-    "receipt": "PENDING"
+    "postRollbackReadback": "PENDING_IF_ROLLBACK_AUTHORIZED",
+    "receipt": "Documented in README.md and BUILD-CLOSURE-SUMMARY.json"
   },
   "preservation": [
     {
@@ -294,13 +294,18 @@
     },
     {
       "id": "P1.C3",
-      "state": "CANDIDATE_VERIFIED_UNCOMMITTED",
-      "evidence": "Routing GREEN: TUI 475/475, CLI 3/3, full four-file gate 980/980; 19/19 mutation proofs; stopped before P2/P3."
+      "state": "COMMITTED",
+      "evidence": "Committed at bc6c801a5734d30543a908c18233728b691e9e9e; routing GREEN 980/980; 19/19 mutation proofs."
     },
     {
       "id": "P3.C2",
-      "state": "CANDIDATE_VERIFIED_UNCOMMITTED",
-      "evidence": "Raw one-session JSONL recovery; 16/16 mutations; 2/2 isolated canaries; final gate 1195/1195; MED-4 and ACP residual explicit."
+      "state": "COMMITTED",
+      "evidence": "Committed at daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb; raw one-session JSONL recovery; 16/16 mutations; isolated canaries PASS; final gate 1195/1195; MED-4 and M-1 explicit."
+    },
+    {
+      "id": "MED-5",
+      "state": "ACCEPTED_CONSEQUENCE_V1",
+      "evidence": "INSIGHTS_COUNTS_EXECUTED_REWOUND_ACTIVITY. agent/insights.py is byte-identical from base 872c341302b5ed8941f280c3b7939cabba930b5a through P3 daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb. Its eight message reads have zero m.active/m.compacted filters at both revisions, so this is not a regression. The build adds persistent active=0, compacted=0 rewind rows to the population counted by tool-usage and tool-call analytics. No v1 code change; future disposition is an explicit active filter or a declaration that insights count executed activity."
     }
   ],
   "stages": {
@@ -321,8 +326,8 @@
     },
     "buildGreen": {
       "sequence": 4,
-      "status": "P3_CANDIDATE_VERIFIED",
-      "receipt": "P3-C2-RECEIPT.md sha256 1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44; 1195/1195 final P1+P2+P3 gate; canary 2/2 PASS"
+      "status": "IMPLEMENTATION_COMMITTED",
+      "receipt": "P3 commit daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb; final governed gate 1195/1195; P3 mutation 16/16; canary PASS"
     },
     "adversarial": {
       "sequence": 5,
@@ -331,7 +336,8 @@
     },
     "independentReview": {
       "sequence": 6,
-      "status": "PENDING"
+      "status": "PENDING_BUILD_REVIEW",
+      "receipt": "Only execution plan v3.2 was independently reviewed. No independent review of committed build daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb has occurred."
     },
     "metaAudit": {
       "sequence": 7,
@@ -375,12 +381,13 @@
     },
     "close": {
       "sequence": 17,
-      "status": "PENDING"
+      "status": "DOCUMENTED_NOT_CLOSED",
+      "receipt": "Closure record written locally; independent BUILD review, integration, push, CI, clearance, deployment, and activation remain incomplete or not authorized."
     }
   },
   "closure": {
-    "status": "OPEN",
-    "exactSha": "872c341302b5ed8941f280c3b7939cabba930b5a"
+    "status": "OPEN_BUILD_REVIEW_PENDING",
+    "exactSha": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb"
   },
   "bindings": {
     "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
@@ -409,7 +416,7 @@
     "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
     "p3AcpResidualSha256": "b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5"
   },
-  "updatedAt": "2026-08-11T01:22:54+07:00",
+  "updatedAt": "2026-08-11T08:16:48+07:00",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -822,12 +829,67 @@
       "red": "2 passed / 8 intended failed"
     },
     "P3.C2": {
-      "status": "CANDIDATE_VERIFIED_UNCOMMITTED",
+      "status": "COMMITTED",
       "parentCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
       "receipt": "P3-C2-RECEIPT.md sha256 1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
       "mutationManifest": "mutation-p3/manifest.json sha256 b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
       "canary": "2 / 2 fresh disposable runs PASS",
-      "finalGate": "1195 passed / 0 failed in 83.7s"
+      "finalGate": "1195 passed / 0 failed in 83.7s",
+      "commit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb"
+    }
+  },
+  "closureRecord": {
+    "stage": "18b",
+    "status": "DOCUMENTED_COMMITTED_NOT_CLEARED",
+    "readme": ".ai/builds/rewind-archive-dropped-20260810/README.md",
+    "summary": ".ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
+    "implementationCommit": "daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb",
+    "independentBuildReview": "PENDING",
+    "merged": false,
+    "pushed": false,
+    "deployed": false,
+    "activated": false,
+    "pipelineGate": {
+      "status": "HOLD_PIPELINE_GATE_FAILED",
+      "exitCode": 1,
+      "materialBlockers": [
+        "INDEPENDENT_BUILD_REVIEW_PENDING",
+        "SUBMISSION_NOT_GO",
+        "INTEGRATION_PUSH_REMOTE_CI_ABSENT",
+        "FINAL_INSPECTION_CLEARANCE_ABSENT",
+        "ROLLBACK_NOT_PROVEN"
+      ],
+      "bypassAttempted": false
+    },
+    "readPathAudit": {
+      "scope": "READ_PATH_ONLY",
+      "status": "DIRECT_VERIFIED_NOT_INDEPENDENTLY_CLEARED",
+      "auditor": "COO",
+      "independence": "INELIGIBLE_MATERIALLY_CONTRIBUTED_TO_TECHNICAL_DIRECTION",
+      "acceptedConsequence": "MED-5",
+      "positiveFinding": "SEARCH_FILTERING_CORRECT_AND_CONSISTENT",
+      "searchEvidence": {
+        "named_fts_lines": [
+          7904,
+          8087,
+          8186
+        ],
+        "predicate": "(m.active = 1 OR m.compacted = 1)",
+        "effect": "rewind rows excluded; compaction archives retained",
+        "additional_filtered_lines": [
+          8275,
+          8369,
+          8611
+        ]
+      },
+      "notCovered": [
+        "I1 atomicity under the _execute_write locked-retry path",
+        "whether the normalizer can mask a genuine mismatch",
+        "coordinate-conversion boundaries",
+        "mutation spot-checks",
+        "whether the cleared plan was itself wrong"
+      ],
+      "independentBuildReview": "OPEN_UNAFFECTED"
     }
   }
 }
