@@ -1,0 +1,43 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+___ TestGatewaySessionDbRecovery.test_rewind_session_repairs_live_counters ____
+
+self = <tests.gateway.test_session.TestGatewaySessionDbRecovery object at 0x0000026F492A3460>
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4272/test_rewind_session_repairs_li0')
+
+    def test_rewind_session_repairs_live_counters(self, tmp_path):
+        """B-3: /undo counters must describe the active rows committed with it."""
+        import threading
+    
+        db = SessionDB(tmp_path / "undo-counters.db")
+        sid = "undo-counters"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "first")
+        db.append_message(
+            sid,
+            "assistant",
+            "calling",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        db.append_message(sid, "tool", "result", tool_name="search_files")
+        db.append_message(sid, "user", "second")
+        db.append_message(sid, "assistant", "second reply")
+    
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+    
+        result = store.rewind_session(sid, 1)
+        session = db.get_session(sid)
+    
+        assert result is not None
+        assert result["rewound_count"] == 2
+>       assert session["message_count"] == 3
+E       assert 4 == 3
+
+tests\gateway\test_session.py:2549: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/gateway/test_session.py::TestGatewaySessionDbRecovery::test_rewind_session_repairs_live_counters
+1 failed in 0.56s

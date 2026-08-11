@@ -1,0 +1,118 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_archives_suffix_repairs_counters_and_preserves_exact_rows _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x000002575EC46490>
+db = <hermes_state.SessionDB object at 0x000002575EE01BE0>
+
+    def test_archives_suffix_repairs_counters_and_preserves_exact_rows(self, db):
+        sid = "rewind-rich"
+        db.create_session(sid, source="cli")
+        old_id = db.append_message(sid, "user", "pre-existing inactive")
+        db.rewind_to_message(sid, old_id)
+    
+        history = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "first"}],
+                "message_id": "platform-first",
+                "observed": True,
+                "token_count": 3,
+                "effect_disposition": "kept",
+                "api_content": "first-api",
+                "display_kind": "event",
+                "display_metadata": {"z": 1, "a": [2, 3]},
+            },
+            {
+                "role": "assistant",
+                "content": "first reply",
+                "tool_calls": [
+                    {"id": "call-1", "function": {"name": "one"}},
+                    {"id": "call-2", "function": {"name": "two"}},
+                ],
+                "tool_name": "batch",
+                "finish_reason": "tool_calls",
+                "reasoning": "reason",
+                "reasoning_content": "reason-content",
+                "reasoning_details": [{"kind": "summary", "text": "r"}],
+                "codex_reasoning_items": [{"type": "reasoning", "id": "r1"}],
+                "codex_message_items": [{"type": "message", "id": "m1"}],
+                "token_count": 7,
+            },
+            {
+                "role": "user",
+                "content": "second",
+                "platform_message_id": "platform-second",
+            },
+            {"role": "assistant", "content": "second reply"},
+        ]
+        active_ids = [_append_rewind_expected(db, sid, message) for message in history]
+        late_compacted_id = db.append_message(sid, "user", "late compacted archive")
+    
+        def _archive_late_row(conn):
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1 WHERE id = ?",
+                (late_compacted_id,),
+            )
+    
+        db._execute_write(_archive_late_row)
+    
+        with db._lock:
+            before = {
+                row["id"]: dict(row)
+                for row in db._conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+                ).fetchall()
+            }
+    
+>       result = db.rewind_active_history(
+            sid,
+            expected_history=history,
+            truncate_before_user_ordinal=1,
+        )
+
+tests\test_hermes_state.py:7777: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+hermes_state.py:7608: in rewind_active_history
+    return self._execute_write(_do)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+hermes_state.py:2135: in _execute_write
+    result = fn(self._conn)
+             ^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+conn = <sqlite3.Connection object at 0x000002575EE255D0>
+
+    def _do(conn):
+        session = conn.execute(
+            "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if (
+            session is not None
+            and session["ended_at"] is not None
+            and session["end_reason"] == "compression"
+        ):
+            raise CompressionSessionClosedError(session_id)
+    
+        active_rows = conn.execute(
+            "SELECT * FROM messages "
+            "WHERE session_id = ? AND active = 1 ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        persisted_bytes = self._canonicalize_rewind_history(
+            session_id, list(active_rows), persisted=True
+        )
+        expected_bytes = self._canonicalize_rewind_history(
+            session_id, expected_history, persisted=False
+        )
+        if persisted_bytes != expected_bytes:
+>           raise RewindHistoryConflict(
+                session_id, "expected history does not match active durable rows"
+            )
+E           hermes_state.RewindHistoryConflict: Rewind conflict for session 'rewind-rich': expected history does not match active durable rows
+
+hermes_state.py:7555: RewindHistoryConflict
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_archives_suffix_repairs_counters_and_preserves_exact_rows
+1 failed in 0.59s

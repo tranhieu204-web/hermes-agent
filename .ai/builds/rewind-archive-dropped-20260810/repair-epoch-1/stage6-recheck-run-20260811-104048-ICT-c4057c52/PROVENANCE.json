@@ -1,0 +1,176 @@
+{
+  "schema": "stage6-recheck-evidence-provenance-v1",
+  "recorded_at_ict": "2026-08-11T11:04:37+07:00",
+  "code_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
+  "first_run_evidence_commit": "6df1c46afb7848e6c18ff6510186c2b2f8d09910",
+  "stage6_session_id": "c4057c52-cda4-4f0d-8432-d57066e5e24c",
+  "external_evidence_directory": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52",
+  "external_process_exit_code": 0,
+  "stage6_verdict": "RECHECK_HOLD",
+  "scope": "INDEPENDENT_DEFECT_FINDING_RECHECK_NOT_FINAL_INSPECTION_NOT_CLEARANCE",
+  "dirty_tree_disposition": "The reviewer regenerated 12 mutation receipts, the restored-focused receipt, and the manifest. Those 14 files are preserved here as a distinct second-run set. Their original paths were restored byte-for-byte from evidence commit 6df1c46af; no second-run bytes replaced first-run evidence.",
+  "manifest_provenance": {
+    "reviewer_regenerated_manifest": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/mutation-manifest.generator-output.json",
+    "generator": "repair-epoch-1/run_mutations.py",
+    "generator_emits_receipt_byte_policy": false,
+    "generator_emits_per_mutation_output_byte_policy": false,
+    "committed_first_run_manifest_classification": "GENERATOR_OUTPUT_PLUS_POST_GENERATION_ANNOTATION",
+    "post_generation_annotation_fields": [
+      "receipt_byte_policy",
+      "mutations[*].output_byte_policy",
+      "restored_focused_gate.output_byte_policy"
+    ],
+    "substantive_generated_claims": "mutation_count, named-test failures, source-restoration hashes, and restored focused gate are generator output; byte-policy fields are annotations added after generation."
+  },
+  "reviewer_regenerated_files": [
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M01_B1_REMOVE_STRING_REPLAY_PROJECTION.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M01_B1_REMOVE_STRING_REPLAY_PROJECTION.txt",
+      "reviewer_run_sha256": "efcb82a73a9e4dccee94815426077b8f8e0d8c311a8d4b08cf7859b70188ad93",
+      "reviewer_run_bytes": 3180,
+      "committed_first_run_sha256": "4edb44f7bdda856244619115e3a3872891af7e9509736c7ea087abf6fc8df0d6",
+      "committed_first_run_bytes": 3180,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M02_B1_NORMALIZE_EXPECTED_SIDE_TOO.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M02_B1_NORMALIZE_EXPECTED_SIDE_TOO.txt",
+      "reviewer_run_sha256": "9988f27955a87d71e1606554c47e4809ff6ccb698bf2acf03f1b8a1b589693d9",
+      "reviewer_run_bytes": 2321,
+      "committed_first_run_sha256": "3bf5a9d52c98261a4f66c1e9785fd5bf100646314b02f2ed24bc78319ba2d730",
+      "committed_first_run_bytes": 2321,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M03_B1_STRINGIFY_STRUCTURED_CONTENT.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M03_B1_STRINGIFY_STRUCTURED_CONTENT.txt",
+      "reviewer_run_sha256": "e2d964431943c919282aaf34bd750912d08274981da8ce4a0c776933c52edfcd",
+      "reviewer_run_bytes": 4937,
+      "committed_first_run_sha256": "818f7a5acba490870dcfc68844cc8059f803fea63af494334040cd18e11433a1",
+      "committed_first_run_bytes": 4937,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M04_B1_DROP_PERSISTED_API_CONTENT_AUTHORITY.txt",
+      "reviewer_run_sha256": "5fa651d1a97cbf57f7a5e95ed547c4f8eb7e1ea677f3ac30fdee0a4b4d4f8e4d",
+      "reviewer_run_bytes": 4937,
+      "committed_first_run_sha256": "6e273121451c50f0767f4feb9861ec7d580c00bba33c2f3edbd6aebdea6c0850",
+      "committed_first_run_bytes": 4937,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M05_B2_BYPASS_UNCOVERED_REWIND_DELETE_GUARD.txt",
+      "reviewer_run_sha256": "e532ace936af62d7f52270d03e4d69338ccaf8e71f6db6c45fc5274bd32b5481",
+      "reviewer_run_bytes": 2860,
+      "committed_first_run_sha256": "94ac69a33d649a150981897bec1e42469d7256aa9beee93cbd56507131a71f4f",
+      "committed_first_run_bytes": 2860,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M06_B3_RESTORE_PRETRANSACTION_MESSAGE_ID_PATH.txt",
+      "reviewer_run_sha256": "6ce14d048b18e77849311b7a13c577551a86803d44eb1561c7e77787aea26b6f",
+      "reviewer_run_bytes": 2110,
+      "committed_first_run_sha256": "7d2d8d7d30aa70b7ed9231b7ac6b6e52653f065913e259179454d32fb0871e83",
+      "committed_first_run_bytes": 2110,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M07_B3_DISABLE_COMPRESSION_GUARD.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M07_B3_DISABLE_COMPRESSION_GUARD.txt",
+      "reviewer_run_sha256": "9cafc8be56d3e3df482850aa6f695df2ff6669d8f17827e0ec34311d2753bcd8",
+      "reviewer_run_bytes": 1739,
+      "committed_first_run_sha256": "da9219febf988b0723f388fb6745e286c542e7fbb4bd424c0e8ab24059a09b68",
+      "committed_first_run_bytes": 1739,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M08_B3_CORRUPT_COUNTER_RECONCILIATION.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M08_B3_CORRUPT_COUNTER_RECONCILIATION.txt",
+      "reviewer_run_sha256": "d09d83d4644dba2832f5db08c037f3492bb55a073a46157d487d3ded444dbd37",
+      "reviewer_run_bytes": 1927,
+      "committed_first_run_sha256": "625e8313bf1a529328da819efe31b987f85a82606babb1b5dfd5ce4f4b6d28a9",
+      "committed_first_run_bytes": 1927,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M09_M1_DISABLE_ATOMIC_ARCHIVE_RECHECK.txt",
+      "reviewer_run_sha256": "9235efe1ebd52686904e721c98efde96c8069bc922656f01479cab7cd83b041e",
+      "reviewer_run_bytes": 2941,
+      "committed_first_run_sha256": "a306f0b214604fda0b6203c285e99b402ae1a75ca4fc90a07f07270f1d743e8f",
+      "committed_first_run_bytes": 2941,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M10_B4_REINTRODUCE_DEAD_ROUND_TRIP_GUARD.txt",
+      "reviewer_run_sha256": "cd632bddadea1fa05c4278e3e9e1b4c7ab8e37f9af7738686df3190f94a60d22",
+      "reviewer_run_bytes": 1209,
+      "committed_first_run_sha256": "b3cbde644d3f786be6574a2412b6cb9adba2af71e2d724772d5c35c07ac2170f",
+      "committed_first_run_bytes": 1209,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M11_MED5_REMOVE_REWIND_VISIBILITY_FILTERS.txt",
+      "reviewer_run_sha256": "920760136b9db22dc69a1a5104eff9027b25b5027aa43cce61cf2981220e7c4d",
+      "reviewer_run_bytes": 2683,
+      "committed_first_run_sha256": "50268294c49633f8b64cb05ebd2e3a6301a03f5fb433ea52390628507b2af7a1",
+      "committed_first_run_bytes": 2683,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/M12_MED5_REMOVE_MESSAGE_STATS_VISIBILITY_FILTERS.txt",
+      "reviewer_run_sha256": "d231cef39eb7c8b3947eb478c96e14b12b5d114e43e54294335dc3acb8187fdf",
+      "reviewer_run_bytes": 2772,
+      "committed_first_run_sha256": "bf0fc4872ea25b27f8728bb1b4b4ea29c422870a381e5987f03f532a595bd8ce",
+      "committed_first_run_bytes": 2772,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/RESTORED-FOCUSED-GREEN.txt",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/RESTORED-FOCUSED-GREEN.txt",
+      "reviewer_run_sha256": "1d1e1bd9a4ff821fb0b3f7ecd0c953b027797639bfc7a6821aa57f2fd0d2900d",
+      "reviewer_run_bytes": 101,
+      "committed_first_run_sha256": "ff21789bbec7300827b55c414ba900fe676cce4700c876fc90ee1fd23472a06c",
+      "committed_first_run_bytes": 101,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    },
+    {
+      "original_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/mutation-manifest.json",
+      "preserved_reviewer_run_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/mutation-manifest.generator-output.json",
+      "reviewer_run_sha256": "adf7e51279ff1cc1397ae2b32fa704266c02f2c3f2d94197db5f4af10265252b",
+      "reviewer_run_bytes": 11295,
+      "committed_first_run_sha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
+      "committed_first_run_bytes": 12094,
+      "disposition": "PRESERVED_AS_DISTINCT_STAGE6_RECHECK_RUN; ORIGINAL_PATH_RESTORED_FROM_COMMIT_6df1c46af"
+    }
+  ],
+  "external_receipt_copies": [
+    {
+      "external_path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\result.json",
+      "packet_copy_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/result.json",
+      "sha256": "635297a2600144570719e2ad665e9d0384c3de321c4d71635e719f45f74417cb",
+      "bytes": 17209,
+      "byte_identical_copy": true
+    },
+    {
+      "external_path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\reviewer-output-verbatim.txt",
+      "packet_copy_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/reviewer-output-verbatim.txt",
+      "sha256": "e5fd5b3ed57de6615f37bf6264dbfc0990c425275d3cc716e79cfacf86a647a7",
+      "bytes": 15419,
+      "byte_identical_copy": true
+    },
+    {
+      "external_path": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-recheck-20260811-104048-ICT-c4057c52\\exit-code.txt",
+      "packet_copy_path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2,
+      "byte_identical_copy": true
+    }
+  ]
+}

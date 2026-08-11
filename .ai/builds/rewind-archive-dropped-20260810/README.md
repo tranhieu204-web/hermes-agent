@@ -8,7 +8,7 @@ Implementation terminal before review: `daf5dc1e9ae33ee0f2a269b0fe82732a7f2fcdfb
 
 Stage 6 repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
-Status: `BUILD_REVIEW_HOLD — REPAIR COMMITTED — INDEPENDENT RECHECK PENDING — NOT CLEARED`
+Status: `BUILD_REVIEW_HOLD — STAGE 6 RECHECK_HOLD RECORDED — ACCEPTANCE CLAIM CORRECTED — FINAL INSPECTION NOT PERFORMED`
 
 ## What changed
 
@@ -17,7 +17,7 @@ This build replaces destructive Restore/Edit/Re-run and retry truncation with re
 - **P1** added transactional active-suffix archival, persistence-before-memory/turn ordering, strict coordinates, Desktop/TUI routing, durable counters, and active-or-compacted dedupe handling.
 - **P2** moved gateway `/retry` to recoverable archival, checks durable success before token reset or resend, preserves dirty state after persistence failure, and keeps `/undo`'s message-ID API as an explicit MED-3 divergence.
 - **P3** exposes read-only, one-session JSONL recovery through `hermes sessions export --include-rewound`. Recovery reads raw rows, includes active rows plus `active=0, compacted=0` rewind rows, excludes compacted history, and preserves content bytes that conversation projection would sanitize or strip.
-- **Stage 6 repair epoch 1** fixes B-1 through B-4 and M-1, corrects B-5/F-R3 and MED-5 records, and keeps the independent HOLD in force pending same-route recheck. The canonical-content decision and its guard limit are recorded in `repair-epoch-1/REPAIR-DECISION.md`.
+- **Stage 6 repair epoch 1** fixes B-1 through B-4 and M-1 and corrects B-5/F-R3 and MED-5. The independent defect-finding recheck judged all seven findings genuinely fixed but returned `RECHECK_HOLD` because the recorded B-1 guard limit was materially under-scoped. That acceptance claim is corrected in `repair-epoch-1/REPAIR-DECISION.md`; the recheck was not Final Inspection and did not clear the build.
 
 Default replay, export, and search remain active-only. Yuanbao recall/redaction, rotated compression, and ordinary hard replacement remain destructive.
 
@@ -50,6 +50,8 @@ Stage 6 repair mutation runner:
 ```
 
 Result: 12 mutations; every mutation failed its named test, all five production sources were restored byte-for-byte, the restored focused gate passed `10/10`, and the runner exited `0`. Manifest SHA-256: `f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0`.
+
+Manifest provenance: `run_mutations.py` does not emit `receipt_byte_policy`, per-mutation `output_byte_policy`, or `restored_focused_gate.output_byte_policy`. The committed first-run manifest is therefore generator output plus post-generation annotation; those three byte-policy field groups are annotations. The reviewer's unannotated regeneration is preserved separately under `repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/mutation-regeneration/`.
 
 Captured receipt bytes are authoritative, including trailing whitespace and mixed line endings. They are bound in `repair-epoch-1/RAW-RECEIPT-BINDINGS.json` SHA-256 `51e84f7d9060e648077e2fd7307701571f651685677aaa7c24318dd47b30d527`. A rejected packaging attempt had changed CRLF sequences to LF; the exact capture topology was restored before binding, and the full-gate and RED hashes match their pre-normalization anchors. No normalized receipt copy is required or presented as evidence.
 
@@ -132,14 +134,16 @@ Any rollback is a new authority-gated transaction. Stop on conflicts, rerun the 
 
 ## Open remainders
 
-- **Independent BUILD review:** `HOLD_REPAIR_RECHECK_PENDING`. Stage 6 found B-1 HIGH plus B-2/B-3/M-1/B-4/B-5/MED-5. The owner separately executed the B-1 trailing-newline and structured-content cases successfully, but that is not the formal Stage 6 independent recheck. The repaired code has had no independent Stage 6 review, and the builder cannot self-clear the HOLD.
-- **B-1:** `FIXED_PENDING_INDEPENDENT_RECHECK`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is now canonical. Durable user/assistant strings use the existing sanitize/strip projection; structured JSON stays structured; `api_content` stays byte-exact. Whitespace-only ordinary string drift already erased from `expected_history` is undetectable by construction, so the guard is not described as unqualified byte-exact. `api_content` closes the gap wherever present.
-- **B-2 / MED-4:** `FIXED_PENDING_INDEPENDENT_RECHECK`. Destructive export refuses deletion when ordinary export did not cover rewind rows, including probe uncertainty.
-- **B-3:** `FIXED_PENDING_INDEPENDENT_RECHECK`. `/undo` count selection, compression guard, archival, counters, and returned head are one durable transaction; its count coordinate and return shape remain deliberately distinct from `/retry`.
-- **M-1:** `DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK`. The accepted-residual classification is withdrawn. `has_archived_messages` had no retry while `replace_messages` retried through `_execute_write`, so lock contention systematically selected destruction. Archive probing now retries lock/busy and fails closed; replacement authoritatively rechecks archived rows under its own write transaction, so stale `False` cannot select destruction.
-- **B-4:** `FIXED_PENDING_INDEPENDENT_RECHECK`. The dead coordinate round-trip guard is removed; exact type, range, and target-role checks remain.
+- **Independent Stage 6 recheck:** `RECHECK_HOLD`. Receipt: `C:\Users\HieuKa\AppData\Local\New Hermes\evidence\rewind-recheck-20260811-104048-ICT-c4057c52`. The reviewer reproduced `1,282/0` in `90.5s`, killed `12/12` mutations with byte-identical restoration independently verified by `git hash-object`, passed the canary with all exclusions true, and reproduced RED with zero collection/import errors. All seven findings were judged genuinely fixed. The deciding HOLD item was the under-scoped B-1 acceptance wording. This was defect-finding recheck, not Final Inspection or clearance.
+- **B-1:** `CODE FIX CONFIRMED; ACCEPTANCE CLAIM CORRECTED; BUILD HOLD`. Root cause: byte-exact comparison was specified without stating which representation was canonical. Replay/projected content is canonical, structured JSON stays structured, and `api_content` is compared exactly when present. Without a sidecar, every difference collapsed by `sanitize_context(...).strip()` is undetectable—not merely whitespace—including arbitrary-length `<memory-context>...</memory-context>` spans, the recalled-memory `[System note: ...]` form, and fence tags (`agent/memory_manager.py:163-181`, including `:168-181`). The earlier whitespace-only wording came from the COO instruction and was recorded faithfully by the builder; the COO corrected it after empirical review.
+- **`api_content` prevalence:** `NOT ESTABLISHED`. Code proves it is nullable and conditional: no injection or sanitization-changing content can yield zero sidecars; only the current user row is composed/stamped for injected context, run-agent stamping is conditional, gateway/branch sites forward only an existing sidecar, and content rewrites drop stale sidecars. No repository telemetry establishes a percentage, and coverage of post-write drift on originally sidecar-free rows is not established.
+- **RED weight:** 16 failed cases total and zero collection/import/syntax errors, but only 9 are genuine behavioural REDs: B-1, B-2, B-3 ×3, B-4, M-1 ×2, and MED-5. The remaining 7 are parametrizations of one closure-key assertion. B-5 has no behavioural RED because it is a record correction.
+- **B-2 / MED-4:** `FIX CONFIRMED BY RECHECK`. Destructive export refuses deletion when ordinary export did not cover rewind rows, including probe uncertainty.
+- **B-3:** `FIX CONFIRMED BY RECHECK`. `/undo` count selection, compression guard, archival, counters, and returned head are one durable transaction; its count coordinate and return shape remain deliberately distinct from `/retry`.
+- **M-1:** `DEFECT FIX CONFIRMED EMPIRICALLY`. The accepted-residual classification is withdrawn. `has_archived_messages` had no retry while `replace_messages` retried through `_execute_write`, so lock contention systematically selected destruction. The reviewer verified the stale-`False` case: a poisoned preliminary probe cannot select destruction because replacement rechecks under its write transaction.
+- **B-4:** `FIX CONFIRMED BY RECHECK`. The dead coordinate round-trip guard is removed; exact type, range, and target-role checks remain.
 - **B-5 / F-R3:** `CORRECTED_RECORD — NARROWS_ACCEPTED_INPUT_SET`. Retaining pre-I1 4004 for a present non-integer prompt ordinal narrows accepted input; it is not described as preservation.
-- **MED-5:** `REGRESSION_DEFECT_FIXED_PENDING_INDEPENDENT_RECHECK`. The earlier “not a regression” framing is withdrawn. Retained rewind rows caused retried activity to be double-counted. Insights now applies active-or-compacted visibility to every message read, excluding rewind rows and retaining compaction archives.
+- **MED-5:** `REGRESSION DEFECT FIX CONFIRMED BY RECHECK`. The earlier “not a regression” framing is withdrawn. Retained rewind rows caused retried activity to be double-counted. Insights now applies active-or-compacted visibility to every message read, excluding rewind rows and retaining compaction archives.
 - **LOW-1:** `OBSERVED_LOW_DIAGNOSABILITY_V1 — SWALLOWED_ROLLBACK_CAUSE`. `_execute_write` may discard a rollback exception. This remains pre-existing and diagnosability-only; the path fails closed. No repair-epoch change was made.
 - Merge: not done.
 - Push or remote publication: not done.
@@ -175,7 +179,7 @@ Verified safe by COO code reading:
 
 - **Retry-path safety:** `_execute_write` calls rollback at `hermes_state.py:2147` before any lock/busy retry. A retried callback therefore re-runs against an unchanged database when rollback succeeds. If rollback fails and leaves the transaction open, the later transaction-nesting error propagates at `:2170`; it fails closed. Compare-then-mutate is idempotent in effect across successful retries.
 - **I1 and M-1 TOCTOU:** the original compare/mutate lock remains. Stage 6 additionally closed M-1 with a fail-closed retrying probe and an authoritative archive recheck inside the replacement write transaction.
-- **Normalizer correction:** the earlier audit missed B-1 because v3.2 never selected the canonical representation. The repair projection and its explicit whitespace-fidelity limit in `repair-epoch-1/REPAIR-DECISION.md` supersede the older broad mismatch-resistance claim.
+- **Normalizer correction:** the earlier audit missed B-1 because v3.2 never selected the canonical representation. The repair projection and its full sanitize-equivalence limit in `repair-epoch-1/REPAIR-DECISION.md` supersede both the older broad mismatch-resistance claim and the later under-scoped whitespace-only wording.
 - **Ordinal boundaries:** an empty active-user set makes every ordinal out of range and fails closed. Ordinal `0` is the valid whole-transcript archive when an active user exists and is gated upstream by confirmation error `4028`. Negative, non-integer, and boolean values are refused. The guard at `:7500` uses `type(x) is not int`, not `isinstance`, which correctly prevents Python booleans from passing as integers.
 - **Mutation spot-check:** the COO independently replaced `type(x) is not int` with `not isinstance(x, int)`. Exactly `test_rejects_invalid_ordinal_without_any_mutation[True]` failed; no other parametrized case failed. Source was then restored byte-identical to SHA-256 `8432a42218866a507a7cefe0be61f534566d370bc7ef20f3b23def964e121d83`. This directly supports the P1.C2 manifest's ordinal-boolean claim and shows the test discriminates the boolean boundary precisely.
 
@@ -183,10 +187,10 @@ Audit limit:
 
 - The COO materially contributed to the build's technical direction and is ineligible to perform independent BUILD inspection.
 - Stage 6 answered the seventh area: the cleared plan was wrong because v3.2 demanded byte-exact comparison without selecting the canonical representation.
-- The resulting repair is directly verified but remains `BUILD_REVIEW_HOLD` until the same eligible independent route rechecks it.
+- The resulting repair was independently defect-found and judged functionally correct, but the recheck verdict was `RECHECK_HOLD`. It was not Final Inspection, so build clearance remains absent.
 
 ## Mechanical closure gate
 
-The lifecycle remains `HOLD`. The immediate blocker is independent Stage 6 repair recheck; later submission, integration, push/remote readback/CI, final inspection/clearance, and rollback proof also remain absent or unauthorized. No finding was bypassed or rewritten to manufacture PASS.
+The lifecycle remains `HOLD`. The Stage 6 defect-finding recheck occurred and its acceptance-claim HOLD is recorded accurately; Final Inspection and clearance have not occurred. Submission, integration, push/remote readback/CI, deployment, activation, and rollback proof also remain absent or unauthorized. No finding or recheck verdict was rewritten to manufacture PASS.
 
 See `BUILD-CLOSURE-SUMMARY.json` and `repair-epoch-1/REPAIR-DECISION.md` for the bound repair record. This note documents repair completion only; it does not claim build clearance or pipeline closure.

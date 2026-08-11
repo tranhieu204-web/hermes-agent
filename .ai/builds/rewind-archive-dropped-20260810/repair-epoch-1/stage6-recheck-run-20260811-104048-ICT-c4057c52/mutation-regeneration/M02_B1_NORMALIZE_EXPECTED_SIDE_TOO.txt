@@ -1,0 +1,49 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ TestRewindActiveHistory.test_rewind_history_uses_projected_content_as_canonical_without_masking_drift _
+
+self = <tests.test_hermes_state.TestRewindActiveHistory object at 0x0000014F2758D7F0>
+db = <hermes_state.SessionDB object at 0x0000014F289A1BE0>
+
+    def test_rewind_history_uses_projected_content_as_canonical_without_masking_drift(
+        self, db
+    ):
+        """B-1: durable rows project one-way; expected history stays byte-exact."""
+        sid = "rewind-projection-canonical"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "first")
+        db.append_message(sid, "assistant", "answer text\n")
+        db.append_message(sid, "user", "retry")
+        db.append_message(sid, "assistant", "stale reply")
+    
+        expected = db.get_messages_as_conversation(sid)
+        assert expected[1]["content"] == "answer text"
+        result = db.rewind_active_history(
+            sid,
+            expected_history=expected,
+            truncate_before_user_ordinal=1,
+        )
+        assert result["rewound_count"] == 2
+        assert [m["content"] for m in db.get_messages(sid)] == [
+            "first",
+            "answer text\n",
+        ]
+    
+        drift_sid = "rewind-projection-drift"
+        db.create_session(drift_sid, source="cli")
+        db.append_message(drift_sid, "user", "first")
+        db.append_message(drift_sid, "assistant", "answer text\n")
+        db.append_message(drift_sid, "user", "retry")
+        drifted_expected = db.get_messages_as_conversation(drift_sid)
+        drifted_expected[1]["content"] = "answer text\n"
+    
+>       with pytest.raises(
+            hermes_state.RewindHistoryConflict,
+            match="expected history does not match active durable rows",
+        ):
+E       Failed: DID NOT RAISE <class 'hermes_state.RewindHistoryConflict'>
+
+tests\test_hermes_state.py:7957: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_hermes_state.py::TestRewindActiveHistory::test_rewind_history_uses_projected_content_as_canonical_without_masking_drift
+1 failed in 0.48s
