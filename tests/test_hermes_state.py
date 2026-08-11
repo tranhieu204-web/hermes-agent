@@ -7922,6 +7922,49 @@ class TestRewindActiveHistory:
         ]
         assert _rewind_raw_snapshot(db, sid) == before
 
+    def test_rewind_history_uses_projected_content_as_canonical_without_masking_drift(
+        self, db
+    ):
+        """B-1: durable rows project one-way; expected history stays byte-exact."""
+        sid = "rewind-projection-canonical"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "first")
+        db.append_message(sid, "assistant", "answer text\n")
+        db.append_message(sid, "user", "retry")
+        db.append_message(sid, "assistant", "stale reply")
+
+        expected = db.get_messages_as_conversation(sid)
+        assert expected[1]["content"] == "answer text"
+        result = db.rewind_active_history(
+            sid,
+            expected_history=expected,
+            truncate_before_user_ordinal=1,
+        )
+        assert result["rewound_count"] == 2
+        assert [m["content"] for m in db.get_messages(sid)] == [
+            "first",
+            "answer text\n",
+        ]
+
+        drift_sid = "rewind-projection-drift"
+        db.create_session(drift_sid, source="cli")
+        db.append_message(drift_sid, "user", "first")
+        db.append_message(drift_sid, "assistant", "answer text\n")
+        db.append_message(drift_sid, "user", "retry")
+        drifted_expected = db.get_messages_as_conversation(drift_sid)
+        drifted_expected[1]["content"] = "answer text\n"
+
+        with pytest.raises(
+            hermes_state.RewindHistoryConflict,
+            match="expected history does not match active durable rows",
+        ):
+            db.rewind_active_history(
+                drift_sid,
+                expected_history=drifted_expected,
+                truncate_before_user_ordinal=1,
+            )
+        assert len(db.get_messages(drift_sid)) == 3
+
 
 class TestRetryCoordinateConversion:
     def test_retry_coordinate_converts_array_index_to_user_ordinal(self):
@@ -7947,6 +7990,15 @@ class TestRetryCoordinateConversion:
         ]
         with pytest.raises(hermes_state.RewindHistoryConflict):
             hermes_state.retry_array_index_to_user_ordinal(history, 1)
+
+    def test_retry_coordinate_has_no_dead_round_trip_guard(self):
+        """B-4: do not carry an unreachable guard as mutation proof."""
+        import inspect
+
+        source = inspect.getsource(hermes_state.retry_array_index_to_user_ordinal)
+        assert "retry coordinate round-trip failed" not in source
+        assert "user_indices" not in source
+
 
 
 def _routing_session(history, *, agent=None):

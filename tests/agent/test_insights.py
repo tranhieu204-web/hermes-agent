@@ -423,6 +423,63 @@ class TestInsightsPopulated:
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
 
+    def test_insights_excludes_rewound_rows_without_excluding_compaction_archives(
+        self, db
+    ):
+        """MED-5: retries are not double-counted; compaction history still counts."""
+        rewind_sid = "insights-rewind"
+        db.create_session(rewind_sid, source="cli")
+        db.append_message(rewind_sid, "user", "run it")
+        db.append_message(
+            rewind_sid,
+            "assistant",
+            "calling terminal",
+            tool_calls=[{"function": {"name": "terminal"}}],
+        )
+        db.append_message(rewind_sid, "tool", "old result", tool_name="terminal")
+        db.rewind_active_history(
+            rewind_sid,
+            expected_history=db.get_messages(rewind_sid),
+            truncate_before_user_ordinal=0,
+        )
+        db.append_message(rewind_sid, "user", "run it again")
+        db.append_message(
+            rewind_sid,
+            "assistant",
+            "calling terminal again",
+            tool_calls=[{"function": {"name": "terminal"}}],
+        )
+        db.append_message(rewind_sid, "tool", "new result", tool_name="terminal")
+
+        compact_sid = "insights-compaction"
+        db.create_session(compact_sid, source="cli")
+        db.append_message(compact_sid, "user", "search")
+        db.append_message(
+            compact_sid,
+            "assistant",
+            "calling search",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        db.append_message(
+            compact_sid, "tool", "search result", tool_name="search_files"
+        )
+        db.archive_and_compact(
+            compact_sid, [{"role": "user", "content": "compacted summary"}]
+        )
+
+        engine = InsightsEngine(db)
+        tools = {
+            row["tool_name"]: row["count"] for row in engine._get_tool_usage(0)
+        }
+        stats = engine._get_message_stats(0)
+
+        assert tools["terminal"] == 1
+        assert tools["search_files"] == 1
+        assert stats["total_messages"] == 7
+        assert stats["user_messages"] == 3
+        assert stats["assistant_messages"] == 2
+        assert stats["tool_messages"] == 2
+
     def test_skill_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

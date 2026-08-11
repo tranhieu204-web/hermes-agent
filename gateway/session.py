@@ -3253,37 +3253,23 @@ class SessionStore:
             return []
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
-        """Back up ``n`` user turns via soft-delete, keeping rows for audit.
+        """Back up ``n`` user turns via one transactional soft-delete.
 
-        Unlike :meth:`rewrite_transcript` (a hard replace used by /retry),
-        this flips the truncated rows to ``active=0`` in state.db so they
-        survive for audit and stay hidden from re-prompts and search. Mirrors
-        the CLI/TUI ``/undo [N]`` behavior via ``SessionDB.rewind_to_message``.
-
-        Returns a dict ``{"rewound_count", "turns_undone", "target_text"}`` on
-        success, or ``None`` if there's no DB or no user message to back up to.
-        ``n`` clamps to the oldest user turn when it exceeds the turn count.
+        The count coordinate and result shape remain distinct from /retry, while
+        target selection, compression refusal, counter reconciliation, archival,
+        and returned head share one ``SessionDB.rewind_recent_user_turns`` write
+        transaction. Rows remain recoverable with ``active=0, compacted=0``.
         """
         if not self._db:
             return None
         if n < 1:
             n = 1
         try:
-            recents = self._db.list_recent_user_messages(session_id, limit=max(n, 10))
+            result = self._db.rewind_recent_user_turns(session_id, n)
         except Exception as e:
-            logger.debug("rewind_session: failed to list user messages: %s", e)
+            logger.debug("rewind_session: transactional rewind failed: %s", e)
             return None
-        if not recents:
-            return None
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = self._db.rewind_to_message(session_id, target_id)
-        except ValueError as e:
-            logger.debug("rewind_session: %s", e)
-            return None
-        except Exception as e:
-            logger.debug("rewind_session: rewind_to_message failed: %s", e)
+        if not result:
             return None
         self._clear_dirty_transcript(session_id)
         target_msg = result.get("target_message") or {}
@@ -3301,7 +3287,7 @@ class SessionStore:
             target_text = ""
         return {
             "rewound_count": result.get("rewound_count", 0),
-            "turns_undone": target_idx + 1,
+            "turns_undone": result.get("turns_selected", n),
             "target_text": target_text,
         }
 

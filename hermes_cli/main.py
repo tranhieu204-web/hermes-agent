@@ -16455,6 +16455,30 @@ def main():
                     delete_target_ids = db.get_session_delete_targets(
                         resolved_session_id
                     )
+                    try:
+                        uncovered_rewind_ids = [
+                            target_id
+                            for target_id in delete_target_ids
+                            if db.has_rewound_messages(target_id)
+                        ]
+                    except Exception as exc:
+                        print(
+                            "Refusing --delete-after-verified because rewind "
+                            f"coverage could not be established: {exc}"
+                        )
+                        db.close()
+                        return
+                    if uncovered_rewind_ids:
+                        print(
+                            "Refusing --delete-after-verified: rewound messages "
+                            "not covered by the verified export exist in "
+                            "session(s): "
+                            + ", ".join(uncovered_rewind_ids)
+                            + ". Export each session separately with "
+                            "--include-rewound before any explicit deletion."
+                        )
+                        db.close()
+                        return
 
                 exported_items = []
                 for target_id in delete_target_ids:

@@ -339,6 +339,9 @@ def test_sessions_export_md_delete_after_verified_deletes_after_file_check(monke
         def get_session_delete_targets(self, session_id):
             return [session_id]
 
+        def has_rewound_messages(self, session_id):
+            return False
+
         def delete_session(self, session_id, **kwargs):
             captured["deleted"] = session_id
             captured["expected_delete_ids"] = kwargs["expected_delete_ids"]
@@ -691,3 +694,56 @@ def test_sessions_export_trace_only_flag_rejected(monkeypatch, capsys):
     main_mod.main()
 
     assert "--only user-prompts supports --format jsonl or md." in capsys.readouterr().out
+
+
+def test_delete_after_verified_refuses_rewind_rows_missing_from_export(
+    monkeypatch, tmp_path, capsys
+):
+    """B-2: active-only verification cannot authorize deleting rewound rows."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+
+    db_path = tmp_path / "state.db"
+    real_session_db = hermes_state.SessionDB
+    db = real_session_db(db_path)
+    db.create_session("rewound-delete", "cli")
+    db.append_message("rewound-delete", "user", "retained")
+    db.append_message("rewound-delete", "assistant", "retained reply")
+    db.append_message("rewound-delete", "user", "rewound")
+    db.append_message("rewound-delete", "assistant", "rewound reply")
+    db.rewind_active_history(
+        "rewound-delete",
+        expected_history=db.get_messages("rewound-delete"),
+        truncate_before_user_ordinal=1,
+    )
+    db.close()
+
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: real_session_db(db_path))
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    output_dir = tmp_path / "exports"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "sessions",
+            "export",
+            "--format",
+            "md",
+            "--session-id",
+            "rewound-delete",
+            "--delete-after-verified",
+            "--yes",
+            str(output_dir),
+        ],
+    )
+
+    main_mod.main()
+
+    output = capsys.readouterr().out
+    assert "rewound messages not covered by the verified export" in output
+    assert not list(output_dir.glob("*.md"))
+    check = real_session_db(db_path)
+    assert check.get_session("rewound-delete") is not None
+    assert len(check.get_messages("rewound-delete", include_inactive=True)) == 4
+    check.close()

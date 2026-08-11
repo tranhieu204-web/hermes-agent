@@ -2459,11 +2459,12 @@ class TestGatewaySessionDbRecovery:
             def append_message(self, **kwargs):
                 raise RuntimeError("database disk image is malformed")
 
-            def list_recent_user_messages(self, session_id, limit=10):
-                return [{"id": 1, "content": "old"}]
-
-            def rewind_to_message(self, session_id, target_id):
-                return {"target_message": {"id": target_id, "content": "old"}}
+            def rewind_recent_user_turns(self, session_id, n):
+                return {
+                    "rewound_count": 1,
+                    "turns_selected": n,
+                    "target_message": {"id": 1, "content": "old"},
+                }
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -2477,6 +2478,103 @@ class TestGatewaySessionDbRecovery:
 
         store.rewind_session("s1", 1)
         assert "s1" not in store._dirty_transcripts
+
+    def test_rewind_session_selects_count_coordinate_inside_durable_transaction(self):
+        """B-3: /undo must not pre-read a target outside the write transaction."""
+        import threading
+
+        class AtomicOnlyDb:
+            def __init__(self):
+                self.calls = []
+
+            def list_recent_user_messages(self, *args, **kwargs):
+                raise AssertionError("pre-transaction user-message read is forbidden")
+
+            def rewind_to_message(self, *args, **kwargs):
+                raise AssertionError("preselected message-id rewind is forbidden")
+
+            def rewind_recent_user_turns(self, session_id, n):
+                self.calls.append((session_id, n))
+                return {
+                    "rewound_count": 2,
+                    "turns_undone": 1,
+                    "target_message": {"content": "latest"},
+                    "target_text": "latest",
+                    "new_head_id": 4,
+                    "message_count": 4,
+                    "tool_call_count": 0,
+                }
+
+        store = object.__new__(SessionStore)
+        store._db = AtomicOnlyDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+
+        result = store.rewind_session("s1", 1)
+
+        assert result is not None
+        assert result["target_text"] == "latest"
+        assert store._db.calls == [("s1", 1)]
+
+    def test_rewind_session_repairs_live_counters(self, tmp_path):
+        """B-3: /undo counters must describe the active rows committed with it."""
+        import threading
+
+        db = SessionDB(tmp_path / "undo-counters.db")
+        sid = "undo-counters"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "first")
+        db.append_message(
+            sid,
+            "assistant",
+            "calling",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        db.append_message(sid, "tool", "result", tool_name="search_files")
+        db.append_message(sid, "user", "second")
+        db.append_message(sid, "assistant", "second reply")
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+
+        result = store.rewind_session(sid, 1)
+        session = db.get_session(sid)
+
+        assert result is not None
+        assert result["rewound_count"] == 2
+        assert session["message_count"] == 3
+        assert session["tool_call_count"] == 1
+        assert len(db.get_messages(sid)) == 3
+        db.close()
+
+    def test_rewind_session_refuses_compression_closed_session(self, tmp_path):
+        """B-3: /undo must share /retry's compression-session guard."""
+        import threading
+
+        db = SessionDB(tmp_path / "undo-compression.db")
+        sid = "undo-compression"
+        db.create_session(sid, source="telegram")
+        db.append_message(sid, "user", "do not archive")
+        db.append_message(sid, "assistant", "still active")
+        db.end_session(sid, end_reason="compression")
+        before = db.get_messages(sid, include_inactive=True)
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+
+        result = store.rewind_session(sid, 1)
+
+        assert result is None
+        assert db.get_messages(sid, include_inactive=True) == before
+        assert db.get_session(sid)["rewind_count"] == 0
+        db.close()
 
     def test_rewrite_transcript_failure_preserves_dirty_state(self):
         """A failed destructive rewrite must preserve queued transcript custody."""
@@ -2512,10 +2610,7 @@ class TestGatewaySessionDbRecovery:
         import threading
 
         class FailingDb:
-            def list_recent_user_messages(self, session_id, limit=10):
-                return [{"id": 1, "content": "old"}]
-
-            def rewind_to_message(self, session_id, target_id):
+            def rewind_recent_user_turns(self, session_id, n):
                 raise RuntimeError("write failed")
 
         store = object.__new__(SessionStore)

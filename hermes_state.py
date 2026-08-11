@@ -1609,19 +1609,11 @@ def retry_array_index_to_user_ordinal(
     if not isinstance(target, dict) or target.get("role") != "user":
         raise RewindHistoryConflict("<retry-coordinate>", "retry target is not a user row")
 
-    user_indices = [
-        index
-        for index, message in enumerate(expected_history)
-        if isinstance(message, dict) and message.get("role") == "user"
-    ]
-    ordinal = sum(
+    return sum(
         1
         for message in expected_history[:last_user_array_index]
         if isinstance(message, dict) and message.get("role") == "user"
     )
-    if ordinal >= len(user_indices) or user_indices[ordinal] != last_user_array_index:
-        raise RewindHistoryConflict("<retry-coordinate>", "retry coordinate round-trip failed")
-    return ordinal
 
 
 class CompressionSessionBusyError(RuntimeError):
@@ -2182,6 +2174,32 @@ class SessionDB:
                     raise
                 continue
         # Retries exhausted (shouldn't normally reach here).
+        raise last_err or sqlite3.OperationalError(
+            "database is locked after max retries"
+        )
+
+    def _execute_read_with_retry(
+        self, fn: Callable[[sqlite3.Connection], Any]
+    ) -> Any:
+        """Execute one read with the same bounded lock-contention policy as writes."""
+        last_err: Optional[Exception] = None
+        for attempt in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    return fn(self._conn)
+            except sqlite3.OperationalError as exc:
+                err_msg = str(exc).lower()
+                if "locked" in err_msg or "busy" in err_msg:
+                    last_err = exc
+                    if attempt < self._WRITE_MAX_RETRIES - 1:
+                        time.sleep(
+                            random.uniform(
+                                self._WRITE_RETRY_MIN_S,
+                                self._WRITE_RETRY_MAX_S,
+                            )
+                        )
+                        continue
+                raise
         raise last_err or sqlite3.OperationalError(
             "database is locked after max retries"
         )
@@ -6460,6 +6478,7 @@ class SessionDB:
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        preserve_archived: bool = False,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -6482,8 +6501,6 @@ class SessionDB:
         matching :meth:`archive_and_compact`.
         """
 
-        active_clause = " AND active = 1" if active_only else ""
-
         def _do(conn):
             session = conn.execute(
                 "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
@@ -6495,6 +6512,19 @@ class SessionDB:
                 and session["end_reason"] == "compression"
             ):
                 raise CompressionSessionClosedError(session_id)
+            replace_active_only = active_only
+            if preserve_archived:
+                # Recheck under the same BEGIN IMMEDIATE that performs DELETE.
+                # A stale/contended advisory probe can never select destruction.
+                replace_active_only = replace_active_only or (
+                    conn.execute(
+                        "SELECT 1 FROM messages "
+                        "WHERE session_id = ? AND active = 0 LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                )
+            active_clause = " AND active = 1" if replace_active_only else ""
             conn.execute(
                 f"DELETE FROM messages WHERE session_id = ?{active_clause}",
                 (session_id,),
@@ -6520,12 +6550,26 @@ class SessionDB:
         whether a full-history :meth:`replace_messages` would destroy durable
         compaction-archived turns. Cheap existence probe — does not load rows.
         """
-        with self._lock:
-            cursor = self._conn.execute(
+        def _probe(conn):
+            cursor = conn.execute(
                 "SELECT 1 FROM messages WHERE session_id = ? AND active = 0 LIMIT 1",
                 (session_id,),
             )
             return cursor.fetchone() is not None
+
+        return self._execute_read_with_retry(_probe)
+
+    def has_rewound_messages(self, session_id: str) -> bool:
+        """Return True for recovery-only rows omitted by ordinary exports."""
+        def _probe(conn):
+            cursor = conn.execute(
+                "SELECT 1 FROM messages "
+                "WHERE session_id = ? AND active = 0 AND compacted = 0 LIMIT 1",
+                (session_id,),
+            )
+            return cursor.fetchone() is not None
+
+        return self._execute_read_with_retry(_probe)
 
     def archive_and_compact(
         self, session_id: str, compacted_messages: List[Dict[str, Any]]
@@ -7368,7 +7412,19 @@ class SessionDB:
                 value = message.get(field, cls._REWIND_MISSING)
 
             if field == "content" and persisted and value is not cls._REWIND_MISSING:
+                # Mirror _rows_to_conversation on the durable side only. Text
+                # roles use the established replay projection; structured
+                # content remains decoded data and is later canonicalized as
+                # JSON. expected_history is already projected by its caller,
+                # so normalizing it again would hide drift that is still
+                # present there. api_content remains an independently compared,
+                # byte-exact semantic sidecar wherever it exists.
                 value = cls._decode_content(value)
+                if (
+                    message.get("role") in {"user", "assistant"}
+                    and isinstance(value, str)
+                ):
+                    value = sanitize_context(value).strip()
 
             if field == "observed":
                 # Persisted rows use INTEGER 0/1 while replay dictionaries omit
@@ -7632,6 +7688,81 @@ class SessionDB:
             "target_message": target_row,
             "new_head_id": new_head_id,
         }
+
+    def rewind_recent_user_turns(
+        self, session_id: str, n: int
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically select and archive the newest ``n`` user turns.
+
+        This is the count-coordinate primitive used by gateway ``/undo``. The
+        target selection, compression guard, archive update, live-counter
+        reconciliation, and returned head all share one ``BEGIN IMMEDIATE`` so
+        no preflight target can go stale before mutation. The caller-facing
+        count coordinate remains deliberately distinct from retry's user ordinal.
+        """
+        if type(n) is not int or n < 1:
+            raise ValueError("n must be a positive integer")
+
+        def _do(conn):
+            session = conn.execute(
+                "SELECT ended_at, end_reason FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if (
+                session is not None
+                and session["ended_at"] is not None
+                and session["end_reason"] == "compression"
+            ):
+                raise CompressionSessionClosedError(session_id)
+
+            user_rows = conn.execute(
+                "SELECT * FROM messages "
+                "WHERE session_id = ? AND role = 'user' AND active = 1 "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, n),
+            ).fetchall()
+            if not user_rows:
+                return None
+
+            target_row = user_rows[-1]
+            target_message = self._decode_rewind_target_row(target_row)
+            archive_cursor = conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 "
+                "WHERE session_id = ? AND active = 1 AND id >= ?",
+                (session_id, target_row["id"]),
+            )
+            remaining_rows = conn.execute(
+                "SELECT id, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            message_count = len(remaining_rows)
+            tool_call_count = self._rewind_tool_call_count(list(remaining_rows))
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+                "rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
+            head_row = conn.execute(
+                "SELECT MAX(id) FROM messages "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            ).fetchone()
+            new_head_id = (
+                head_row[0]
+                if head_row is not None and head_row[0] is not None
+                else None
+            )
+            return {
+                "rewound_count": archive_cursor.rowcount,
+                "turns_selected": len(user_rows),
+                "target_message": target_message,
+                "new_head_id": new_head_id,
+                "message_count": message_count,
+                "tool_call_count": tool_call_count,
+            }
+
+        return self._execute_write(_do)
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.

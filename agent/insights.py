@@ -213,6 +213,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ? AND s.source = ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'tool' AND m.tool_name IS NOT NULL
                    GROUP BY m.tool_name
                    ORDER BY count DESC""",
@@ -224,6 +225,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'tool' AND m.tool_name IS NOT NULL
                    GROUP BY m.tool_name
                    ORDER BY count DESC""",
@@ -240,6 +242,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ? AND s.source = ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
                 (cutoff, source),
             )
@@ -249,6 +252,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
                 (cutoff,),
             )
@@ -298,6 +302,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ? AND s.source = ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
                 (cutoff, source),
             )
@@ -307,6 +312,7 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?
+                     AND (m.active = 1 OR m.compacted = 1)
                      AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
                 (cutoff,),
             )
@@ -375,7 +381,8 @@ class InsightsEngine:
                      SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?""",
+                   WHERE s.started_at >= ? AND s.source = ?
+                     AND (m.active = 1 OR m.compacted = 1)""",
                 (cutoff, source),
             )
         else:
@@ -387,7 +394,8 @@ class InsightsEngine:
                      SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?""",
+                   WHERE s.started_at >= ?
+                     AND (m.active = 1 OR m.compacted = 1)""",
                 (cutoff,),
             )
         row = cursor.fetchone()

@@ -19,7 +19,9 @@ def _seed_rewound_session(db_path, *, session_id="rewind-export-session"):
     db.append_message(session_id, "assistant", "retained reply")
     db.append_message(session_id, "user", raw_sentinel)
     db.append_message(session_id, "assistant", "rewound tail")
-    expected_history = db.get_messages(session_id)
+    # rewind_active_history compares against the canonical conversation/replay
+    # projection, while the recovery export below proves the raw row survives.
+    expected_history = db.get_messages_as_conversation(session_id)
     db.rewind_active_history(
         session_id,
         expected_history=expected_history,
