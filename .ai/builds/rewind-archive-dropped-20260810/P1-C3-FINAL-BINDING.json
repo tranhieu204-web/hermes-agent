@@ -37,7 +37,10 @@
     "state": "RECONCILED_ALREADY_CORRECT"
   },
   "fR3": {
-    "decision": "PRESERVE_4004_PRE_I1",
+    "decision": "NARROWS_ACCEPTED_INPUT_SET",
+    "historical_decision": "PRESERVE_4004_PRE_I1",
+    "record_supersession": "SUPERSEDED_BY_STAGE6_B5_CORRECTION",
+    "supersession_note": "The P1.C3-era framing claimed preservation. F-R3 narrows: inputs coercible at build base 872c341 (\"0\", True, 0.0) are refused at 4004 at HEAD. Authoritative statements are README.md and repair-epoch-1/REPAIR-DECISION.md.",
     "test": "TestRewindRouting.test_fr3_prompt_submit_keeps_4004_for_non_integer_before_i1"
   },
   "next": "STOP_BEFORE_P2_P3"

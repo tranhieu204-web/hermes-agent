@@ -18,7 +18,7 @@
     ".ai/builds/rewind-archive-dropped-20260810/P3-CANARY-RUNS.json": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
     ".ai/builds/rewind-archive-dropped-20260810/canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
     ".ai/builds/rewind-archive-dropped-20260810/mutation-p3/manifest.json": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
-    ".ai/builds/rewind-archive-dropped-20260810/ledger.json": "319f44ffff001a287015a32431e834661ee2ff1faba4199a2b7d0110fe6e1fad",
+    ".ai/builds/rewind-archive-dropped-20260810/ledger.json": "384044253ec8d67b3718066686c920c82fa8c39b0907483d7791f22fd4ff41a6",
     ".ai/builds/rewind-archive-dropped-20260810/mutation-p3/run_mutations.py": "fcf9268420d04eac6e05945812824f1038db73cdc99b3b16027eec8b9bbab53a",
     "tests/test_hermes_state.py": "433e29099172515ae5a149b4c4655ea63502b3b7cac8289c663f4449861bd496",
     ".ai/builds/rewind-archive-dropped-20260810/assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5f324b4b9be1edd4e61ff36ce6416532b518b1960bd98ea73eb0b17976e00f15",

@@ -222,7 +222,7 @@
   },
   "durable_files": {
     "README.md": "77be384cc10905a8d4c4bbf6f1de2842bb643ab223903091120dafb9fc702591",
-    "ledger.json": "319f44ffff001a287015a32431e834661ee2ff1faba4199a2b7d0110fe6e1fad",
+    "ledger.json": "384044253ec8d67b3718066686c920c82fa8c39b0907483d7791f22fd4ff41a6",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
     "repair-epoch-1/REPAIR-DECISION.md": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e",
     "repair-epoch-1/run_mutations.py": "b3c65e6fa1b40305e394056ff37b708aeff927ea86744d8f6faa458c28eebf92",
@@ -236,7 +236,7 @@
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/result.json": "635297a2600144570719e2ad665e9d0384c3de321c4d71635e719f45f74417cb",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/reviewer-output-verbatim.txt": "e5fd5b3ed57de6615f37bf6264dbfc0990c425275d3cc716e79cfacf86a647a7",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-    "P3-FINAL-BINDING.json": "8d6b78f6fd07aa477d0b9afaf4eec4ea9de0148c86edfe1dde5c266fa1ecfb56",
+    "P3-FINAL-BINDING.json": "b8cc3f43477c69c0ec382ab0acdaaea765fb1c8f61f993bb6cf5b553abe4e4ee",
     "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5f324b4b9be1edd4e61ff36ce6416532b518b1960bd98ea73eb0b17976e00f15",
     "assurance-gap-m13/M13-PROPERTY-FREEZE.json": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c",
     "assurance-gap-m13/FULL-GOVERNED-GATE.txt": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
@@ -1401,7 +1401,7 @@
         "mutation_id": "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
         "mutated_exit_code": 1,
         "witness": "durable='role-user', expected='role-assistant'",
-        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M14_DROP_ROLE.txt",
+        "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M14_DROP_ROLE.txt",
         "receipt_sha256": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1"
       },
       {
@@ -1409,7 +1409,7 @@
         "mutated_exit_code": 1,
         "witness": "durable='json-tool-calls-real', expected='json-tool-calls-attacker' (real_tool -> ATTACKER_TOOL)",
         "additional_fenced_example": "display_metadata trusted -> attacker",
-        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M15_DROP_REWIND_JSON_FIELDS.txt",
+        "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M15_DROP_REWIND_JSON_FIELDS.txt",
         "receipt_sha256": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d"
       },
       {
@@ -1417,7 +1417,7 @@
         "mutated_exit_code": 1,
         "witness": "durable='order-forward', expected='order-reversed'",
         "additional_fenced_example": "adjacent transposition order-adjacent-abc -> order-adjacent-acb",
-        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M16_ORDER_INSENSITIVE.txt",
+        "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M16_ORDER_INSENSITIVE.txt",
         "receipt_sha256": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
       }
     ],
