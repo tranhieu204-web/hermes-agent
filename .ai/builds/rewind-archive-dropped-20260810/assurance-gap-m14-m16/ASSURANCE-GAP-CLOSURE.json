@@ -1,7 +1,8 @@
 {
   "schema": "rewind-assurance-gap-m14-m16-closure-v1",
   "build_id": "rewind-archive-dropped-20260810",
-  "timestamp_ict": "2026-08-11T15:55:25+07:00",
+  "timestamp_ict": "2026-08-12T00:41:50+07:00",
+  "timestamp_ict_semantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
   "parent_inspected_subject": "389640f70679257b7acf074808e44277f31fb92a",
   "candidate_commit": "DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
   "final_inspection_4": {
@@ -64,14 +65,14 @@
     "permitted_equal_pairs": 107,
     "restored_green": "1 passed in 13.09s",
     "freeze_manifest": "assurance-gap-m14-m16/PROPERTY-FREEZE.json",
-    "freeze_manifest_sha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba"
+    "freeze_manifest_sha256": "603add7cf9a23009e6b15fd4e932f720aafb4becdb27ad174fe023d688bec03c"
   },
   "widening_proofs": [
     {
       "mutation_id": "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
       "mutated_exit_code": 1,
       "witness": "durable='role-user', expected='role-assistant'",
-      "gitignored_receipt": "tmp/m14-16-red/M14_DROP_ROLE.txt",
+      "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M14_DROP_ROLE.txt",
       "receipt_sha256": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1"
     },
     {
@@ -79,7 +80,7 @@
       "mutated_exit_code": 1,
       "witness": "durable='json-tool-calls-real', expected='json-tool-calls-attacker' (real_tool -> ATTACKER_TOOL)",
       "additional_fenced_example": "display_metadata trusted -> attacker",
-      "gitignored_receipt": "tmp/m14-16-red/M15_DROP_REWIND_JSON_FIELDS.txt",
+      "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M15_DROP_REWIND_JSON_FIELDS.txt",
       "receipt_sha256": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d"
     },
     {
@@ -87,7 +88,7 @@
       "mutated_exit_code": 1,
       "witness": "durable='order-forward', expected='order-reversed'",
       "additional_fenced_example": "adjacent transposition order-adjacent-abc -> order-adjacent-acb",
-      "gitignored_receipt": "tmp/m14-16-red/M16_ORDER_INSENSITIVE.txt",
+      "durable_receipt": "assurance-gap-m14-m16/mutation-campaign/M16_ORDER_INSENSITIVE.txt",
       "receipt_sha256": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
     }
   ],
@@ -96,6 +97,8 @@
     "manifest_sha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
     "runner_evidence_directory": "tmp/rewind-m14-m16-mutation-campaign",
     "runner_evidence_gitignored": true,
+    "durable_widening_receipts": true,
+    "durable_widening_receipt_scope": "The three decisive M14-M16 RED proofs are committed under assurance-gap-m14-m16/mutation-campaign; the full runner scratch directory remains gitignored and is not used as the decisive proof path.",
     "committed_receipts_overwritten": false,
     "mutation_count": 16,
     "all_mutations_failed_named_tests": true,
@@ -113,11 +116,15 @@
     "files": 10,
     "passed": 1286,
     "failed": 0,
-    "seconds": 120.3,
+    "seconds": 122.4,
     "workers": 64,
     "file_retries": 0,
     "output": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
-    "output_sha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a"
+    "output_sha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9"
+  },
+  "record_hygiene_gate_binding": {
+    "path": "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json",
+    "sha256": "c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e"
   },
   "protected_existing_test_bodies": [
     {

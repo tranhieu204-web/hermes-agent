@@ -1,6 +1,15 @@
-# P3 MED-4 Decision — Delete After Verified
+# P3 MED-4 Decision — Delete After Verified — Historical Consequence Superseded
 
-Decision: `ACCEPTED_CONSEQUENCE_V1`
+Historical P3 disposition: `ACCEPTED_CONSEQUENCE_V1`.
+
+Current disposition: `SUPERSEDED_BY_STAGE6_B2_REFUSAL_FIX`.
+
+The accepted consequence recorded below — that `--delete-after-verified` silently omits the
+`active=0, compacted=0` rewind rows — **no longer describes shipped behavior**. The Stage 6 B-2
+repair replaced omission with refusal: `hermes_cli/main.py` now refuses the deletion when a selected
+session has rewind rows that ordinary export did not cover, and fails closed if the coverage probe
+itself fails. The authoritative current statement is in `README.md` (B-2 / MED-4); everything below
+is retained only as historical provenance for the P3 checkpoint.
 
 `hermes sessions export --delete-after-verified` verifies the established active-only Markdown/QMD export and then deletes the whole session. Therefore that existing backup-then-delete path omits exactly the `active=0, compacted=0` rewind rows introduced for recovery before whole-session deletion.
 

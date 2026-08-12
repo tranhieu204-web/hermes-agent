@@ -19,7 +19,7 @@
     }
   },
   "m19_receipt_sha256": "f16d2eaf971e42f3cb14849d376d3d96c192e6f87674de5a5ab385dd3b4d4bdb",
-  "p1c3_receipt_sha256": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+  "p1c3_receipt_sha256": "db188fe17b14621dde0def104c594e8533989cd6232a70e0009c7ac163343b65",
   "ledger_sha256": "9c0b6fb68fb81c93311c8d222d8b97ea8292c11345abbdf8105b0f862594fd09",
   "coo_current_byte_gate": {
     "passed": 980,

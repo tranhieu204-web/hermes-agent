@@ -1,0 +1,76 @@
+{
+  "schema": "sakaan.record-hygiene-gate-binding.v1",
+  "successor_scope": "F1-F5 record and evidence hygiene only",
+  "candidate_head": "f74d4aad2c0c391b320b525def514afa68dc4512",
+  "branch": "sakaan/rewind-archive-dropped-20260810",
+  "gate_scope": {
+    "production_source_changed": false,
+    "test_source_changed": false,
+    "record_only_successor": true,
+    "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py tests/test_tui_gateway_server.py tests/cli/test_cli_retry.py tests/gateway/test_retry_response.py tests/gateway/test_session.py tests/hermes_cli/test_sessions_export_rewound.py tests/acp/test_session.py tests/hermes_cli/test_sessions_export_md_cli.py tests/agent/test_insights.py -q",
+    "files": 10,
+    "passed": 1286,
+    "failed": 0,
+    "exit_code": 0,
+    "duration_seconds": 122.4,
+    "workers": 64,
+    "file_retries": 0,
+    "stdout": {
+      "path": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+      "bytes": 2635,
+      "sha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9"
+    },
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "parent_identity_capture": {
+    "receipt_directory": "C:/Users/HieuKa/AppData/Local/Temp/claude/C--Users-HieuKa/0c9804ee-5d23-4777-89a8-499e83b707e7/scratchpad/final-gate-record-hygiene-f74d4aad",
+    "pre": {
+      "captured_at": "2026-08-12T00:38:17+0700",
+      "head": "f74d4aad2c0c391b320b525def514afa68dc4512",
+      "status_sha256": "ece4faaf18ab8d0289fb41b3184ce2edddaf4a8687f3e304528214d085800f8a",
+      "status_lines": [
+        " M .ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
+        " M .ai/builds/rewind-archive-dropped-20260810/README.md",
+        " M .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json",
+        " M .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+        " M .ai/builds/rewind-archive-dropped-20260810/ledger.json",
+        "?? .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/mutation-campaign/"
+      ]
+    },
+    "post": {
+      "captured_at": "2026-08-12T00:40:20+0700",
+      "head": "f74d4aad2c0c391b320b525def514afa68dc4512",
+      "status_sha256": "ece4faaf18ab8d0289fb41b3184ce2edddaf4a8687f3e304528214d085800f8a",
+      "status_lines": [
+        " M .ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
+        " M .ai/builds/rewind-archive-dropped-20260810/README.md",
+        " M .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json",
+        " M .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
+        " M .ai/builds/rewind-archive-dropped-20260810/ledger.json",
+        "?? .ai/builds/rewind-archive-dropped-20260810/assurance-gap-m14-m16/mutation-campaign/"
+      ]
+    },
+    "head_unchanged": true,
+    "status_unchanged": true
+  },
+  "post_gate_record_materialization": {
+    "note": "The gate wrapper wrote this binding and materialized the final gate output after the executable run. These are evidence-only writes; the governed executable source/test scope remained unchanged.",
+    "final_gate_output_sha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9",
+    "durable_red_proofs": {
+      "M14_DROP_ROLE.txt": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1",
+      "M15_DROP_REWIND_JSON_FIELDS.txt": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d",
+      "M16_ORDER_INSENSITIVE.txt": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
+    }
+  },
+  "lifecycle": {
+    "gate": "PASS",
+    "independent_review": "PENDING",
+    "commit": "NOT_DONE",
+    "push": "NOT_DONE",
+    "deploy": "NOT_DONE",
+    "activation": "OFF"
+  }
+}

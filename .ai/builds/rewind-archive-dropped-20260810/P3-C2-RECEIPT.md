@@ -39,7 +39,7 @@ Production/source SHA-256:
 
 ## MED-4 and ACP M-1
 
-MED-4 is recorded as `ACCEPTED_CONSEQUENCE_V1`: active-only `--delete-after-verified` can delete a whole session after verifying an export that omitted its rewind rows. The recovery flag is therefore incompatible with deletion, and default deletion semantics remain unchanged. Decision SHA-256: `6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2`.
+MED-4 is recorded as `ACCEPTED_CONSEQUENCE_V1`: active-only `--delete-after-verified` can delete a whole session after verifying an export that omitted its rewind rows. The recovery flag is therefore incompatible with deletion, and default deletion semantics remain unchanged. Decision SHA-256: `1fadeafeb3361c517832b58d200d052c0e971e5a413dc03323b5bade8b0c5a51`.
 
 The ACP successful-probe control proves a non-owner fallback preserves exact `active=0, compacted=0` rows. Its green does not clear the fail-open-on-exception or TOCTOU residual. Residual record SHA-256: `b5e5edc06fa6b3a8143052f8fa167506fc10f3d315c8b382f0c295909e9de4d5`.
 

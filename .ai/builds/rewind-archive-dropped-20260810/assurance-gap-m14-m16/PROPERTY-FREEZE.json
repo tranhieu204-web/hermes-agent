@@ -49,7 +49,7 @@
   ],
   "oracle_independence": {
     "string_content": "sanitize_context(content).strip() only for user/assistant, matching documented replay path",
-    "tool_and_system_string_content": "byte-exact",
+    "tool_and_system_string_content": "byte-exact except for _encode_content sentinel-bearing values, which _decode_content decodes and re-canonicalizes for all roles, collapsing their byte formatting",
     "structured_content": "independent canonical json.dumps",
     "api_content": "independent exact present value",
     "role": "independent exact value",

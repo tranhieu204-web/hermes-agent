@@ -130,7 +130,7 @@
           "failed": 0
         }
       },
-      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+      "receipt": "P1-C3-RECEIPT.md sha256 db188fe17b14621dde0def104c594e8533989cd6232a70e0009c7ac163343b65",
       "verifiedBy": "COO current-byte execution supplied directly by Sakaan",
       "decisiveRedToGreen": "Same three decisive test function bytes that failed on base 872c34130 passed on final P1.C3 bytes: 3 passed in 2.93s."
     },
@@ -189,6 +189,16 @@
       "failed": 0,
       "exactCodeSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD",
       "receipt": "assurance-gap-m13/FULL-GOVERNED-GATE.txt sha256 a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961"
+    },
+    {
+      "id": "M14-M16-FULL-GOVERNED-GATE",
+      "command": "HERMES_PYTHON='/c/c/Users/HieuKa/Desktop/hermes-rewind-archive-20260810/.venv/Scripts/python.exe' scripts/run_tests.sh --file-retries 0 tests/test_hermes_state.py tests/gateway/test_dedupe_user_turns.py tests/test_tui_gateway_server.py tests/cli/test_cli_retry.py tests/gateway/test_retry_response.py tests/gateway/test_session.py tests/hermes_cli/test_sessions_export_rewound.py tests/acp/test_session.py tests/hermes_cli/test_sessions_export_md_cli.py tests/agent/test_insights.py -q",
+      "output": "10 files; 1286 passed / 0 failed in 122.4s; 64 workers; zero file retries",
+      "discovered": 1286,
+      "passed": 1286,
+      "failed": 0,
+      "exactCodeSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+      "receipt": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt sha256 416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9"
     }
   ],
   "mutation": [
@@ -419,7 +429,7 @@
     "buildGreen": {
       "sequence": 4,
       "status": "M14_M16_CANDIDATE_VERIFIED",
-      "receipt": "Author governed gate 1286/1286 in 120.3s, 64 workers, zero retries."
+      "receipt": "Author governed gate 1286/1286 in 122.4s, 64 workers, zero retries."
     },
     "adversarial": {
       "sequence": 5,
@@ -437,7 +447,8 @@
     },
     "submission": {
       "sequence": 8,
-      "status": "CLEARED_NOT_EXECUTED",
+      "status": "HISTORICAL_CLEARED_NOT_EXECUTED",
+      "historical": true,
       "receipt": "C:\\Users\\HieuKa\\AppData\\Local\\New Hermes\\evidence\\rewind-final-inspection-3-20260811-124215-ICT\\stdout.raw.json"
     },
     "integration": {
@@ -497,7 +508,7 @@
     "executionMapArtifactSha256": "a29b4219580ee4fb8f9713c91a457b08f80c383fcdaca8e80ce649ce9b0dbca5",
     "previousExecutionMapArtifactSha256": "7d23ffbe410111c6a8db680ccbe1b520c7b7b16f5128585119c4c549dcdcc653",
     "p1c3ReceiptPath": ".ai/builds/rewind-archive-dropped-20260810/P1-C3-RECEIPT.md",
-    "p1c3ReceiptSha256": "856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+    "p1c3ReceiptSha256": "db188fe17b14621dde0def104c594e8533989cd6232a70e0009c7ac163343b65",
     "p1c3MutationManifestSha256": "867a1e2190209451645e6c3c4668f9f276a68a0c297e0bad058573ce9e57341b",
     "p1c3DecisiveBodyEvidenceSha256": "4afebe3573a58d5b9e7a150a322a4200831860d898697c4904e257eb45c55fe2",
     "p2ReceiptSha256": "420cdb99911669e3ac2fe7b4ff9b68f8a269f18f6697db451e57136630169be0",
@@ -505,15 +516,15 @@
     "p2BodyFreezeSha256": "83579506aa9471853768508c852f01debae5a4f2d1e883ea985732beec1cab70",
     "p2DecisionSha256": "d4274fe830bf61b72829bb0985031bd74414032f350fc02460243eaebe6cf2b4",
     "p3ReceiptPath": ".ai/builds/rewind-archive-dropped-20260810/P3-C2-RECEIPT.md",
-    "p3ReceiptSha256": "1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+    "p3ReceiptSha256": "af8b3adf8aa2e3c022b254e1d2bf3ffa9e88a9c23da2a3b82dbe03e3e344b389",
     "p3RedReceiptSha256": "fbfccb7829e0153833a5e0d4b887a30963610956debbc2504f4b311c29373f9b",
     "p3BodyFreezeSha256": "fcfe962bb275e6e3b9e1d3f8f08ffd4d34e42fefa2a3bfe35bfe3dda2bb269b2",
     "p3MutationManifestSha256": "b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
     "p3CanaryRunsSha256": "56664c44c992de1d1e903d41e160b8c840708f75dbc18738446c1f58e11c892d",
-    "p3Med4DecisionSha256": "6172f2cad4276c5b0f21a54090f2397eba69180af697463feb1bea13527bc2d2",
+    "p3Med4DecisionSha256": "1fadeafeb3361c517832b58d200d052c0e971e5a413dc03323b5bade8b0c5a51",
     "p3AcpResidualSha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
     "stage6RepairDecisionPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "stage6RepairDecisionSha256": "8da61958270078810711e1ff6d1a3363a8e0b8e4fb1c66692911a139c26fb4d9",
+    "stage6RepairDecisionSha256": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e",
     "stage6RepairMutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "stage6RepairFullGateSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
     "stage6RepairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
@@ -525,7 +536,7 @@
     },
     "repairDecision": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-      "sha256": "8da61958270078810711e1ff6d1a3363a8e0b8e4fb1c66692911a139c26fb4d9"
+      "sha256": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e"
     },
     "stage6RecheckProvenance": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/PROVENANCE.json",
@@ -556,14 +567,17 @@
       "status": "PASS_SUPERSEDED_BY_M14_M16"
     },
     "m14M16AssuranceClosurePath": "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json",
-    "m14M16AssuranceClosureSha256": "e47efbfacbddbeab298cd3f4db26fe3c173f98a263cab2bd8b3065b5e8a44b0a",
-    "m14M16PropertyFreezeSha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba",
-    "m14M16FullGovernedGateSha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a",
+    "m14M16AssuranceClosureSha256": "aecad7fcd4f697216ce5a366e4c6f558c919a7981ef58234a02055fed011f7ee",
+    "m14M16PropertyFreezeSha256": "603add7cf9a23009e6b15fd4e932f720aafb4becdb27ad174fe023d688bec03c",
+    "m14M16FullGovernedGateSha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9",
     "m14M16PropertyTestBodySha256": "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae",
     "m14M16MutationManifestPath": "assurance-gap-m14-m16/MUTATION-MANIFEST.json",
-    "m14M16MutationManifestSha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258"
+    "m14M16MutationManifestSha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
+    "m14M16RecordHygieneGateBindingPath": "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json",
+    "m14M16RecordHygieneGateBindingSha256": "c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e"
   },
-  "updatedAt": "2026-08-11T14:33:22+07:00",
+  "updatedAt": "2026-08-12T00:41:50+07:00",
+  "updatedAtSemantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
   "planReview": {
     "epoch1": {
       "status": "HOLD",
@@ -864,7 +878,7 @@
     "P1.C3": {
       "status": "COMMITTED",
       "parentCommit": "3235e6b1d41b3b225bc41c5ac8eed4c662a8666e",
-      "receipt": "P1-C3-RECEIPT.md sha256 856618d85163de29dcf76cd63e673859f62d784327926ce276bcc4fd173b05c6",
+      "receipt": "P1-C3-RECEIPT.md sha256 db188fe17b14621dde0def104c594e8533989cd6232a70e0009c7ac163343b65",
       "gate": {
         "filesDiscovered": 4,
         "estimatedTestsBeforeRun": 927,
@@ -979,7 +993,7 @@
     "P3.C2": {
       "status": "COMMITTED",
       "parentCommit": "1e8bf80feefd668c247e0c569e28131ae0a2bce4",
-      "receipt": "P3-C2-RECEIPT.md sha256 1b69920103eed83bd5742381cf297d0bc6d0806b64e79e57bdf9827230e10e44",
+      "receipt": "P3-C2-RECEIPT.md sha256 af8b3adf8aa2e3c022b254e1d2bf3ffa9e88a9c23da2a3b82dbe03e3e344b389",
       "mutationManifest": "mutation-p3/manifest.json sha256 b5615adc2110366a013cb5a68fa6ac341bfd8d977d87fac0e6e76c47429e0217",
       "canary": "2 / 2 fresh disposable runs PASS",
       "finalGate": "1195 passed / 0 failed in 83.7s",
@@ -1034,7 +1048,8 @@
   },
   "closureRecord": {
     "stage": "18c",
-    "status": "M13_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
+    "status": "HISTORICAL_M13_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING_SUPERSEDED_BY_M14_M16",
+    "historical": true,
     "readme": ".ai/builds/rewind-archive-dropped-20260810/README.md",
     "summary": ".ai/builds/rewind-archive-dropped-20260810/BUILD-CLOSURE-SUMMARY.json",
     "implementationCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
@@ -1047,7 +1062,7 @@
       "status": "HOLD_LATER_LIFECYCLE_AND_FAIL_CLOSED_MECHANICAL_CHECKER",
       "exitCode": 1,
       "materialBlockers": [
-        "SUBMISSION_CLEARED_BUT_NOT_EXECUTED",
+        "HISTORICAL_SUBMISSION_CLEARED_BUT_NOT_EXECUTED",
         "INTEGRATION_MERGE_PUSH_REMOTE_CI_ARTIFACT_DEPLOY_LIVE_ABSENT",
         "ROLLBACK_NOT_PROVEN",
         "MECHANICAL_CHECKER_EXTERNAL_EVIDENCE_UNVERIFIED_BY_DESIGN"
@@ -1608,8 +1623,11 @@
     },
     "openAssuranceGap": {
       "id": "ASSURANCE-1",
-      "status": "OPEN_ASSURANCE_GAP",
-      "classification": "NOT_A_PRODUCT_DEFECT_NOT_CLOSED",
+      "status": "HISTORICAL_OPEN_ASSURANCE_GAP",
+      "classification": "HISTORICAL_M13_NOT_CLOSED_SUPERSEDED_BY_M14_M16",
+      "historical": true,
+      "historical_epoch": "M13",
+      "current_applicability": "SUPERSEDED_BY_M14_M16_CANDIDATE",
       "severity": "ASSURANCE_OPEN",
       "name": "REWIND_GUARD_ACCEPTANCE_CLASS_WIDENING_NOT_CONSTRAINED",
       "mechanism": "The suite is example-based and contains no property/generative invariant preventing the guard from accepting more durable drift than the committed acceptance class.",
@@ -1704,7 +1722,8 @@
     },
     "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M13_RECORD"
   },
-  "updatedAtIct": "2026-08-11T14:33:22+07:00",
+  "updatedAtIct": "2026-08-12T00:41:50+07:00",
+  "updatedAtIctSemantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
   "codeSubject": {
     "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
@@ -2069,7 +2088,8 @@
   "m14M16AssuranceGapClosure": {
     "schema": "rewind-assurance-gap-m14-m16-closure-v1",
     "build_id": "rewind-archive-dropped-20260810",
-    "timestamp_ict": "2026-08-11T15:55:25+07:00",
+    "timestamp_ict": "2026-08-12T00:41:50+07:00",
+    "timestamp_ict_semantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
     "parent_inspected_subject": "389640f70679257b7acf074808e44277f31fb92a",
     "candidate_commit": "DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
     "final_inspection_4": {
@@ -2132,14 +2152,14 @@
       "permitted_equal_pairs": 107,
       "restored_green": "1 passed in 13.09s",
       "freeze_manifest": "assurance-gap-m14-m16/PROPERTY-FREEZE.json",
-      "freeze_manifest_sha256": "b164421643738c9a3394f31dcb0cc1c4311732d61d6a0c16e5a71aee763fbdba"
+      "freeze_manifest_sha256": "603add7cf9a23009e6b15fd4e932f720aafb4becdb27ad174fe023d688bec03c"
     },
     "widening_proofs": [
       {
         "mutation_id": "M14_DROP_ROLE_FROM_REWIND_PROJECTION",
         "mutated_exit_code": 1,
         "witness": "durable='role-user', expected='role-assistant'",
-        "gitignored_receipt": "tmp/m14-16-red/M14_DROP_ROLE.txt",
+        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M14_DROP_ROLE.txt",
         "receipt_sha256": "49ea8073d1d4a7e9a82496b3914e56f530e80edfbf7627f7e45fd94b860674f1"
       },
       {
@@ -2147,7 +2167,7 @@
         "mutated_exit_code": 1,
         "witness": "durable='json-tool-calls-real', expected='json-tool-calls-attacker' (real_tool -> ATTACKER_TOOL)",
         "additional_fenced_example": "display_metadata trusted -> attacker",
-        "gitignored_receipt": "tmp/m14-16-red/M15_DROP_REWIND_JSON_FIELDS.txt",
+        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M15_DROP_REWIND_JSON_FIELDS.txt",
         "receipt_sha256": "7e884fadbe0d7aad1cdce8ee2c81ef5670e6af4490840371808ba94c5e666c8d"
       },
       {
@@ -2155,7 +2175,7 @@
         "mutated_exit_code": 1,
         "witness": "durable='order-forward', expected='order-reversed'",
         "additional_fenced_example": "adjacent transposition order-adjacent-abc -> order-adjacent-acb",
-        "gitignored_receipt": "tmp/m14-16-red/M16_ORDER_INSENSITIVE.txt",
+        "gitignored_receipt": "assurance-gap-m14-m16/mutation-campaign/M16_ORDER_INSENSITIVE.txt",
         "receipt_sha256": "316558cf670c6dee1b7b8b4afea2227689a0a6964f6bd9524542b75ecf5ebc46"
       }
     ],
@@ -2181,11 +2201,11 @@
       "files": 10,
       "passed": 1286,
       "failed": 0,
-      "seconds": 120.3,
+      "seconds": 122.4,
       "workers": 64,
       "file_retries": 0,
       "output": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt",
-      "output_sha256": "4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a"
+      "output_sha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9"
     },
     "protected_existing_test_bodies": [
       {

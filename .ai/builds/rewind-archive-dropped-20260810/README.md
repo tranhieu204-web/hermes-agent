@@ -12,7 +12,9 @@ Historical Final Inspection 4 code subject: `389640f70679257b7acf074808e44277f31
 
 M14-M16 candidate parent: `389640f70679257b7acf074808e44277f31fb92a`; the new exact candidate SHA is the commit containing this record.
 
-Status: `M14-M16 CANDIDATE VERIFIED — FINAL INSPECTION 4 PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
+Status: `M14-M16 RECORD-HYGIENE SUCCESSOR IN PROGRESS — FINAL INSPECTION 4 PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
+
+Record-hygiene successor scope: correct the stale M14-M16 property-body binding, bind the governed gate to parent-side before/after identity snapshots, refresh the closure-summary timestamp, make the M14-M16 RED proofs durable, and mark the superseded M13 assurance node historical. This successor is record/evidence-only; no production or test source change is authorized or included.
 
 ## What changed
 
@@ -53,7 +55,9 @@ Historical code-subject result at `c266dad38dcf1cbf1bcb67b859bd1ff8d0892463`: th
 
 Final Inspection 4 independently passed exact M13 subject `389640f70679257b7acf074808e44277f31fb92a`: `1,286/0`, `13/13` mutations killed, canary PASS, clean custody, and exact M13 witness reproduction. That submission-only clearance is historical and superseded by the M14-M16 test-code change.
 
-Current M14-M16 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `120.3s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt`, SHA-256 `4ba44488d0a2258dd83fb338f1150562dacde1e1525d62c6378d632e48f2cf0a`.
+Current M14-M16 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `122.4s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt`, SHA-256 `416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9`.
+
+Record-hygiene gate binding: `assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json`, SHA-256 `c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e`. Timestamps in the successor records are explicitly materialization timestamps, not execution timestamps.
 
 Repair plus M13-M16 mutation runner:
 
@@ -157,7 +161,7 @@ M14-M16 changes `tests/test_hermes_state.py`, the permanent mutation runner, and
 
 `expected_history` already carries replay-projected content and no longer contains bytes erased by the durable-side projection. Detecting every collision without another raw authority would require either a universal raw-content field or comparison of unlike raw/projected strings. The latter is the original B-1 failure mode: legitimate projection differences such as the trailing newline made `/retry` fail forever. The executable no-sidecar acceptance cases therefore document a forced information limit, while the companion `api_content` case pins the exact-byte compensation. The erased span is absent from model-visible replay too; the residual concern is durable-record/export fidelity, not model behavior.
 
-The earlier sanitizer examples are a **known lower bound, not an exhaustive enumeration**. The complete abstract boundary is equivalence under the whole `_normalize_rewind_message` projection. Known collapse classes include: `sanitize_context(...).strip()` for user/assistant strings; `_decode_content` sentinel decoding; semantic decoding of the five `_REWIND_JSON_FIELDS`, which discards JSON byte formatting and key order; and the deliberately excluded `id`, `session_id`, `active`, `compacted`, and `timestamp` columns. Tool-role string content remains byte-exact. `api_content` remains exact when present; its prevalence and post-write-drift coverage remain `NOT_ESTABLISHED`.
+The earlier sanitizer examples are a **known lower bound, not an exhaustive enumeration**. The complete abstract boundary is equivalence under the whole `_normalize_rewind_message` projection. Known collapse classes include: `sanitize_context(...).strip()` for user/assistant strings; `_decode_content` sentinel decoding; semantic decoding of the five `_REWIND_JSON_FIELDS`, which discards JSON byte formatting and key order; and the deliberately excluded `id`, `session_id`, `active`, `compacted`, and `timestamp` columns. Tool-role string content remains byte-exact **except when it carries the `_encode_content` structured-content sentinel**: `_decode_content` runs for all roles, so two distinct durable tool-role byte strings that decode to the same structure (for example `\x00json:{"b":1,"a":2}` and `\x00json:{"a":2,"b":1}`) project identically. This is reachable in production wherever structured content is stamped, and is already covered by the `_decode_content` collapse class named above; the unqualified wording previously stated here was imprecise. `api_content` remains exact when present; its prevalence and post-write-drift coverage remain `NOT_ESTABLISHED`.
 
 This decision is not permanent by assertion alone. Revisit it if expected history gains a universally carried raw authority with measured coverage, if a separate raw-versus-projected contract can detect drift without rejecting legitimate replay projections, or if evidence shows material post-write fence-bearing drift on originally sidecar-free rows. The executable pin currently covers only memory-context and system-note representatives plus sidecar compensation; it does not prove or parametrize every member of the full projection-equivalence class.
 
@@ -238,4 +242,4 @@ Audit limit:
 
 The historical Final Inspection 3 PASS remains valid only for exact code subject `c266dad38` and inspected record head `b3880ee22`; it is superseded for the M13 candidate because `tests/test_hermes_state.py` changed. The new commit has no submission clearance and requires fresh independent Final Inspection. The mechanical pipeline checker remains fail-closed; integration, merge, push, remote readback, CI, artifact, deployment, activation, trading, orders, and rollback proof remain absent or unauthorized.
 
-See `assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json`, `BUILD-CLOSURE-SUMMARY.json`, and `repair-epoch-1/REPAIR-DECISION.md`. M13 closes the demonstrated widening-direction gap for the rewind-history guard only and explicitly does not claim equivalent coverage for other guards.
+The current M14-M16 candidate remains fenced by the exact current record set: `assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json` (current closure), `BUILD-CLOSURE-SUMMARY.json`, and `repair-epoch-1/REPAIR-DECISION.md`. The historical M13 closure is retained separately for provenance only. The current M14-M16 closure covers the demonstrated widening-direction gap for the rewind-history guard only and explicitly does not claim equivalent coverage for other guards.

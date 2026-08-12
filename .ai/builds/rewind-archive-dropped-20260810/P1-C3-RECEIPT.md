@@ -11,7 +11,7 @@ Branch: `sakaan/rewind-archive-dropped-20260810`
 - TUI `/retry` and CLI `/retry` convert the last user array index to a user-turn ordinal, prove the target/round-trip coordinate, then commit I1 before memory/send/requeue effects.
 - Gateway conflict maps to `4018`; missing persistence, compression-closed refusal, and write failures map to `5008`.
 - CLI failures return no retry payload, mutate no memory, and enqueue nothing.
-- F-R3 is explicitly preserved: a present non-integer prompt ordinal returns `4004` before I1.
+- F-R3: a present non-integer prompt ordinal returns `4004` before I1. **Correction (Stage 6, B-5):** the word "preserved" used here originally was wrong. F-R3 *narrows the accepted input set* rather than preserving it — inputs that were previously accepted are now refused at `4004`. The authoritative statement is in `README.md` and `repair-epoch-1/REPAIR-DECISION.md`; this line is retained with the correction attached rather than rewritten, so the historical claim stays visible.
 - Existing r2 rewind identity and opening-turn confirmation guards remain exercised by the complete TUI file.
 - Five `restoreBodyWipes` locale values now state that later turns are archived and recoverable instead of irreversibly deleted.
 
