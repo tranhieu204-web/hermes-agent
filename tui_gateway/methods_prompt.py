@@ -102,6 +102,7 @@ def _(rid, params: dict) -> dict:
             logger.info("prompt.submit: typed stop phrase — voice chat ended")
             return _ok(rid, {"voice_stopped": True})
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    truncate_message_id = params.get("truncate_before_message_id")
     if params.get("interrupted"):
         # Client-side barge-in (desktop VAD / typing over playback) — latch it
         # so this turn's model message carries the interruption note.
@@ -137,6 +138,19 @@ def _(rid, params: dict) -> dict:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
+                if (
+                    truncate_user_ordinal is not None
+                    or truncate_message_id is not None
+                    or any(
+                        is_truthy_value(params.get(name))
+                        for name in (
+                            "confirm_truncate",
+                            "confirm_empty_truncate",
+                            "confirm_delete_entire_transcript",
+                        )
+                    )
+                ):
+                    return _err(rid, 4009, "session busy — retry rewind after the current turn")
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
@@ -166,22 +180,39 @@ def _(rid, params: dict) -> dict:
         # a specific cut, and a client that sends it bare has leaked rewind
         # state onto an ordinary submit (#82756). Fail fast instead of quietly
         # ignoring the flag so the broken client state is surfaced.
-        if is_truthy_value(params.get("confirm_truncate")) and truncate_user_ordinal is None:
+        confirmations = (
+            is_truthy_value(params.get("confirm_truncate")),
+            is_truthy_value(params.get("confirm_empty_truncate")),
+            is_truthy_value(params.get("confirm_delete_entire_transcript")),
+        )
+        if truncate_message_id is not None and truncate_user_ordinal is not None:
+            return _err(rid, 4004, "provide exactly one rewind target")
+        if any(confirmations) and truncate_user_ordinal is None and truncate_message_id is None:
             return _err(
                 rid,
                 4004,
-                "confirm_truncate requires truncate_before_user_ordinal",
+                "confirm_truncate requires a rewind target",
             )
-        if truncate_user_ordinal is not None:
+        if truncate_user_ordinal is not None or truncate_message_id is not None:
             # bool is an int subclass: a JSON `true` would coerce via int() to
             # ordinal 1 and aim a confirmed rewind at the second user turn.
-            if isinstance(truncate_user_ordinal, bool):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
+            if truncate_user_ordinal is not None and isinstance(truncate_user_ordinal, bool):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
+            id_target = truncate_message_id is not None
+            if id_target:
+                if not is_truthy_value(params.get("confirm_truncate")):
+                    return _err(rid, 4029, "truncate_before_message_id requires confirm_truncate=true")
+                from tui_gateway.rewind_identity import resolve_rewind_ordinal
+
+                ordinal = resolve_rewind_ordinal(history, truncate_message_id)
+                if ordinal is None:
+                    return _err(rid, 4018, "target user message is no longer in session history")
+            else:
+                try:
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             # An ordinal alone is not consent. A client that carries a leftover
             # ordinal into an ORDINARY submit sends a request that is
             # indistinguishable, field by field, from a real rewind — same
@@ -207,10 +238,9 @@ def _(rid, params: dict) -> dict:
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
-            user_indices = [
-                i for i, m in enumerate(history)
-                if m.get("role") == "user" and not m.get("display_kind")
-            ]
+            from tui_gateway.rewind_identity import model_user_indices
+
+            user_indices = model_user_indices(history)
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
             # indexing below (user_indices[-1] -> the LAST user turn), silently
@@ -227,7 +257,11 @@ def _(rid, params: dict) -> dict:
             if (
                 not truncated
                 and history
-                and not is_truthy_value(params.get("confirm_empty_truncate"))
+                and not is_truthy_value(
+                    params.get("confirm_delete_entire_transcript")
+                    if id_target
+                    else params.get("confirm_empty_truncate")
+                )
             ):
                 logger.warning(
                     "prompt.submit: REFUSED empty truncation of session %s "
@@ -240,7 +274,11 @@ def _(rid, params: dict) -> dict:
                     rid,
                     4028,
                     "truncation would erase the entire session transcript; "
-                    "resubmit with confirm_empty_truncate=true if this is intended",
+                    + (
+                        "resubmit with confirm_delete_entire_transcript=true if intended"
+                        if id_target
+                        else "resubmit with confirm_empty_truncate=true if this is intended"
+                    ),
                 )
             # Info for routine rewind/edit cuts; warning only when the client
             # explicitly opts into wiping the whole transcript.

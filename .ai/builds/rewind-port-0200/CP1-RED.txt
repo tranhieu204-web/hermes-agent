@@ -1,0 +1,147 @@
+FFFFFFFFF                                                                [100%]
+================================== FAILURES ===================================
+______________ test_rewind_identity_exact_occurrence_and_prefix _______________
+
+    def test_rewind_identity_exact_occurrence_and_prefix():
+>       ri = _cp1_identity()
+             ^^^^^^^^^^^^^^^
+
+tests\test_tui_gateway_server.py:3716: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def _cp1_identity():
+        import importlib.util
+>       assert importlib.util.find_spec("tui_gateway.rewind_identity") is not None, "rewind identity interface is absent"
+E       AssertionError: rewind identity interface is absent
+E       assert None is not None
+E        +  where None = <function find_spec at 0x0000024FD73B6C00>('tui_gateway.rewind_identity')
+E        +    where <function find_spec at 0x0000024FD73B6C00> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = <module 'importlib' from 'C:\\Users\\HieuKa\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\Lib\\importlib\\__init__.py'>.util
+
+tests\test_tui_gateway_server.py:3701: AssertionError
+___________ test_rewind_display_kind_does_not_occupy_ordinal_space ____________
+
+    def test_rewind_display_kind_does_not_occupy_ordinal_space():
+>       ri = _cp1_identity()
+             ^^^^^^^^^^^^^^^
+
+tests\test_tui_gateway_server.py:3731: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def _cp1_identity():
+        import importlib.util
+>       assert importlib.util.find_spec("tui_gateway.rewind_identity") is not None, "rewind identity interface is absent"
+E       AssertionError: rewind identity interface is absent
+E       assert None is not None
+E        +  where None = <function find_spec at 0x0000024FD73B6C00>('tui_gateway.rewind_identity')
+E        +    where <function find_spec at 0x0000024FD73B6C00> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = <module 'importlib' from 'C:\\Users\\HieuKa\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\Lib\\importlib\\__init__.py'>.util
+
+tests\test_tui_gateway_server.py:3701: AssertionError
+_____________ test_rewind_identity_accepts_text_and_content_rows ______________
+
+    def test_rewind_identity_accepts_text_and_content_rows():
+>       ri = _cp1_identity()
+             ^^^^^^^^^^^^^^^
+
+tests\test_tui_gateway_server.py:3751: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def _cp1_identity():
+        import importlib.util
+>       assert importlib.util.find_spec("tui_gateway.rewind_identity") is not None, "rewind identity interface is absent"
+E       AssertionError: rewind identity interface is absent
+E       assert None is not None
+E        +  where None = <function find_spec at 0x0000024FD73B6C00>('tui_gateway.rewind_identity')
+E        +    where <function find_spec at 0x0000024FD73B6C00> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = <module 'importlib' from 'C:\\Users\\HieuKa\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\Lib\\importlib\\__init__.py'>.util
+
+tests\test_tui_gateway_server.py:3701: AssertionError
+________________ test_rewind_producer_create_and_live_payload _________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FE0B42DD0>
+
+    def test_rewind_producer_create_and_live_payload(monkeypatch):
+>       assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+E       AssertionError: annotating gateway producer is absent
+E       assert False
+E        +  where False = hasattr(server, '_history_to_client_messages')
+
+tests\test_tui_gateway_server.py:3759: AssertionError
+_____ test_rewind_producer_session_history_is_conservative_for_db_display _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FE0BFFF10>
+
+    def test_rewind_producer_session_history_is_conservative_for_db_display(monkeypatch):
+>       assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+E       AssertionError: annotating gateway producer is absent
+E       assert False
+E        +  where False = hasattr(server, '_history_to_client_messages')
+
+tests\test_tui_gateway_server.py:3774: AssertionError
+_________________ test_rewind_confirm_matrix_and_dual_target __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FE0844950>
+
+    def test_rewind_confirm_matrix_and_dual_target(monkeypatch):
+>       ri = _cp1_identity()
+             ^^^^^^^^^^^^^^^
+
+tests\test_tui_gateway_server.py:3804: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def _cp1_identity():
+        import importlib.util
+>       assert importlib.util.find_spec("tui_gateway.rewind_identity") is not None, "rewind identity interface is absent"
+E       AssertionError: rewind identity interface is absent
+E       assert None is not None
+E        +  where None = <function find_spec at 0x0000024FD73B6C00>('tui_gateway.rewind_identity')
+E        +    where <function find_spec at 0x0000024FD73B6C00> = <module 'importlib.util' (frozen)>.find_spec
+E        +      where <module 'importlib.util' (frozen)> = <module 'importlib' from 'C:\\Users\\HieuKa\\AppData\\Roaming\\uv\\python\\cpython-3.11-windows-x86_64-none\\Lib\\importlib\\__init__.py'>.util
+
+tests\test_tui_gateway_server.py:3701: AssertionError
+_____________ test_rewind_id_db_failure_prevents_memory_and_turn ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FDA985850>
+
+    def test_rewind_id_db_failure_prevents_memory_and_turn(monkeypatch):
+>       assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+E       AssertionError: ID-addressed submit interface is absent
+E       assert False
+E        +  where False = hasattr(server, '_history_to_client_messages')
+
+tests\test_tui_gateway_server.py:3832: AssertionError
+__________________ test_rewind_preserves_soft_archived_rows ___________________
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4519/test_rewind_preserves_soft_arc0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FE0AB4350>
+
+    def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
+>       assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+E       AssertionError: ID-addressed submit interface is absent
+E       assert False
+E        +  where False = hasattr(server, '_history_to_client_messages')
+
+tests\test_tui_gateway_server.py:3848: AssertionError
+__________ test_rewind_compute_host_parent_preserves_annotated_rows ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024FE0BB1A10>
+
+    def test_rewind_compute_host_parent_preserves_annotated_rows(monkeypatch):
+>       assert hasattr(server, "_history_to_client_messages"), "annotated compute-host interface is absent"
+E       AssertionError: annotated compute-host interface is absent
+E       assert False
+E        +  where False = hasattr(server, '_history_to_client_messages')
+
+tests\test_tui_gateway_server.py:3872: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_identity_exact_occurrence_and_prefix
+FAILED tests/test_tui_gateway_server.py::test_rewind_display_kind_does_not_occupy_ordinal_space
+FAILED tests/test_tui_gateway_server.py::test_rewind_identity_accepts_text_and_content_rows
+FAILED tests/test_tui_gateway_server.py::test_rewind_producer_create_and_live_payload
+FAILED tests/test_tui_gateway_server.py::test_rewind_producer_session_history_is_conservative_for_db_display
+FAILED tests/test_tui_gateway_server.py::test_rewind_confirm_matrix_and_dual_target
+FAILED tests/test_tui_gateway_server.py::test_rewind_id_db_failure_prevents_memory_and_turn
+FAILED tests/test_tui_gateway_server.py::test_rewind_preserves_soft_archived_rows
+FAILED tests/test_tui_gateway_server.py::test_rewind_compute_host_parent_preserves_annotated_rows
+9 failed, 532 deselected in 2.43s

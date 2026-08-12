@@ -1,0 +1,312 @@
+=== exact_hash BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+______________ test_rewind_identity_exact_occurrence_and_prefix _______________
+
+    def test_rewind_identity_exact_occurrence_and_prefix():
+        ri = _cp1_identity()
+        history = _cp1_history()
+        rows = [{"role": m["role"], "text": m["content"]} for m in history]
+        ri.annotate_rewind_ids(rows, history)
+        first, second = rows[0]["rewind_id"], rows[2]["rewind_id"]
+        assert first != second
+        assert ri.resolve_rewind_ordinal(history, first) == 0
+        assert ri.resolve_rewind_ordinal(history, second) == 1
+        assert ri.resolve_rewind_ordinal(history[2:], second) is None
+        assert ri.resolve_rewind_ordinal(history, "r2:-1:bad") is None
+>       assert ri.resolve_rewind_ordinal(history, "r2:1:bad") is None
+E       AssertionError: assert 1 is None
+E        +  where 1 = <function resolve_rewind_ordinal at 0x0000028984799DA0>([{'role': 'user', 'content': 'same'}, {'role': 'assistant', 'content': 'one'}, {'role': 'user', 'content': 'same'}, {'role': 'assistant', 'content': 'two'}], 'r2:1:bad')
+E        +    where <function resolve_rewind_ordinal at 0x0000028984799DA0> = <module 'tui_gateway.rewind_identity' from 'C:\\hrp\\tui_gateway\\rewind_identity.py'>.resolve_rewind_ordinal
+
+tests\test_tui_gateway_server.py:3729: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_identity_exact_occurrence_and_prefix
+1 failed, 540 deselected in 0.53s
+observed_exit=1 restored=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.93s
+=== display_kind BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+___________ test_rewind_display_kind_does_not_occupy_ordinal_space ____________
+
+    def test_rewind_display_kind_does_not_occupy_ordinal_space():
+        ri = _cp1_identity()
+        assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+        history = [
+            {"role": "user", "content": "marker before", "display_kind": "model_switch"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one"},
+            {"role": "user", "content": "marker between", "display_kind": "event"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "marker after", "display_kind": "event"},
+        ]
+        rows = server._history_to_client_messages(history, history)
+        users = [row for row in rows if row["role"] == "user"]
+>       assert ri.model_user_indices(history) == [1, 4]
+E       assert [0, 1, 3, 4, 6] == [1, 4]
+E         
+E         At index 0 diff: 0 != 1
+E         Left contains 3 more items, first extra item: 3
+E         Use -v to get more diff
+
+tests\test_tui_gateway_server.py:3747: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_display_kind_does_not_occupy_ordinal_space
+1 failed, 540 deselected in 1.18s
+observed_exit=1 restored=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.30s
+=== dual_target BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+_________________ test_rewind_confirm_matrix_and_dual_target __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000015B7141C190>
+
+    def test_rewind_confirm_matrix_and_dual_target(monkeypatch):
+        ri = _cp1_identity()
+        assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+        history = _cp1_history()
+        rows = server._history_to_client_messages(history, history)
+        first, second = rows[0]["rewind_id"], rows[2]["rewind_id"]
+        cases = [
+            ({"truncate_before_message_id": second}, 4029),
+            ({"truncate_before_message_id": "r2:1:bad", "confirm_truncate": True}, 4018),
+            ({"truncate_before_message_id": first, "confirm_truncate": True}, 4028),
+            ({"truncate_before_message_id": first, "confirm_truncate": True, "confirm_empty_truncate": True}, 4028),
+            ({"truncate_before_message_id": second, "truncate_before_user_ordinal": 1, "confirm_truncate": True}, 4004),
+            ({"confirm_delete_entire_transcript": True}, 4004),
+        ]
+        for n, (params, code) in enumerate(cases):
+            response, calls = _cp1_submit(monkeypatch, f"matrix-{n}", history, params)
+>           assert response["error"]["code"] == code
+                   ^^^^^^^^^^^^^^^^^
+E           KeyError: 'error'
+
+tests\test_tui_gateway_server.py:3825: KeyError
+---------------------------- Captured stdout call -----------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.start", "session_id": "matrix-4"}}
+------------------------------ Captured log call ------------------------------
+WARNING  tui_gateway.server:methods_prompt.py:253 prompt.submit: REFUSED empty truncation of session matrix-2 (4 messages would be wiped; ordinal=0).
+WARNING  tui_gateway.server:methods_prompt.py:253 prompt.submit: REFUSED empty truncation of session matrix-3 (4 messages would be wiped; ordinal=0).
+-------------------------- Captured stdout teardown ---------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": "matrix-4", "payload": {"text": "ok", "usage": {"model": "", "input": 0, "output": 0, "reasoning": 0, "prompt": 0, "completion": 0, "total": 0, "calls": 0, "active_subagents": 0}, "status": "complete"}}}
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_confirm_matrix_and_dual_target
+1 failed, 540 deselected in 0.60s
+observed_exit=1 restored=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.36s
+=== dedicated_wipe BROKEN ===
+.                                                                        [100%]
+1 passed, 540 deselected in 0.36s
+observed_exit=0 restored=yes
+=== dedicated_wipe BROKEN ===
+.                                                                        [100%]
+1 passed, 540 deselected in 0.38s
+observed_exit=0 restored_byte_for_byte=yes
+=== dedicated_wipe BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+_________________ test_rewind_confirm_matrix_and_dual_target __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002298380BF10>
+
+    def test_rewind_confirm_matrix_and_dual_target(monkeypatch):
+        ri = _cp1_identity()
+        assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+        history = _cp1_history()
+        rows = server._history_to_client_messages(history, history)
+        first, second = rows[0]["rewind_id"], rows[2]["rewind_id"]
+        cases = [
+            ({"truncate_before_message_id": second}, 4029),
+            ({"truncate_before_message_id": "r2:1:bad", "confirm_truncate": True}, 4018),
+            ({"truncate_before_message_id": first, "confirm_truncate": True}, 4028),
+            ({"truncate_before_message_id": first, "confirm_truncate": True, "confirm_empty_truncate": True}, 4028),
+            ({"truncate_before_message_id": second, "truncate_before_user_ordinal": 1, "confirm_truncate": True}, 4004),
+            ({"confirm_delete_entire_transcript": True}, 4004),
+        ]
+        for n, (params, code) in enumerate(cases):
+            response, calls = _cp1_submit(monkeypatch, f"matrix-{n}", history, params)
+>           assert response["error"]["code"] == code
+                   ^^^^^^^^^^^^^^^^^
+E           KeyError: 'error'
+
+tests\test_tui_gateway_server.py:3825: KeyError
+---------------------------- Captured stdout call -----------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.start", "session_id": "matrix-3"}}
+------------------------------ Captured log call ------------------------------
+WARNING  tui_gateway.server:methods_prompt.py:253 prompt.submit: REFUSED empty truncation of session matrix-2 (4 messages would be wiped; ordinal=0).
+WARNING  tui_gateway.server:methods_prompt.py:273 prompt.submit: truncating session matrix-3 history 4 -> 0 messages (ordinal=0)
+-------------------------- Captured stdout teardown ---------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": "matrix-3", "payload": {"text": "ok", "usage": {"model": "", "input": 0, "output": 0, "reasoning": 0, "prompt": 0, "completion": 0, "total": 0, "calls": 0, "active_subagents": 0}, "status": "complete"}}}
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_confirm_matrix_and_dual_target
+1 failed, 540 deselected in 0.62s
+observed_exit=1 restored_byte_for_byte=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.37s
+=== archive_guard BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+__________________ test_rewind_preserves_soft_archived_rows ___________________
+
+tmp_path = WindowsPath('C:/Users/HieuKa/AppData/Local/Temp/pytest-of-HieuKa/pytest-4534/test_rewind_preserves_soft_arc0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000029FF0B83850>
+
+    def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
+        assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("arch", source="tui")
+        for role, content in [("user", "old"), ("assistant", "old reply")]:
+            db.append_message("arch", role=role, content=content)
+        with db._lock:
+            db._conn.execute("UPDATE messages SET active=0 WHERE session_id='arch'")
+            db._conn.commit()
+        history = _cp1_history()
+        for m in history:
+            db.append_message("arch", role=m["role"], content=m["content"])
+        rid = server._history_to_client_messages(history, history)[2]["rewind_id"]
+        response, _ = _cp1_submit(monkeypatch, "arch", history, {"truncate_before_message_id": rid, "confirm_truncate": True}, db=db)
+        try:
+            assert response.get("result")
+            inactive = [m for m in db.get_messages("arch", include_inactive=True) if not m.get("active")]
+            contents = [m["content"] for m in inactive]
+            assert contents[:2] == ["old", "old reply"]
+>           assert contents[-2:] == ["same", "two"]
+E           AssertionError: assert ['old', 'old reply'] == ['same', 'two']
+E             
+E             At index 0 diff: 'old' != 'same'
+E             Use -v to get more diff
+
+tests\test_tui_gateway_server.py:3873: AssertionError
+---------------------------- Captured stdout call -----------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.start", "session_id": "arch"}}
+-------------------------- Captured stdout teardown ---------------------------
+{"jsonrpc": "2.0", "method": "event", "params": {"type": "message.complete", "session_id": "arch", "payload": {"text": "ok", "usage": {"model": "", "input": 0, "output": 0, "reasoning": 0, "prompt": 0, "completion": 0, "total": 0, "calls": 0, "active_subagents": 0}, "status": "complete"}}}
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_preserves_soft_archived_rows
+1 failed, 540 deselected in 0.71s
+observed_exit=1 restored_byte_for_byte=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.48s
+=== history_null BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+_____ test_rewind_producer_session_history_is_conservative_for_db_display _____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DC45734990>
+
+    def test_rewind_producer_session_history_is_conservative_for_db_display(monkeypatch):
+        assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+        import contextlib
+        history = _cp1_history()
+        ancestor = [{"role": "user", "content": "ancestor"}, {"role": "assistant", "content": "old"}, *history]
+        class DB:
+            def get_messages_as_conversation(self, *_a, **_k):
+                return ancestor
+        server._sessions["hist"] = _session(history=history, session_key="hist-key")
+        monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(DB()))
+        try:
+            result = server.handle_request({"id": "h", "method": "session.history", "params": {"session_id": "hist"}})["result"]
+>           assert [m.get("rewind_id") for m in result["messages"] if m["role"] == "user"] == [None, None, None]
+E           AssertionError: assert ['r2:0:0bc990...31526b478d7e'] == [None, None, None]
+E             
+E             At index 0 diff: 'r2:0:0bc990161c5df20e2065a407' != None
+E             Use -v to get more diff
+
+tests\test_tui_gateway_server.py:3788: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_producer_session_history_is_conservative_for_db_display
+1 failed, 540 deselected in 0.50s
+observed_exit=1 restored_byte_for_byte=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.31s
+=== host_preserve BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+__________ test_rewind_compute_host_parent_preserves_annotated_rows ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000018AC9978490>
+
+    def test_rewind_compute_host_parent_preserves_annotated_rows(monkeypatch):
+        assert hasattr(server, "_history_to_client_messages"), "annotated compute-host interface is absent"
+        history = _cp1_history()
+        messages = server._history_to_client_messages(history, history)
+        server._sessions["host"] = _session(history=history, _compute_host_active=True)
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s: True)
+        monkeypatch.setattr(server, "_send_compute_host_control", lambda *_a, **_k: {"type": "control.ack", "messages": messages, "session_info": {}})
+        monkeypatch.setattr(server, "_apply_compute_host_metadata_mirror", lambda *_a: None)
+        try:
+            result = server.handle_request({"id": "x", "method": "session.compress", "params": {"session_id": "host"}})["result"]
+>           assert result["messages"] == messages
+E           AssertionError: assert [] == [{'role': 'us...text': 'two'}]
+E             
+E             Right contains 4 more items, first extra item: {'role': 'user', 'text': 'same', 'rewind_id': 'r2:0:ceb2d0fd2e992d24d38cae06'}
+E             Use -v to get more diff
+
+tests\test_tui_gateway_server.py:3889: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_compute_host_parent_preserves_annotated_rows
+1 failed, 540 deselected in 0.51s
+observed_exit=1 restored_byte_for_byte=yes
+.                                                                        [100%]
+1 passed, 540 deselected in 0.30s
+MUTATIONS_COMPLETE
+=== busy_queue_guard BROKEN ===
+F                                                                        [100%]
+================================== FAILURES ===================================
+_________ test_rewind_id_busy_submit_does_not_queue_destructive_state _________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002C1C89F6A90>
+
+    def test_rewind_id_busy_submit_does_not_queue_destructive_state(monkeypatch):
+        history = _cp1_history()
+        rewind_id = server._history_to_client_messages(history, history)[2]["rewind_id"]
+        session = _session(history=history, running=True, queued_prompt=None)
+        server._sessions["busy-rewind"] = session
+        monkeypatch.setattr(
+            server, "_handle_busy_submit", lambda *_a, **_k: pytest.fail("rewind must not queue")
+        )
+        try:
+>           response = server.handle_request(
+                {
+                    "id": "busy",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": "busy-rewind",
+                        "text": "redo",
+                        "truncate_before_message_id": rewind_id,
+                        "confirm_truncate": True,
+                    },
+                }
+            )
+
+tests\test_tui_gateway_server.py:3862: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tui_gateway\server.py:1934: in handle_request
+    return fn(rid, params)
+           ^^^^^^^^^^^^^^^
+tui_gateway\methods_prompt.py:161: in _
+    busy_response = _handle_busy_submit(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+_a = ('busy', 'busy-rewind', {'agent': namespace(), 'session_key': 'session-key', 'history': [{'role': 'user', 'content': '...sistant', 'content': 'two'}], 'history_lock': <unlocked _thread.lock object at 0x000002C1C7564B80>, ...}, 'redo', None)
+_k = {'queued': False}
+
+>       server, "_handle_busy_submit", lambda *_a, **_k: pytest.fail("rewind must not queue")
+                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+E   Failed: rewind must not queue
+
+tests\test_tui_gateway_server.py:3859: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_tui_gateway_server.py::test_rewind_id_busy_submit_does_not_queue_destructive_state
+1 failed, 541 deselected in 1.26s
+observed_exit=1 restored_byte_for_byte=yes
+.                                                                        [100%]
+1 passed, 541 deselected in 0.31s

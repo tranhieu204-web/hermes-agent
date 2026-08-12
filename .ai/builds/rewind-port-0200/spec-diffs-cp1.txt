@@ -1,0 +1,2073 @@
+commit 18319f3f4739e19a2504f91f7dfadc825262a173
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 10:48:47 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 10:48:47 2026 +0700
+
+    fix(rewind): address restore targets by identity, not by position
+    
+    The transcript the desktop renders is the DISPLAY projection; prompt.submit
+    can only truncate inside session["history"], the MODEL projection. Compaction
+    rewrites the model list mid-turn, replay sanitisation drops a dangling tool
+    tail, and injected "[System: ...]" / task-list / background-process rows are
+    stored as role=user. So a client that addresses a turn by counting bubbles
+    either overshoots (4018 "target user message is no longer in session history")
+    or, when the injected rows pad the model side, silently truncates an EARLIER
+    turn than the one that was clicked.
+    
+    A position is not an identity. The gateway now stamps a `rewind_id` on exactly
+    those display messages that still map to a truncatable user row, and resolves
+    that id back to an ordinal at submit time (exact match, then a unique-content
+    match if the position drifted, else refuse). A message with no rewind_id is
+    not rewindable and the client hides the affordance.
+    
+    - tui_gateway/rewind_identity.py: dependency-free shared module so the REST
+      transcript endpoint can mint ids this gateway will resolve. coerce_message_text
+      moved here and aliased in server.py — alignment compares user text verbatim,
+      so a normalisation drift between the two would silently cost sessions their
+      restore affordances.
+    - server.py: stamp on all six transcript payload paths; accept
+      truncate_before_message_id; keep the positional ordinal for older clients.
+    - server.py: add the missing empty-truncation guard (4028). Restoring to the
+      first user turn resolved to history[:0] and replace_messages then DELETED
+      every durable row — a one-click wipe of the whole session. The client
+      already sent confirm_empty_truncate; the gateway ignored it.
+    - web_server.py: stamp the REST transcript (the Desktop's transcript authority
+      on cold resume, since resume is called with omit_messages). Best-effort:
+      paged reads and any failure degrade to unstamped rows.
+    
+    Tests: 412 passing (tests/test_tui_gateway_server.py + both web-server files),
+    10 new covering tail alignment, the lineage boundary, repeated identical
+    prompts, drift/ambiguity resolution, stale ids, and the wipe guard.
+    
+    NOTE: tui_gateway/server.py also carries two hunks that were already in the
+    working tree before this change and are not mine — an interrupt-before-teardown
+    block in _teardown_session, and an operator_policy_stop resume refusal (4013)
+    in session.resume. They could not be split out without interactive staging.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index ca189607c..8babc2067 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -3146,6 +3146,346 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
+         server._sessions.pop("trunc-sid", None)
+ 
+ 
++def test_annotate_rewind_ids_stops_at_the_lineage_boundary():
++    """Only the turns a rewind can actually reach may carry a rewind id.
++
++    The rendered transcript is the display projection — ancestor lineage from
++    before a compaction handoff included — while truncation can only cut inside
++    the live model history. Stamping ids on the reachable tail and nothing else
++    is what lets the client hide a restore button it cannot honour, instead of
++    offering one that dies on 4018.
++    """
++    # Two turns survive in the model history; the two above them exist only in
++    # the displayed lineage (their session was compacted away).
++    model_history = [
++        {"role": "user", "content": "third"},
++        {"role": "assistant", "content": "3"},
++        {"role": "user", "content": "fourth"},
++        {"role": "assistant", "content": "4"},
++    ]
++    display = [
++        {"role": "user", "text": "first"},
++        {"role": "assistant", "text": "1"},
++        {"role": "user", "text": "second"},
++        {"role": "assistant", "text": "2"},
++        {"role": "user", "text": "third"},
++        {"role": "assistant", "text": "3"},
++        {"role": "user", "text": "fourth"},
++        {"role": "assistant", "text": "4"},
++    ]
++
++    annotated = server._annotate_rewind_ids(list(display), model_history)
++
++    assert "rewind_id" not in annotated[0]
++    assert "rewind_id" not in annotated[2]
++    assert annotated[4]["rewind_id"] == server._rewind_message_id(0, "third")
++    assert annotated[6]["rewind_id"] == server._rewind_message_id(1, "fourth")
++    # Assistant rows are never rewind targets.
++    assert all("rewind_id" not in m for m in annotated if m["role"] != "user")
++
++
++def test_annotate_rewind_ids_distinguishes_repeated_prompts():
++    """Identical prompt text must not collapse to one identity.
++
++    Tail alignment pins each id to a position, so re-sending the same prompt
++    still yields distinct, correctly-ordered ids.
++    """
++    model_history = [
++        {"role": "user", "content": "continue"},
++        {"role": "assistant", "content": "a"},
++        {"role": "user", "content": "continue"},
++        {"role": "assistant", "content": "b"},
++    ]
++    display = [
++        {"role": "user", "text": "continue"},
++        {"role": "assistant", "text": "a"},
++        {"role": "user", "text": "continue"},
++        {"role": "assistant", "text": "b"},
++    ]
++
++    annotated = server._annotate_rewind_ids(list(display), model_history)
++
++    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "continue")
++    assert annotated[2]["rewind_id"] == server._rewind_message_id(1, "continue")
++    assert annotated[0]["rewind_id"] != annotated[2]["rewind_id"]
++
++
++def test_annotate_rewind_ids_matches_across_content_shapes():
++    """Model rows hold structured content; the display projection holds text.
++
++    Both sides normalise through _coerce_message_text, so a multimodal user turn
++    must still align — otherwise every session with an attachment would silently
++    lose its restore buttons from that turn upward.
++    """
++    model_history = [
++        {
++            "role": "user",
++            "content": [{"type": "text", "text": "look at this"}],
++        },
++        {"role": "assistant", "content": "sure"},
++    ]
++    display = server._history_to_messages(
++        [
++            {"role": "user", "content": [{"type": "text", "text": "look at this"}]},
++            {"role": "assistant", "content": "sure"},
++        ]
++    )
++
++    annotated = server._annotate_rewind_ids(display, model_history)
++
++    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "look at this")
++    assert (
++        server._resolve_rewind_ordinal(model_history, annotated[0]["rewind_id"]) == 0
++    )
++
++
++def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
++    history = [
++        {"role": "user", "content": "alpha"},
++        {"role": "assistant", "content": "a"},
++        {"role": "user", "content": "beta"},
++        {"role": "assistant", "content": "b"},
++    ]
++
++    # Exact hit.
++    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
++
++    # The turn is still there but has shifted position (a turn was inserted
++    # before it since the transcript was sent) — content still identifies it.
++    shifted = [{"role": "user", "content": "zero"}, *history]
++    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) == 2
++
++    # Drifted AND duplicated: refuse rather than guess which one was meant.
++    ambiguous = [*history, {"role": "user", "content": "beta"}]
++    assert server._resolve_rewind_ordinal(ambiguous, server._rewind_message_id(9, "beta")) is None
++
++    # Gone entirely (compacted away), and malformed ids.
++    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
++    assert server._resolve_rewind_ordinal(history, "not-a-rewind-id") is None
++    assert server._resolve_rewind_ordinal(history, "") is None
++
++
++def test_prompt_submit_truncates_by_message_id(monkeypatch):
++    """A rewind addressed by id cuts at the turn that id names."""
++
++    seen = {}
++
++    class _Agent:
++        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
++            seen["prompt"] = prompt
++            seen["history"] = conversation_history
++            return {
++                "final_response": "redo",
++                "messages": [
++                    *(conversation_history or []),
++                    {"role": "user", "content": prompt},
++                    {"role": "assistant", "content": "redo"},
++                ],
++            }
++
++    class _ImmediateThread:
++        def __init__(self, target=None, daemon=None):
++            self._target = target
++
++        def start(self):
++            self._target()
++
++    original_history = [
++        {"role": "user", "content": "first"},
++        {"role": "assistant", "content": "first reply"},
++        {"role": "user", "content": "second"},
++        {"role": "assistant", "content": "second reply"},
++    ]
++    server._sessions["sid"] = _session(agent=_Agent(), history=list(original_history))
++
++    class _StubDb:
++        def __init__(self):
++            self.replaced = []
++
++        def replace_messages(self, session_id, messages):
++            self.replaced.append((session_id, list(messages)))
++
++    stub_db = _StubDb()
++
++    try:
++        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
++        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
++        monkeypatch.setattr(server, "_emit", lambda *a: None)
++        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
++
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "sid",
++                    "text": "redo second",
++                    "truncate_before_message_id": server._rewind_message_id(1, "second"),
++                },
++            }
++        )
++        assert resp.get("result"), f"got error: {resp.get('error')}"
++        assert seen["history"] == original_history[:2]
++        assert stub_db.replaced == [("session-key", original_history[:2])]
++    finally:
++        server._sessions.pop("sid", None)
++
++
++def test_prompt_submit_rejects_a_stale_message_id(monkeypatch):
++    """An id for a turn that is no longer truncatable must not cut anything.
++
++    This is the compaction case: the bubble is still on screen (it lives in the
++    display lineage) but the model history it named is gone. Refusing is the
++    whole point — the old positional ordinal would have indexed *some* other
++    turn and cut there.
++    """
++    replaced = []
++
++    class _FakeDB:
++        def replace_messages(self, key, messages):
++            replaced.append((key, list(messages)))
++
++    history = [
++        {"role": "user", "content": "still here"},
++        {"role": "assistant", "content": "ok"},
++    ]
++    server._sessions["stale-sid"] = _session(history=list(history))
++    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
++    monkeypatch.setattr(
++        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++    monkeypatch.setattr(
++        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++
++    try:
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "stale-sid",
++                    "text": "next",
++                    "truncate_before_message_id": server._rewind_message_id(
++                        0, "compacted away"
++                    ),
++                },
++            }
++        )
++        assert resp["error"]["code"] == 4018
++        assert server._sessions["stale-sid"]["history"] == history
++        assert server._sessions["stale-sid"]["running"] is False
++        assert replaced == []
++    finally:
++        server._sessions.pop("stale-sid", None)
++
++
++def test_prompt_submit_refuses_to_wipe_the_transcript(monkeypatch):
++    """Cutting before the first user turn empties the DB — require opt-in.
++
++    ``history[:0]`` is ``[]`` and replace_messages() then DELETEs every durable
++    row. One stale click should not be able to erase a session.
++    """
++    replaced = []
++
++    class _FakeDB:
++        def replace_messages(self, key, messages):
++            replaced.append((key, list(messages)))
++
++    history = [
++        {"role": "user", "content": "first"},
++        {"role": "assistant", "content": "reply"},
++    ]
++    server._sessions["wipe-sid"] = _session(history=list(history))
++    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
++    monkeypatch.setattr(
++        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++    monkeypatch.setattr(
++        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++
++    try:
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "wipe-sid",
++                    "text": "next",
++                    "truncate_before_user_ordinal": 0,
++                },
++            }
++        )
++        assert resp["error"]["code"] == 4028
++        assert server._sessions["wipe-sid"]["history"] == history
++        assert replaced == []
++    finally:
++        server._sessions.pop("wipe-sid", None)
++
++
++def test_prompt_submit_allows_confirmed_empty_truncation(monkeypatch):
++    """A deliberate restore of the very first turn is still allowed."""
++
++    class _Agent:
++        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
++            return {
++                "final_response": "fresh",
++                "messages": [
++                    {"role": "user", "content": prompt},
++                    {"role": "assistant", "content": "fresh"},
++                ],
++            }
++
++    class _ImmediateThread:
++        def __init__(self, target=None, daemon=None):
++            self._target = target
++
++        def start(self):
++            self._target()
++
++    class _StubDb:
++        def __init__(self):
++            self.replaced = []
++
++        def replace_messages(self, session_id, messages):
++            self.replaced.append((session_id, list(messages)))
++
++    stub_db = _StubDb()
++    server._sessions["confirm-sid"] = _session(
++        agent=_Agent(),
++        history=[
++            {"role": "user", "content": "first"},
++            {"role": "assistant", "content": "reply"},
++        ],
++    )
++
++    try:
++        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
++        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
++        monkeypatch.setattr(server, "_emit", lambda *a: None)
++        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
++
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "confirm-sid",
++                    "text": "start over",
++                    "truncate_before_user_ordinal": 0,
++                    "confirm_empty_truncate": True,
++                },
++            }
++        )
++        assert resp.get("result"), f"got error: {resp.get('error')}"
++        assert stub_db.replaced == [("session-key", [])]
++    finally:
++        server._sessions.pop("confirm-sid", None)
++
++
+ class _StopAfterOneNotificationPoll:
+     def __init__(self):
+         self._checks = 0
+@@ -8584,8 +8924,14 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
+             }
+         )
+         assert completed["result"].get("inflight") is None
++        # The live user turn is still in the model history, so it carries a
++        # rewind id — that is what makes it restorable from this projection.
+         assert completed["result"]["messages"] == [
+-            {"role": "user", "text": "write a long answer"},
++            {
++                "role": "user",
++                "text": "write a long answer",
++                "rewind_id": server._rewind_message_id(0, "write a long answer"),
++            },
+             {"role": "assistant", "text": "partial answer complete"},
+         ]
+     finally:
+@@ -8663,7 +9009,11 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
+         assert resp["result"]["status"] == "working"
+         assert resp["result"]["info"] == {"model": "model-b"}
+         assert resp["result"]["messages"] == [
+-            {"role": "user", "text": "new prompt"},
++            {
++                "role": "user",
++                "text": "new prompt",
++                "rewind_id": server._rewind_message_id(0, "new prompt"),
++            },
+             {"role": "assistant", "text": "new answer"},
+         ]
+     finally:
+diff --git a/tui_gateway/rewind_identity.py b/tui_gateway/rewind_identity.py
+new file mode 100644
+index 000000000..e6751a020
+--- /dev/null
++++ b/tui_gateway/rewind_identity.py
+@@ -0,0 +1,223 @@
++"""Stable identity for the user turns a rewind is allowed to cut at.
++
++The transcript a client renders is the DISPLAY projection: the persisted
++lineage read with ``include_ancestors=True``, plus rows the model history
++collapses out.  ``prompt.submit``'s truncation can only cut inside
++``session["history"]`` — the MODEL projection for the current session record,
++with the ancestor lineage held separately in ``display_history_prefix``.
++
++The two disagree by construction.  Compaction replaces the model history with a
++summary and rotates the DB session, so everything before the handoff moves into
++the ancestor prefix; replay sanitisation drops a dangling tool tail; and
++injected ``[System: …]`` pivot markers are stored as role=user rows.  A client
++that addresses a turn *positionally* ("the Nth user bubble I am rendering")
++therefore overshoots the model history and lands on 4018 — or, when the injected
++markers pad the model side, silently truncates an EARLIER turn than the one that
++was clicked, which is the same defect with the alarm removed.
++
++Both directions are one bug: a position is not an identity.  A server stamps a
++``rewind_id`` on exactly those display messages that still map to a truncatable
++user row and resolves that id back to an ordinal at submit time.  A message
++without a ``rewind_id`` is not rewindable — the client hides the affordance
++rather than offering an action that cannot succeed.
++
++This module is deliberately dependency-free so both the JSON-RPC gateway
++(``tui_gateway.server``) and the REST transcript endpoint
++(``hermes_cli.web_server``) can mint ids the gateway will resolve.
++"""
++
++from __future__ import annotations
++
++import hashlib
++from typing import Any, Callable, Iterable
++
++REWIND_ID_PREFIX = "r1"
++
++
++def coerce_message_text(content: Any) -> str:
++    """Render ``message['content']`` as a plain string for transport.
++
++    Provider-side, ``content`` may be a string (most common), a list of
++    multimodal parts (e.g. ``[{"type": "text", "text": "..."},
++    {"type": "image_url", "image_url": {...}}]``), or a single structured
++    dict. Calling ``.strip()`` on a list raises ``'list' object has no
++    attribute 'strip'`` and breaks session resume entirely.
++
++    Image parts (``image_url``) are preserved by appending the underlying
++    URL (data: or http:) into the text. The desktop renderer pulls these
++    back out via ``extractEmbeddedImages`` so the user sees the image
++    instead of the URL — and it stops the resume payload from disagreeing
++    with the cached message (which would otherwise cause the inline image
++    to flash, then disappear when the resume payload overwrites the cache).
++
++    Other structured dict shapes (audio, unknown types) fall back to a
++    bracketed placeholder so resume doesn't drop the message entirely.
++
++    Both projections MUST normalise through this one function: the rewind
++    alignment below compares their user text verbatim, so any divergence here
++    silently costs a session its restore affordances.
++    """
++    if content is None:
++        return ""
++    if isinstance(content, str):
++        return content
++    if isinstance(content, (int, float)):
++        return str(content)
++    if isinstance(content, list):
++        chunks: list[str] = []
++        for part in content:
++            if isinstance(part, str):
++                chunks.append(part)
++                continue
++            if not isinstance(part, dict):
++                continue
++            text = part.get("text")
++            if isinstance(text, str):
++                chunks.append(text)
++                continue
++            kind = part.get("type")
++            if kind in {"text", "input_text", "output_text"}:
++                t = part.get("text") or part.get("content") or ""
++                if t:
++                    chunks.append(str(t))
++                continue
++            if kind in {"image_url", "input_image", "image"}:
++                image_url = part.get("image_url")
++                url = ""
++                if isinstance(image_url, dict):
++                    candidate = image_url.get("url")
++                    if isinstance(candidate, str):
++                        url = candidate
++                elif isinstance(image_url, str):
++                    url = image_url
++                if url:
++                    chunks.append(f"\n{url}")
++                else:
++                    chunks.append("\n[image]")
++                continue
++            if kind in {"input_audio", "audio"}:
++                chunks.append("\n[audio]")
++                continue
++            if kind:
++                chunks.append(f"\n[{kind}]")
++        return "".join(chunks)
++    if isinstance(content, dict):
++        kind = content.get("type")
++        if kind in {"text", "input_text", "output_text"}:
++            return str(content.get("text") or content.get("content") or "")
++        if kind in {"image_url", "input_image", "image"}:
++            image_url = content.get("image_url")
++            url = ""
++            if isinstance(image_url, dict):
++                candidate = image_url.get("url")
++                if isinstance(candidate, str):
++                    url = candidate
++            elif isinstance(image_url, str):
++                url = image_url
++            return url or "[image]"
++        if kind in {"input_audio", "audio"}:
++            return "[audio]"
++        if kind:
++            return f"[{kind}]"
++        if "text" in content:
++            return str(content.get("text") or "")
++        return "[structured content]"
++    return str(content)
++
++
++def rewind_digest(text: str) -> str:
++    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
++
++
++def rewind_message_id(ordinal: int, text: str) -> str:
++    """Stable identity for the ``ordinal``-th user row of a model history."""
++    return f"{REWIND_ID_PREFIX}:{ordinal}:{rewind_digest(text)}"
++
++
++def model_user_texts(history: Iterable[dict] | None) -> list[str]:
++    """The user rows of a model history, in the order ordinals count them."""
++    return [
++        coerce_message_text(m.get("content"))
++        for m in (history or [])
++        if isinstance(m, dict) and m.get("role") == "user"
++    ]
++
++
++def _display_text(message: dict) -> str:
++    """Text of a display row, whichever projection produced it.
++
++    The gateway's ``_history_to_messages`` output carries a flattened ``text``;
++    the REST transcript ships raw DB rows whose ``content`` still needs the same
++    normalisation.
++    """
++    if "text" in message:
++        return message.get("text") or ""
++    return coerce_message_text(message.get("content"))
++
++
++def annotate_rewind_ids(
++    messages: list[dict],
++    history: Iterable[dict] | None,
++    *,
++    text_of: Callable[[dict], str] = _display_text,
++) -> list[dict]:
++    """Stamp ``rewind_id`` on the display messages that map to a live user row.
++
++    Aligns the display transcript against the model history from the TAIL and
++    stops at the first divergence, so every id that is handed out is backed by a
++    verbatim match reachable through an unbroken run of matches — an id can
++    never name a turn other than the bubble it rides on, even when the same
++    prompt text was sent more than once.
++
++    Everything above the divergence (ancestor lineage, pre-compaction turns,
++    rows dropped by sanitisation) is deliberately left unstamped.  This is
++    conservative by construction: its failure mode is a hidden restore button,
++    never a wrong truncation.
++    """
++    user_texts = model_user_texts(history)
++    ordinal = len(user_texts) - 1
++
++    for index in range(len(messages) - 1, -1, -1):
++        message = messages[index]
++        if not isinstance(message, dict) or message.get("role") != "user":
++            continue
++        if ordinal < 0:
++            break
++        text = user_texts[ordinal]
++        if text_of(message) != text:
++            break
++        messages[index] = {**message, "rewind_id": rewind_message_id(ordinal, text)}
++        ordinal -= 1
++
++    return messages
++
++
++def resolve_rewind_ordinal(
++    history: Iterable[dict] | None, message_id: str
++) -> int | None:
++    """Map a ``rewind_id`` back to a user ordinal in the CURRENT model history.
++
++    Exact ``(ordinal, content)`` match first.  If the position drifted since the
++    transcript was sent — a turn landed, an undo ran, or the id was minted by
++    the REST endpoint against the DB projection — fall back to a *unique*
++    content match so the intended turn is still reachable.  An ambiguous or
++    absent match resolves to ``None`` and the caller refuses: guessing here is
++    exactly the silent-wrong-cut this identity exists to prevent.
++    """
++    if not isinstance(message_id, str) or not message_id.startswith(
++        f"{REWIND_ID_PREFIX}:"
++    ):
++        return None
++
++    user_texts = model_user_texts(history)
++    for ordinal, text in enumerate(user_texts):
++        if rewind_message_id(ordinal, text) == message_id:
++            return ordinal
++
++    digest = message_id.rsplit(":", 1)[-1]
++    matches = [
++        ordinal
++        for ordinal, text in enumerate(user_texts)
++        if rewind_digest(text) == digest
++    ]
++    return matches[0] if len(matches) == 1 else None
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index 96e948476..9cf8bab7e 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -29,6 +29,15 @@ from utils import is_truthy_value
+ from tools.environments.local import hermes_subprocess_env
+ from agent.replay_cleanup import sanitize_replay_history
+ from tui_gateway import git_probe
++from tui_gateway.rewind_identity import (
++    annotate_rewind_ids,
++    coerce_message_text,
++    model_user_texts,
++    resolve_rewind_ordinal,
++    REWIND_ID_PREFIX,
++    rewind_digest,
++    rewind_message_id,
++)
+ from tui_gateway.transport import (
+     StdioTransport,
+     Transport,
+@@ -746,6 +755,22 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
+     """
+     if not session:
+         return
++
++    # Interrupt the live turn before removing the session's ownership.  A
++    # close/reap can race an in-flight model request; finalizing first leaves
++    # the conversation loop detached from `_sessions`, so later queued work
++    # can continue burning tokens with no reachable `session.interrupt` route.
++    # Keep this cooperative and best-effort: the normal turn-finally path still
++    # owns persistence and cleanup, while this closes the orphan window.
++    try:
++        agent = session.get("agent")
++        if session.get("running") and agent is not None and hasattr(agent, "interrupt"):
++            agent.interrupt()
++        with session.get("history_lock", threading.RLock()):
++            session["_turn_cancel_requested"] = True
++            session["queued_prompt"] = None
++    except Exception:
++        pass
+     _finalize_session(session, end_reason=end_reason)
+     try:
+         from tools.approval import unregister_gateway_notify
+@@ -5443,91 +5468,8 @@ def _content_display_text(content: Any) -> str:
+     return str(content)
+ 
+ 
+-def _coerce_message_text(content: Any) -> str:
+-    """Render ``message['content']`` as a plain string for transport.
+-
+-    Provider-side, ``content`` may be a string (most common), a list of
+-    multimodal parts (e.g. ``[{"type": "text", "text": "..."},
+-    {"type": "image_url", "image_url": {...}}]``), or a single structured
+-    dict. Calling ``.strip()`` on a list raises ``'list' object has no
+-    attribute 'strip'`` and breaks session resume entirely.
+-
+-    Image parts (``image_url``) are preserved by appending the underlying
+-    URL (data: or http:) into the text. The desktop renderer pulls these
+-    back out via ``extractEmbeddedImages`` so the user sees the image
+-    instead of the URL — and it stops the resume payload from disagreeing
+-    with the cached message (which would otherwise cause the inline image
+-    to flash, then disappear when the resume payload overwrites the cache).
+-
+-    Other structured dict shapes (audio, unknown types) fall back to a
+-    bracketed placeholder so resume doesn't drop the message entirely.
+-    """
+-    if content is None:
+-        return ""
+-    if isinstance(content, str):
+-        return content
+-    if isinstance(content, (int, float)):
+-        return str(content)
+-    if isinstance(content, list):
+-        chunks: list[str] = []
+-        for part in content:
+-            if isinstance(part, str):
+-                chunks.append(part)
+-                continue
+-            if not isinstance(part, dict):
+-                continue
+-            text = part.get("text")
+-            if isinstance(text, str):
+-                chunks.append(text)
+-                continue
+-            kind = part.get("type")
+-            if kind in {"text", "input_text", "output_text"}:
+-                t = part.get("text") or part.get("content") or ""
+-                if t:
+-                    chunks.append(str(t))
+-                continue
+-            if kind in {"image_url", "input_image", "image"}:
+-                image_url = part.get("image_url")
+-                url = ""
+-                if isinstance(image_url, dict):
+-                    candidate = image_url.get("url")
+-                    if isinstance(candidate, str):
+-                        url = candidate
+-                elif isinstance(image_url, str):
+-                    url = image_url
+-                if url:
+-                    chunks.append(f"\n{url}")
+-                else:
+-                    chunks.append("\n[image]")
+-                continue
+-            if kind in {"input_audio", "audio"}:
+-                chunks.append("\n[audio]")
+-                continue
+-            if kind:
+-                chunks.append(f"\n[{kind}]")
+-        return "".join(chunks)
+-    if isinstance(content, dict):
+-        kind = content.get("type")
+-        if kind in {"text", "input_text", "output_text"}:
+-            return str(content.get("text") or content.get("content") or "")
+-        if kind in {"image_url", "input_image", "image"}:
+-            image_url = content.get("image_url")
+-            url = ""
+-            if isinstance(image_url, dict):
+-                candidate = image_url.get("url")
+-                if isinstance(candidate, str):
+-                    url = candidate
+-            elif isinstance(image_url, str):
+-                url = image_url
+-            return url or "[image]"
+-        if kind in {"input_audio", "audio"}:
+-            return "[audio]"
+-        if kind:
+-            return f"[{kind}]"
+-        if "text" in content:
+-            return str(content.get("text") or "")
+-        return "[structured content]"
+-    return str(content)
++# One normalisation for both projections — see tui_gateway.rewind_identity.
++_coerce_message_text = coerce_message_text
+ 
+ 
+ def _history_to_messages(history: list[dict]) -> list[dict]:
+@@ -5590,6 +5532,17 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
+     return messages
+ 
+ 
++# Rewind identity — the pure logic lives in tui_gateway.rewind_identity so the
++# REST transcript endpoint (hermes_cli.web_server) can mint ids this gateway
++# will resolve. See that module for why a position is not an identity.
++_REWIND_ID_PREFIX = REWIND_ID_PREFIX
++_rewind_digest = rewind_digest
++_rewind_message_id = rewind_message_id
++_model_user_texts = model_user_texts
++_annotate_rewind_ids = annotate_rewind_ids
++_resolve_rewind_ordinal = resolve_rewind_ordinal
++
++
+ def _coerce_seed_history(value: Any) -> list[dict]:
+     if not isinstance(value, list):
+         return []
+@@ -5971,7 +5924,7 @@ def _(rid, params: dict) -> dict:
+             "session_id": sid,
+             "stored_session_id": key,
+             "message_count": len(history),
+-            "messages": _history_to_messages(history),
++            "messages": _annotate_rewind_ids(_history_to_messages(history), history),
+             "info": {
+                 # Reflect the per-session model override (desktop composer pick)
+                 # in the immediate response so the client doesn't briefly clobber
+@@ -6283,6 +6236,17 @@ def _(rid, params: dict) -> dict:
+         else:
+             return _err(rid, 4007, "session not found")
+ 
++    # An operator-policy stop is a hard resume boundary.  The desktop can
++    # reconnect and replay its focused session automatically after a backend
++    # restart; reopening this exact row would resurrect a deliberately
++    # retired deep/retry loop.  A new session must be created instead.
++    if found and found.get("end_reason") == "operator_policy_stop":
++        return _err(
++            rid,
++            4013,
++            "session stopped by operator policy; start a new bounded session",
++        )
++
+     # Follow the compression-continuation chain to the live tip so a resume on
+     # a rotated-out parent id binds to the descendant that actually holds the
+     # post-compression turns. Auto-compression ends the session and forks a
+@@ -6388,7 +6352,9 @@ def _(rid, params: dict) -> dict:
+         except Exception:
+             logger.debug("child-watch display projection read failed", exc_info=True)
+             display_history = history
+-        messages = _history_to_messages(display_history)
++        messages = _annotate_rewind_ids(
++            _history_to_messages(display_history), history
++        )
+         return _ok(
+             rid,
+             {
+@@ -6471,7 +6437,9 @@ def _(rid, params: dict) -> dict:
+         _schedule_agent_build(sid)
+         _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+ 
+-        messages = _history_to_messages(display_history)
++        messages = _annotate_rewind_ids(
++            _history_to_messages(display_history), history
++        )
+         return _ok(
+             rid,
+             {
+@@ -6522,7 +6490,9 @@ def _(rid, params: dict) -> dict:
+         # the WebUI/TUI resume path picking up the same cleanup.
+         display_history_prefix = db.get_ancestor_display_prefix(target)
+         history = sanitize_replay_history(raw_history)
+-        messages = _history_to_messages(display_history)
++        messages = _annotate_rewind_ids(
++            _history_to_messages(display_history), history
++        )
+         tokens = _set_session_context(target)
+         try:
+             # Pass the profile's db so the agent persists turns to the right
+@@ -6841,8 +6811,9 @@ def _live_session_payload(
+             session["transport"] = transport
+         if touch:
+             session["last_active"] = time.time()
+-        in_memory_history = list(session.get("display_history_prefix") or []) + list(
+-            session.get("history") or []
++        model_history = list(session.get("history") or [])
++        in_memory_history = (
++            list(session.get("display_history_prefix") or []) + model_history
+         )
+         inflight = _inflight_snapshot(session)
+         queued = _queued_prompt_snapshot(session)
+@@ -6854,7 +6825,11 @@ def _live_session_payload(
+     payload = {
+         "info": _fallback_session_info(session),
+         "message_count": len(history),
+-        "messages": _history_to_messages(history),
++        # Rewind ids resolve against the MODEL history only — the ancestor
++        # prefix folded into `history` above is displayable but not truncatable.
++        "messages": _annotate_rewind_ids(
++            _history_to_messages(history), model_history
++        ),
+         "running": running,
+         "session_id": sid,
+         "session_key": _session_lookup_key(session, fallback=sid),
+@@ -8917,7 +8892,8 @@ def _(rid, params: dict) -> dict:
+     session, err = _sess_nowait(params, rid)
+     if err:
+         return err
+-    history = list(session.get("history", []))
++    model_history = list(session.get("history", []))
++    history = model_history
+     db = _get_db()
+     if db is not None and session.get("session_key"):
+         try:
+@@ -8930,7 +8906,9 @@ def _(rid, params: dict) -> dict:
+         rid,
+         {
+             "count": len(history),
+-            "messages": _history_to_messages(history),
++            "messages": _annotate_rewind_ids(
++                _history_to_messages(history), model_history
++            ),
+         },
+     )
+ 
+@@ -9569,6 +9547,9 @@ def _(rid, params: dict) -> dict:
+     raw_text = params.get("text", "")
+     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
++    # Preferred addressing (see the rewind-identity note above _rewind_digest);
++    # the positional ordinal stays supported for clients that predate it.
++    truncate_message_id = params.get("truncate_before_message_id")
+     session, err = _sess_nowait(params, rid)
+     if err:
+         return err
+@@ -9605,21 +9586,64 @@ def _(rid, params: dict) -> dict:
+         # the upgrade resumes the child's transcript as a normal conversation.
+         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+             return _err(rid, 4009, "subagent still running — wait for it to finish")
+-        if truncate_user_ordinal is not None:
+-            try:
+-                ordinal = int(truncate_user_ordinal)
+-            except (TypeError, ValueError):
+-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
++        if truncate_message_id is not None or truncate_user_ordinal is not None:
+             history = session.get("history", [])
+-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+-            # Reject out-of-range ordinals on BOTH ends. A negative value would
+-            # otherwise sail past the upper-bound check and hit Python's negative
+-            # indexing below (user_indices[-1] -> the LAST user turn), silently
+-            # truncating history to everything before it and persisting that loss
+-            # via replace_messages — an unrecoverable overwrite of the session DB.
+-            if ordinal < 0 or ordinal >= len(user_indices):
+-                return _err(rid, 4018, "target user message is no longer in session history")
++            # Must enumerate exactly like _model_user_texts, or an ordinal
++            # minted by _annotate_rewind_ids would index a different row here.
++            user_indices = [
++                i
++                for i, m in enumerate(history)
++                if isinstance(m, dict) and m.get("role") == "user"
++            ]
++            if truncate_message_id is not None:
++                # Identity beats position: the id is resolved against the
++                # history as it stands NOW, so a turn that landed between the
++                # transcript payload and this submit cannot slide the cut onto
++                # a neighbouring message.
++                resolved = _resolve_rewind_ordinal(history, truncate_message_id)
++                if resolved is None:
++                    return _err(
++                        rid, 4018, "target user message is no longer in session history"
++                    )
++                ordinal = resolved
++            else:
++                try:
++                    ordinal = int(truncate_user_ordinal)
++                except (TypeError, ValueError):
++                    return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
++                # Reject out-of-range ordinals on BOTH ends. A negative value would
++                # otherwise sail past the upper-bound check and hit Python's negative
++                # indexing below (user_indices[-1] -> the LAST user turn), silently
++                # truncating history to everything before it and persisting that loss
++                # via replace_messages — an unrecoverable overwrite of the session DB.
++                if ordinal < 0 or ordinal >= len(user_indices):
++                    return _err(
++                        rid, 4018, "target user message is no longer in session history"
++                    )
+             truncated = history[: user_indices[ordinal]]
++            # Cutting before the FIRST user turn resolves to history[:0] == []
++            # and replace_messages() then DELETEs every durable row — the whole
++            # transcript, gone from one click. Refuse that edge unless the
++            # client explicitly opts in (a deliberate restore/regenerate of the
++            # first turn), so a stale ordinal cannot wipe a session.
++            if (
++                not truncated
++                and history
++                and not is_truthy_value(params.get("confirm_empty_truncate"))
++            ):
++                logger.warning(
++                    "prompt.submit: REFUSED empty truncation of session %s "
++                    "(%d messages would be wiped; ordinal=%d).",
++                    sid,
++                    len(history),
++                    ordinal,
++                )
++                return _err(
++                    rid,
++                    4028,
++                    "truncation would erase the entire session transcript; "
++                    "resubmit with confirm_empty_truncate=true if this is intended",
++                )
+             session["history"] = truncated
+             session["history_version"] = int(session.get("history_version", 0)) + 1
+             if (db := _get_db()) is not None:
+commit fc063c47b2b7743cdd547cccda232aa195acef1d
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 13:07:53 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 13:07:53 2026 +0700
+
+    fix(rewind): resolve rewind ids by exact match only — the fallback could wipe a transcript
+    
+    The content-digest fallback in resolve_rewind_ordinal was a reachable path to
+    deleting an entire session transcript, and this is the code the local gateway
+    actually runs.
+    
+    It resolved to a DIFFERENT position than the id encodes when the exact match
+    failed. The client sends confirm_empty_truncate=true unconditionally on the id
+    path (justified by "an id only reaches the first turn if its content matched"),
+    so a drifted match landing on ordinal 0 after a compaction produced
+    history[:0] == [] with the 4028 guard suppressed, and replace_messages deleted
+    every durable row.
+    
+    Verified against this module with both resolvers on the same request:
+    old -> replace_messages(key, []) and 0 rows left; new -> 4018, history intact.
+    
+    Exact match only. Drift now refuses; the user re-clicks on a refreshed
+    transcript. Tests: 411 passing; the drift test is inverted and a new end-to-end
+    regression pins the wipe path.
+    
+    Mirrored to the main lineage in PR #7.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index 8babc2067..f3bade7f2 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -3239,7 +3239,15 @@ def test_annotate_rewind_ids_matches_across_content_shapes():
+     )
+ 
+ 
+-def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
++def test_resolve_rewind_ordinal_accepts_only_exact_matches():
++    """Position drift must REFUSE, not re-target.
++
++    Truncation is destructive. A content-only match resolves to a different
++    position than the id encodes, and because the client confirms the
++    empty-truncation edge on the id path, a drifted match landing on ordinal 0
++    after a compaction would let replace_messages delete every durable row.
++    A 4018 the user clears by re-clicking costs nothing by comparison.
++    """
+     history = [
+         {"role": "user", "content": "alpha"},
+         {"role": "assistant", "content": "a"},
+@@ -3247,17 +3255,23 @@ def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
+         {"role": "assistant", "content": "b"},
+     ]
+ 
+-    # Exact hit.
++    # Exact hit — position and content both agree.
+     assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
+ 
+-    # The turn is still there but has shifted position (a turn was inserted
+-    # before it since the transcript was sent) — content still identifies it.
++    # The turn is still present but has shifted position. Refuse: the id names
++    # ordinal 1, and ordinal 1 is no longer that turn.
+     shifted = [{"role": "user", "content": "zero"}, *history]
+-    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) == 2
++    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) is None
++
++    # The wipe path specifically: an id for a deep turn must never re-target
++    # ordinal 0 just because the text now lives there after a compaction.
++    compacted = [{"role": "user", "content": "beta"}, {"role": "assistant", "content": "b"}]
++    assert server._resolve_rewind_ordinal(compacted, server._rewind_message_id(5, "beta")) is None
+ 
+-    # Drifted AND duplicated: refuse rather than guess which one was meant.
+-    ambiguous = [*history, {"role": "user", "content": "beta"}]
+-    assert server._resolve_rewind_ordinal(ambiguous, server._rewind_message_id(9, "beta")) is None
++    # Duplicated text: the exact ordinal still disambiguates.
++    duplicated = [*history, {"role": "user", "content": "beta"}]
++    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(2, "beta")) == 2
++    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(9, "beta")) is None
+ 
+     # Gone entirely (compacted away), and malformed ids.
+     assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
+@@ -3265,6 +3279,58 @@ def test_resolve_rewind_ordinal_handles_drift_and_ambiguity():
+     assert server._resolve_rewind_ordinal(history, "") is None
+ 
+ 
++def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
++    """The regression this guard exists for — end to end.
++
++    Sequence: the user clicks a turn deep in the conversation (ordinal 5), a
++    compaction rewrites session["history"] before the submit lands, and that
++    turn's text now sits at ordinal 0. The client confirms the empty-truncation
++    edge on the id path, so if resolution re-targeted by content the gateway
++    would compute history[:0] == [] and replace_messages would DELETE every
++    durable row. Exact-match-only turns that into a refusal.
++    """
++    replaced = []
++
++    class _FakeDB:
++        def replace_messages(self, key, messages):
++            replaced.append((key, list(messages)))
++
++    # Post-compaction history: the clicked text survives, but at ordinal 0.
++    history = [
++        {"role": "user", "content": "run the audit"},
++        {"role": "assistant", "content": "done"},
++    ]
++    server._sessions["wipe-race-sid"] = _session(history=list(history))
++    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
++    monkeypatch.setattr(
++        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++    monkeypatch.setattr(
++        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
++    )
++
++    try:
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "wipe-race-sid",
++                    "text": "rerun",
++                    # Minted when that turn was the 6th user turn.
++                    "truncate_before_message_id": server._rewind_message_id(5, "run the audit"),
++                    # The client always sets this on the id path.
++                    "confirm_empty_truncate": True,
++                },
++            }
++        )
++        assert resp["error"]["code"] == 4018
++        assert server._sessions["wipe-race-sid"]["history"] == history
++        assert replaced == [], "the transcript must not have been deleted"
++    finally:
++        server._sessions.pop("wipe-race-sid", None)
++
++
+ def test_prompt_submit_truncates_by_message_id(monkeypatch):
+     """A rewind addressed by id cuts at the turn that id names."""
+ 
+diff --git a/tui_gateway/rewind_identity.py b/tui_gateway/rewind_identity.py
+index e6751a020..0576fc020 100644
+--- a/tui_gateway/rewind_identity.py
++++ b/tui_gateway/rewind_identity.py
+@@ -197,27 +197,29 @@ def resolve_rewind_ordinal(
+ ) -> int | None:
+     """Map a ``rewind_id`` back to a user ordinal in the CURRENT model history.
+ 
+-    Exact ``(ordinal, content)`` match first.  If the position drifted since the
+-    transcript was sent — a turn landed, an undo ran, or the id was minted by
+-    the REST endpoint against the DB projection — fall back to a *unique*
+-    content match so the intended turn is still reachable.  An ambiguous or
+-    absent match resolves to ``None`` and the caller refuses: guessing here is
+-    exactly the silent-wrong-cut this identity exists to prevent.
++    EXACT ``(ordinal, content)`` matches only.  Anything else resolves to
++    ``None`` and the caller refuses with 4018.
++
++    An earlier revision also accepted a *unique content* match when the position
++    had drifted, to keep a turn reachable after the history shifted underneath
++    it.  That was removed: truncation is destructive, and a content-only match
++    deliberately resolves to a DIFFERENT position than the id encodes.  Combined
++    with the client's confirmation on the id path, a drifted match could land on
++    ordinal 0 after a compaction and let ``replace_messages`` delete every
++    durable row for the session.
++
++    Refusing costs a 4018 the user can clear by re-clicking on a refreshed
++    transcript.  Guessing costs the transcript.  Callers may therefore treat a
++    successful resolution as proof of intent — see the empty-truncation guard in
++    ``prompt.submit``, which relies on it.
+     """
+     if not isinstance(message_id, str) or not message_id.startswith(
+         f"{REWIND_ID_PREFIX}:"
+     ):
+         return None
+ 
+-    user_texts = model_user_texts(history)
+-    for ordinal, text in enumerate(user_texts):
++    for ordinal, text in enumerate(model_user_texts(history)):
+         if rewind_message_id(ordinal, text) == message_id:
+             return ordinal
+ 
+-    digest = message_id.rsplit(":", 1)[-1]
+-    matches = [
+-        ordinal
+-        for ordinal, text in enumerate(user_texts)
+-        if rewind_digest(text) == digest
+-    ]
+-    return matches[0] if len(matches) == 1 else None
++    return None
+commit c9101a6516a1edbca1d944bd70ad6310f52335a3
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 13:30:05 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 13:30:05 2026 +0700
+
+    fix(rewind): never let an id auto-confirm emptying a transcript
+    
+    An independent audit refuted the assumption this depended on. I had argued an
+    exact (ordinal, content) match proves the user clicked that turn, so the id
+    path could safely carry its own confirm_empty_truncate. It does not prove that.
+    
+    _annotate_rewind_ids tail-aligns the DISPLAY list against the model history.
+    When the same prompt text appears twice they can diverge — session.undo drops a
+    turn from the model history but not from the DB — and a displayed bubble is
+    then stamped with an id naming an EARLIER occurrence. That id resolves exactly,
+    lands on ordinal 0, and the blanket confirmation suppresses the 4028 guard.
+    
+    So the id path may never auto-confirm an empty truncation. It fails closed; the
+    positional path is unchanged. A wrong-turn cut on a non-empty prefix is still
+    reachable — that needs occurrence-bound identity, not this guard — but the
+    transcript can no longer be deleted.
+    
+    Tests: 411 passing.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index 9cf8bab7e..c2bebc55d 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -9626,11 +9626,24 @@ def _(rid, params: dict) -> dict:
+             # transcript, gone from one click. Refuse that edge unless the
+             # client explicitly opts in (a deliberate restore/regenerate of the
+             # first turn), so a stale ordinal cannot wipe a session.
+-            if (
+-                not truncated
+-                and history
+-                and not is_truthy_value(params.get("confirm_empty_truncate"))
+-            ):
++            # An id is NOT proof of intent (independent audit, 2026-08-10).
++            # _annotate_rewind_ids tail-aligns the DISPLAY list against the
++            # model history, and when the same prompt text appears twice it can
++            # stamp a displayed bubble with an id naming a DIFFERENT occurrence
++            # — e.g. after session.undo drops a turn from the model history but
++            # not from the DB. An id resolving to ordinal 0 therefore does not
++            # mean the user clicked the first turn, which is exactly what the
++            # client's blanket confirm_empty_truncate assumed.
++            #
++            # So the id path may never auto-confirm emptying a transcript. It
++            # fails closed until the client can express a real second
++            # confirmation for that specific act.
++            id_addressed = truncate_message_id is not None
++            empty_truncation_confirmed = (
++                not id_addressed
++                and is_truthy_value(params.get("confirm_empty_truncate"))
++            )
++            if not truncated and history and not empty_truncation_confirmed:
+                 logger.warning(
+                     "prompt.submit: REFUSED empty truncation of session %s "
+                     "(%d messages would be wiped; ordinal=%d).",
+commit 4d1f52ffbc96f3155a17e62170ac0ae76f3ceb08
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 14:02:24 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 14:02:24 2026 +0700
+
+    feat(rewind): occurrence-bound identity (r2), so Restore can come back
+    
+    v1 ids were `ordinal + digest(that turn's text)`. That is not occurrence
+    identity, and an independent audit showed two ways it named the wrong turn.
+    Both are fixed here, at the two places that were actually wrong.
+    
+    1. ALIGNMENT. _annotate_rewind_ids compared only the USER rows of the two
+       projections. When they diverged in between — session.undo drops a turn from
+       the model history but not from the DB the display renders — a user-only walk
+       slid past the gap and paired a displayed bubble with an EARLIER occurrence of
+       the same text. It now walks the full user+assistant spine and stops at the
+       first divergence, so the assistant reply sitting between two identical
+       prompts is what catches the slip. Ambiguous rows are left unstamped.
+    
+    2. IDENTITY. r2 ids are `ordinal + hash(the prefix a cut would KEEP, plus the
+       turn's own text)`. Truncation replaces the session with history[:index] and
+       re-runs that text, so binding the id to exactly those two things makes it
+       self-describing: any change to what would be kept — an undo, a compaction, a
+       turn landing in between — changes the hash and resolution refuses.
+    
+    Every user row now carries an explicit tri-state: an id, or null meaning "this
+    gateway says not rewindable". A row with no key at all is a gateway too old to
+    know. The client could not previously tell those apart, so it inferred
+    capability from "no row carries an id" — which a NEW gateway also produces when
+    every visible turn is ancestor lineage.
+    
+    Also from the audit: a rewind no longer deletes soft-archived rows.
+    replace_messages defaults to active_only=False, taking compaction/undo history
+    with it; the rewind path now passes active_only=True.
+    
+    Verified against the audit's own sequence: with the undo divergence, both
+    duplicate bubbles are left unstamped (button hidden, no cut possible); in the
+    healthy case duplicate prompts still mint distinct ids that resolve correctly.
+    
+    Tests: 411 passing.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index f3bade7f2..327fa0b60 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -1529,8 +1529,11 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
+         {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+     )
+ 
++    # User rows carry the explicit rewind tri-state: an id when the turn is
++    # provably rewindable, None when this gateway says it is not. Absent means
++    # a gateway too old to know, which the client must distinguish.
+     assert resp["result"]["messages"] == [
+-        {"role": "user", "text": "root prompt"},
++        {"role": "user", "text": "root prompt", "rewind_id": None},
+         {"role": "assistant", "text": "root answer"},
+     ]
+     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+@@ -3092,6 +3095,19 @@ def test_finalized_origin_ui_session_falls_back_to_live_continuation(monkeypatch
+     assert server._notification_event_belongs_elsewhere("tip-sid", live_tip, evt) is False
+ 
+ 
++def _rid(history, ordinal):
++    """The rewind id the gateway would mint for that user ordinal.
++
++    v2 ids bind to the prefix a cut would keep, so a test cannot hand-write one
++    from the turn's text alone — it has to be derived from the same history.
++    """
++    index = server._model_user_indices(history)[ordinal]
++    text = server._coerce_message_text(history[index].get("content"))
++    return server._rewind_message_id(
++        ordinal, server._rewind_prefix_hash(history, index, text)
++    )
++
++
+ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
+     """A negative truncate_before_user_ordinal must be rejected, not honoured.
+ 
+@@ -3105,7 +3121,7 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
+     replaced = []
+ 
+     class _FakeDB:
+-        def replace_messages(self, key, messages):
++        def replace_messages(self, key, messages, **_kwargs):
+             replaced.append((key, list(messages)))
+ 
+     history = [
+@@ -3176,10 +3192,10 @@ def test_annotate_rewind_ids_stops_at_the_lineage_boundary():
+ 
+     annotated = server._annotate_rewind_ids(list(display), model_history)
+ 
+-    assert "rewind_id" not in annotated[0]
+-    assert "rewind_id" not in annotated[2]
+-    assert annotated[4]["rewind_id"] == server._rewind_message_id(0, "third")
+-    assert annotated[6]["rewind_id"] == server._rewind_message_id(1, "fourth")
++    assert annotated[0]["rewind_id"] is None
++    assert annotated[2]["rewind_id"] is None
++    assert annotated[4]["rewind_id"] == _rid(model_history, 0)
++    assert annotated[6]["rewind_id"] == _rid(model_history, 1)
+     # Assistant rows are never rewind targets.
+     assert all("rewind_id" not in m for m in annotated if m["role"] != "user")
+ 
+@@ -3205,8 +3221,8 @@ def test_annotate_rewind_ids_distinguishes_repeated_prompts():
+ 
+     annotated = server._annotate_rewind_ids(list(display), model_history)
+ 
+-    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "continue")
+-    assert annotated[2]["rewind_id"] == server._rewind_message_id(1, "continue")
++    assert annotated[0]["rewind_id"] == _rid(model_history, 0)
++    assert annotated[2]["rewind_id"] == _rid(model_history, 1)
+     assert annotated[0]["rewind_id"] != annotated[2]["rewind_id"]
+ 
+ 
+@@ -3233,7 +3249,7 @@ def test_annotate_rewind_ids_matches_across_content_shapes():
+ 
+     annotated = server._annotate_rewind_ids(display, model_history)
+ 
+-    assert annotated[0]["rewind_id"] == server._rewind_message_id(0, "look at this")
++    assert annotated[0]["rewind_id"] == _rid(model_history, 0)
+     assert (
+         server._resolve_rewind_ordinal(model_history, annotated[0]["rewind_id"]) == 0
+     )
+@@ -3256,25 +3272,26 @@ def test_resolve_rewind_ordinal_accepts_only_exact_matches():
+     ]
+ 
+     # Exact hit — position and content both agree.
+-    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(1, "beta")) == 1
++    assert server._resolve_rewind_ordinal(history, _rid(history, 1)) == 1
+ 
+     # The turn is still present but has shifted position. Refuse: the id names
+     # ordinal 1, and ordinal 1 is no longer that turn.
+     shifted = [{"role": "user", "content": "zero"}, *history]
+-    assert server._resolve_rewind_ordinal(shifted, server._rewind_message_id(1, "beta")) is None
++    assert server._resolve_rewind_ordinal(shifted, _rid(history, 1)) is None
+ 
+     # The wipe path specifically: an id for a deep turn must never re-target
+     # ordinal 0 just because the text now lives there after a compaction.
+     compacted = [{"role": "user", "content": "beta"}, {"role": "assistant", "content": "b"}]
+-    assert server._resolve_rewind_ordinal(compacted, server._rewind_message_id(5, "beta")) is None
++    assert server._resolve_rewind_ordinal(compacted, _rid(history, 1)) is None
+ 
+     # Duplicated text: the exact ordinal still disambiguates.
+     duplicated = [*history, {"role": "user", "content": "beta"}]
+-    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(2, "beta")) == 2
+-    assert server._resolve_rewind_ordinal(duplicated, server._rewind_message_id(9, "beta")) is None
++    assert server._resolve_rewind_ordinal(duplicated, _rid(duplicated, 2)) == 2
++    # An id for a turn the shorter history does not have must refuse.
++    assert server._resolve_rewind_ordinal(history, _rid(duplicated, 2)) is None
+ 
+     # Gone entirely (compacted away), and malformed ids.
+-    assert server._resolve_rewind_ordinal(history, server._rewind_message_id(0, "vanished")) is None
++    assert server._resolve_rewind_ordinal(history, "r2:0:" + "0" * 24) is None
+     assert server._resolve_rewind_ordinal(history, "not-a-rewind-id") is None
+     assert server._resolve_rewind_ordinal(history, "") is None
+ 
+@@ -3292,10 +3309,19 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
+     replaced = []
+ 
+     class _FakeDB:
+-        def replace_messages(self, key, messages):
++        def replace_messages(self, key, messages, **_kwargs):
+             replaced.append((key, list(messages)))
+ 
+-    # Post-compaction history: the clicked text survives, but at ordinal 0.
++    # What the user clicked: "run the audit" as the SECOND user turn.
++    pre_undo_history = [
++        {"role": "user", "content": "set up"},
++        {"role": "assistant", "content": "ready"},
++        {"role": "user", "content": "run the audit"},
++        {"role": "assistant", "content": "done"},
++    ]
++    # What the gateway holds by the time the submit lands: the earlier turn is
++    # gone, so the clicked text now sits at ordinal 0 and a cut there empties
++    # the transcript.
+     history = [
+         {"role": "user", "content": "run the audit"},
+         {"role": "assistant", "content": "done"},
+@@ -3318,7 +3344,7 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
+                     "session_id": "wipe-race-sid",
+                     "text": "rerun",
+                     # Minted when that turn was the 6th user turn.
+-                    "truncate_before_message_id": server._rewind_message_id(5, "run the audit"),
++                    "truncate_before_message_id": _rid(pre_undo_history, 1),
+                     # The client always sets this on the id path.
+                     "confirm_empty_truncate": True,
+                 },
+@@ -3368,7 +3394,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
+         def __init__(self):
+             self.replaced = []
+ 
+-        def replace_messages(self, session_id, messages):
++        def replace_messages(self, session_id, messages, **_kwargs):
+             self.replaced.append((session_id, list(messages)))
+ 
+     stub_db = _StubDb()
+@@ -3387,7 +3413,7 @@ def test_prompt_submit_truncates_by_message_id(monkeypatch):
+                 "params": {
+                     "session_id": "sid",
+                     "text": "redo second",
+-                    "truncate_before_message_id": server._rewind_message_id(1, "second"),
++                    "truncate_before_message_id": _rid(original_history, 1),
+                 },
+             }
+         )
+@@ -3409,7 +3435,7 @@ def test_prompt_submit_rejects_a_stale_message_id(monkeypatch):
+     replaced = []
+ 
+     class _FakeDB:
+-        def replace_messages(self, key, messages):
++        def replace_messages(self, key, messages, **_kwargs):
+             replaced.append((key, list(messages)))
+ 
+     history = [
+@@ -3456,7 +3482,7 @@ def test_prompt_submit_refuses_to_wipe_the_transcript(monkeypatch):
+     replaced = []
+ 
+     class _FakeDB:
+-        def replace_messages(self, key, messages):
++        def replace_messages(self, key, messages, **_kwargs):
+             replaced.append((key, list(messages)))
+ 
+     history = [
+@@ -3515,7 +3541,7 @@ def test_prompt_submit_allows_confirmed_empty_truncation(monkeypatch):
+         def __init__(self):
+             self.replaced = []
+ 
+-        def replace_messages(self, session_id, messages):
++        def replace_messages(self, session_id, messages, **_kwargs):
+             self.replaced.append((session_id, list(messages)))
+ 
+     stub_db = _StubDb()
+@@ -7495,7 +7521,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
+         def __init__(self):
+             self.replaced = []
+ 
+-        def replace_messages(self, session_id, messages):
++        def replace_messages(self, session_id, messages, **_kwargs):
+             self.replaced.append((session_id, list(messages)))
+ 
+     stub_db = _StubDb()
+@@ -8996,7 +9022,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
+             {
+                 "role": "user",
+                 "text": "write a long answer",
+-                "rewind_id": server._rewind_message_id(0, "write a long answer"),
++                "rewind_id": _rid([{"role": "user", "content": "write a long answer"}], 0),
+             },
+             {"role": "assistant", "text": "partial answer complete"},
+         ]
+@@ -9078,7 +9104,7 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
+             {
+                 "role": "user",
+                 "text": "new prompt",
+-                "rewind_id": server._rewind_message_id(0, "new prompt"),
++                "rewind_id": _rid([{"role": "user", "content": "new prompt"}], 0),
+             },
+             {"role": "assistant", "text": "new answer"},
+         ]
+diff --git a/tui_gateway/rewind_identity.py b/tui_gateway/rewind_identity.py
+index 0576fc020..b38258450 100644
+--- a/tui_gateway/rewind_identity.py
++++ b/tui_gateway/rewind_identity.py
+@@ -29,9 +29,9 @@ This module is deliberately dependency-free so both the JSON-RPC gateway
+ from __future__ import annotations
+ 
+ import hashlib
+-from typing import Any, Callable, Iterable
++from typing import Any, Callable, Iterable, Sequence
+ 
+-REWIND_ID_PREFIX = "r1"
++REWIND_ID_PREFIX = "r2"
+ 
+ 
+ def coerce_message_text(content: Any) -> str:
+@@ -129,9 +129,53 @@ def rewind_digest(text: str) -> str:
+     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+ 
+ 
+-def rewind_message_id(ordinal: int, text: str) -> str:
+-    """Stable identity for the ``ordinal``-th user row of a model history."""
+-    return f"{REWIND_ID_PREFIX}:{ordinal}:{rewind_digest(text)}"
++def _canonical(history: Sequence[dict], stop: int) -> str:
++    """Serialise history[:stop] for hashing: role + text, unambiguously framed."""
++    parts: list[str] = []
++    for m in history[:stop]:
++        if not isinstance(m, dict):
++            continue
++        parts.append(str(m.get("role") or ""))
++        parts.append(chr(0))
++        parts.append(coerce_message_text(m.get("content")))
++        parts.append(chr(1))
++    return "".join(parts)
++
++
++def rewind_prefix_hash(history: Sequence[dict], user_index: int, text: str) -> str:
++    """Hash the prefix a cut at ``user_index`` would KEEP, plus the turn itself.
++
++    This is the identity that matters. Truncation replaces the session with
++    ``history[:user_index]`` and re-runs ``text``, so binding the id to exactly
++    those two things makes it self-describing: if either has changed since the
++    transcript was rendered, resolution refuses instead of cutting somewhere
++    the user never saw.
++    """
++    payload = _canonical(history, user_index) + chr(2) + text
++    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:24]
++
++
++def rewind_message_id(ordinal: int, prefix_hash: str) -> str:
++    """``r2:<ordinal>:<prefix hash>`` — position plus the state it assumes.
++
++    v1 was ``ordinal + digest(that turn's text alone)``, which is not occurrence
++    identity: the same text at the same ordinal mints the same id even when the
++    conversation before it is entirely different.
++    """
++    return f"{REWIND_ID_PREFIX}:{ordinal}:{prefix_hash}"
++
++
++def model_user_indices(history: Iterable[dict] | None) -> list[int]:
++    """Raw indices of the user rows, in the order ordinals count them.
++
++    Must enumerate exactly like ``prompt.submit``'s own ``user_indices`` or an
++    ordinal would name a different row on each side.
++    """
++    return [
++        i
++        for i, m in enumerate(history or [])
++        if isinstance(m, dict) and m.get("role") == "user"
++    ]
+ 
+ 
+ def model_user_texts(history: Iterable[dict] | None) -> list[str]:
+@@ -155,39 +199,86 @@ def _display_text(message: dict) -> str:
+     return coerce_message_text(message.get("content"))
+ 
+ 
++# Roles that appear, comparably, in BOTH projections. Tool rows are reshaped by
++# _history_to_messages into {role, name, context} with no text, so they cannot
++# take part in the comparison and are skipped on both sides.
++_SPINE_ROLES = ("user", "assistant")
++
++
+ def annotate_rewind_ids(
+     messages: list[dict],
+     history: Iterable[dict] | None,
+     *,
+     text_of: Callable[[dict], str] = _display_text,
+ ) -> list[dict]:
+-    """Stamp ``rewind_id`` on the display messages that map to a live user row.
+-
+-    Aligns the display transcript against the model history from the TAIL and
+-    stops at the first divergence, so every id that is handed out is backed by a
+-    verbatim match reachable through an unbroken run of matches — an id can
+-    never name a turn other than the bubble it rides on, even when the same
+-    prompt text was sent more than once.
+-
+-    Everything above the divergence (ancestor lineage, pre-compaction turns,
+-    rows dropped by sanitisation) is deliberately left unstamped.  This is
+-    conservative by construction: its failure mode is a hidden restore button,
+-    never a wrong truncation.
++    """Stamp ``rewind_id`` on display rows PROVEN to be the same turn.
++
++    Alignment walks both projections from the tail and compares the full
++    user+assistant spine, not just the user rows. That distinction is the whole
++    fix: comparing user rows alone let the two sides slip past each other when
++    they diverged in between. After ``session.undo`` removes a turn from the
++    model history but not from the DB, a user-only walk paired a displayed
++    bubble with an EARLIER occurrence of the same text and stamped it with that
++    occurrence's id — so clicking one turn cut another.
++
++    Comparing the spine catches that: the assistant reply sitting between them
++    differs, alignment stops, and the ambiguous rows are left unstamped.
++
++    Every user row is given an explicit key: an id when it is provably
++    rewindable, otherwise ``None``. A row with ``rewind_id: None`` is this
++    gateway saying "not rewindable"; a row with no key at all is a gateway too
++    old to know. The client must be able to tell those apart, or it cannot know
++    whether silence means "no" or "unsupported".
+     """
+-    user_texts = model_user_texts(history)
+-    ordinal = len(user_texts) - 1
++    hist = list(history or [])
++    user_indices = model_user_indices(hist)
++    ordinal_of = {idx: ordinal for ordinal, idx in enumerate(user_indices)}
++
++    spine = [
++        (i, m.get("role"), coerce_message_text(m.get("content")))
++        for i, m in enumerate(hist)
++        if isinstance(m, dict) and m.get("role") in _SPINE_ROLES
++    ]
++    display_positions = [
++        k
++        for k, msg in enumerate(messages)
++        if isinstance(msg, dict) and msg.get("role") in _SPINE_ROLES
++    ]
+ 
+-    for index in range(len(messages) - 1, -1, -1):
+-        message = messages[index]
+-        if not isinstance(message, dict) or message.get("role") != "user":
+-            continue
+-        if ordinal < 0:
++    matched: dict[int, int] = {}
++    cursor = len(spine) - 1
++    for k in reversed(display_positions):
++        if cursor < 0:
+             break
+-        text = user_texts[ordinal]
+-        if text_of(message) != text:
++        hist_index, role, text = spine[cursor]
++        message = messages[k]
++        if message.get("role") != role or text_of(message) != text:
+             break
+-        messages[index] = {**message, "rewind_id": rewind_message_id(ordinal, text)}
+-        ordinal -= 1
++        matched[k] = hist_index
++        cursor -= 1
++
++    for k, hist_index in matched.items():
++        message = messages[k]
++        if message.get("role") != "user":
++            continue
++        ordinal = ordinal_of.get(hist_index)
++        if ordinal is None:
++            continue
++        text = coerce_message_text(hist[hist_index].get("content"))
++        messages[k] = {
++            **message,
++            "rewind_id": rewind_message_id(
++                ordinal, rewind_prefix_hash(hist, hist_index, text)
++            ),
++        }
++
++    for k, message in enumerate(messages):
++        if (
++            isinstance(message, dict)
++            and message.get("role") == "user"
++            and "rewind_id" not in message
++        ):
++            messages[k] = {**message, "rewind_id": None}
+ 
+     return messages
+ 
+@@ -195,31 +286,38 @@ def annotate_rewind_ids(
+ def resolve_rewind_ordinal(
+     history: Iterable[dict] | None, message_id: str
+ ) -> int | None:
+-    """Map a ``rewind_id`` back to a user ordinal in the CURRENT model history.
+-
+-    EXACT ``(ordinal, content)`` matches only.  Anything else resolves to
+-    ``None`` and the caller refuses with 4018.
+-
+-    An earlier revision also accepted a *unique content* match when the position
+-    had drifted, to keep a turn reachable after the history shifted underneath
+-    it.  That was removed: truncation is destructive, and a content-only match
+-    deliberately resolves to a DIFFERENT position than the id encodes.  Combined
+-    with the client's confirmation on the id path, a drifted match could land on
+-    ordinal 0 after a compaction and let ``replace_messages`` delete every
+-    durable row for the session.
+-
+-    Refusing costs a 4018 the user can clear by re-clicking on a refreshed
+-    transcript.  Guessing costs the transcript.  Callers may therefore treat a
+-    successful resolution as proof of intent — see the empty-truncation guard in
+-    ``prompt.submit``, which relies on it.
++    """Resolve a ``rewind_id`` against the CURRENT model history, or refuse.
++
++    The ordinal locates a candidate; the prefix hash then has to reproduce
++    exactly. Any change to what the cut would keep — an undo, a compaction, a
++    turn landing in between, a different occurrence of the same text — changes
++    the hash and the answer is ``None``.
++
++    Refusing costs a 4018 the user clears by re-clicking on a refreshed
++    transcript. Guessing costs a turn, or the transcript.
+     """
+     if not isinstance(message_id, str) or not message_id.startswith(
+         f"{REWIND_ID_PREFIX}:"
+     ):
+         return None
+ 
+-    for ordinal, text in enumerate(model_user_texts(history)):
+-        if rewind_message_id(ordinal, text) == message_id:
+-            return ordinal
++    parts = message_id.split(":")
++    if len(parts) != 3:
++        return None
++    try:
++        ordinal = int(parts[1])
++    except ValueError:
++        return None
++    expected_hash = parts[2]
++
++    hist = list(history or [])
++    user_indices = model_user_indices(hist)
++    if ordinal < 0 or ordinal >= len(user_indices):
++        return None
++
++    index = user_indices[ordinal]
++    text = coerce_message_text(hist[index].get("content"))
++    if rewind_prefix_hash(hist, index, text) != expected_hash:
++        return None
+ 
+-    return None
++    return ordinal
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index c2bebc55d..1530ec33d 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -32,11 +32,13 @@ from tui_gateway import git_probe
+ from tui_gateway.rewind_identity import (
+     annotate_rewind_ids,
+     coerce_message_text,
++    model_user_indices,
+     model_user_texts,
+     resolve_rewind_ordinal,
+     REWIND_ID_PREFIX,
+     rewind_digest,
+     rewind_message_id,
++    rewind_prefix_hash,
+ )
+ from tui_gateway.transport import (
+     StdioTransport,
+@@ -5539,6 +5541,8 @@ _REWIND_ID_PREFIX = REWIND_ID_PREFIX
+ _rewind_digest = rewind_digest
+ _rewind_message_id = rewind_message_id
+ _model_user_texts = model_user_texts
++_model_user_indices = model_user_indices
++_rewind_prefix_hash = rewind_prefix_hash
+ _annotate_rewind_ids = annotate_rewind_ids
+ _resolve_rewind_ordinal = resolve_rewind_ordinal
+ 
+@@ -9661,7 +9665,12 @@ def _(rid, params: dict) -> dict:
+             session["history_version"] = int(session.get("history_version", 0)) + 1
+             if (db := _get_db()) is not None:
+                 try:
+-                    db.replace_messages(session["session_key"], truncated)
++                    # active_only: a rewind replaces the LIVE transcript and must
++                    # leave soft-archived rows (compaction/undo history) alone.
++                    # The default deletes every row for the session.
++                    db.replace_messages(
++                        session["session_key"], truncated, active_only=True
++                    )
+                 except Exception as exc:
+                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+         session["running"] = True
+commit 4793eb5311f543398ea14953d9d531217c6f85a0
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 14:41:39 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 14:41:39 2026 +0700
+
+    feat(rewind): restoring the opening turn works again, behind its own confirmation
+    
+    Closes the limitation left when the id path was made to fail closed: restoring,
+    editing or rerunning the FIRST turn empties the transcript, and every such
+    attempt was refused with 4028.
+    
+    The id path still ignores the generic confirm_empty_truncate — a blanket flag
+    riding along with every rewind is what let a misattached id delete a session.
+    It now honours a dedicated confirm_delete_entire_transcript instead, which the
+    client sends only for an action aimed at the opening turn (and, for restore,
+    only after a dialog that says the whole conversation is deleted).
+    
+    Safe to honour now that ids are occurrence-bound: an r2 id resolves at ordinal
+    0 only when the retained prefix really is empty AND the turn's text matches, so
+    the turn named is the turn clicked.
+    
+    Tests: 412 passing, covering both directions — the generic flag is refused on
+    the id path, the dedicated one is accepted.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index 327fa0b60..1251503b6 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -3357,6 +3357,80 @@ def test_drifted_message_id_cannot_wipe_the_transcript(monkeypatch):
+         server._sessions.pop("wipe-race-sid", None)
+ 
+ 
++def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
++    """Restoring the very first turn empties the transcript, so it needs intent
++    about THAT act — not the generic flag every rewind carries.
++
++    The id path ignores confirm_empty_truncate (a blanket one is what let a
++    misattached id delete a session) and honours only
++    confirm_delete_entire_transcript, which the client sends after its own
++    "this deletes the whole conversation" dialog.
++    """
++    history = [
++        {"role": "user", "content": "first"},
++        {"role": "assistant", "content": "reply"},
++    ]
++
++    class _Agent:
++        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
++            return {
++                "final_response": "fresh",
++                "messages": [
++                    {"role": "user", "content": prompt},
++                    {"role": "assistant", "content": "fresh"},
++                ],
++            }
++
++    class _ImmediateThread:
++        def __init__(self, target=None, daemon=None):
++            self._target = target
++
++        def start(self):
++            self._target()
++
++    class _StubDb:
++        def __init__(self):
++            self.replaced = []
++
++        def replace_messages(self, session_id, messages, **_kwargs):
++            self.replaced.append((session_id, list(messages)))
++
++    def _submit(sid, extra):
++        stub = _StubDb()
++        server._sessions[sid] = _session(agent=_Agent(), history=list(history))
++        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
++        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
++        monkeypatch.setattr(server, "_emit", lambda *a: None)
++        monkeypatch.setattr(server, "_get_db", lambda: stub)
++        try:
++            resp = server.handle_request(
++                {
++                    "id": "1",
++                    "method": "prompt.submit",
++                    "params": {
++                        "session_id": sid,
++                        "text": "start over",
++                        "truncate_before_message_id": _rid(history, 0),
++                        **extra,
++                    },
++                }
++            )
++            return resp, stub
++        finally:
++            server._sessions.pop(sid, None)
++
++    # The generic flag must NOT be enough on the id path.
++    resp, stub = _submit("wipe-generic", {"confirm_empty_truncate": True})
++    assert resp["error"]["code"] == 4028
++    assert stub.replaced == []
++
++    # The dedicated one is.
++    resp, stub = _submit("wipe-explicit", {"confirm_delete_entire_transcript": True})
++    assert resp.get("result"), f"got error: {resp.get('error')}"
++    assert stub.replaced == [("session-key", [])]
++
++
+ def test_prompt_submit_truncates_by_message_id(monkeypatch):
+     """A rewind addressed by id cuts at the turn that id names."""
+ 
+diff --git a/tui_gateway/server.py b/tui_gateway/server.py
+index 1530ec33d..9b9e29bf8 100644
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -9642,10 +9642,21 @@ def _(rid, params: dict) -> dict:
+             # So the id path may never auto-confirm emptying a transcript. It
+             # fails closed until the client can express a real second
+             # confirmation for that specific act.
++            # Emptying a transcript needs intent about THAT act, not a flag
++            # riding along with every rewind. The id path therefore ignores the
++            # generic confirm_empty_truncate (a blanket one is what let a
++            # misattached id delete a session) and honours only the dedicated
++            # confirm_delete_entire_transcript, which the client sends solely
++            # after its own "this deletes the whole conversation" dialog.
++            #
++            # Safe to honour now that ids are occurrence-bound: an r2 id only
++            # resolves at ordinal 0 when the retained prefix really is empty AND
++            # the turn's text matches, so the turn named is the turn clicked.
+             id_addressed = truncate_message_id is not None
+             empty_truncation_confirmed = (
+-                not id_addressed
+-                and is_truthy_value(params.get("confirm_empty_truncate"))
++                is_truthy_value(params.get("confirm_delete_entire_transcript"))
++                if id_addressed
++                else is_truthy_value(params.get("confirm_empty_truncate"))
+             )
+             if not truncated and history and not empty_truncation_confirmed:
+                 logger.warning(
+@@ -9658,8 +9669,9 @@ def _(rid, params: dict) -> dict:
+                 return _err(
+                     rid,
+                     4028,
+-                    "truncation would erase the entire session transcript; "
+-                    "resubmit with confirm_empty_truncate=true if this is intended",
++                    "truncation would erase the entire session transcript; resubmit "
++                    "with confirm_delete_entire_transcript=true (id) or "
++                    "confirm_empty_truncate=true (ordinal) if this is intended",
+                 )
+             session["history"] = truncated
+             session["history_version"] = int(session.get("history_version", 0)) + 1
+commit 5971428139091646760070a0053017bace6df9b6
+Author:     tranhieu204-web <tranhieu204@gmail.com>
+AuthorDate: Mon Aug 10 14:55:49 2026 +0700
+Commit:     tranhieu204-web <tranhieu204@gmail.com>
+CommitDate: Mon Aug 10 14:55:49 2026 +0700
+
+    test(rewind): pin that a rewind preserves soft-archived rows
+    
+    The last unpinned item from the audit. replace_messages defaults to
+    active_only=False, which DELETEs every row for the session — including the
+    active = 0 rows compaction and undo keep on disk for durability. The rewind
+    path passes active_only=True; nothing stopped that regressing.
+    
+    Behavioural, against a real SessionDB rather than a stub asserting a keyword:
+    archive an exchange, rewind, and require the archived rows to still be there.
+    
+    Confirmed load-bearing before committing — same DB, same rewind, with and
+    without the flag: 0 archived rows survive without it, 2 with it. The assertion
+    fails if the flag is dropped.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/tests/test_tui_gateway_server.py b/tests/test_tui_gateway_server.py
+index 1251503b6..1ecff8e34 100644
+--- a/tests/test_tui_gateway_server.py
++++ b/tests/test_tui_gateway_server.py
+@@ -3431,6 +3431,91 @@ def test_first_turn_restore_needs_the_dedicated_wipe_confirmation(monkeypatch):
+     assert stub.replaced == [("session-key", [])]
+ 
+ 
++def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
++    """A rewind replaces the LIVE transcript and must leave archived rows alone.
++
++    replace_messages defaults to active_only=False, which DELETEs every row for
++    the session — including the ``active = 0`` rows compaction and undo
++    deliberately keep on disk for durability. An independent audit flagged that
++    a rewind was taking that history with it.
++
++    Behavioural, against a real SessionDB: the archived row has to still be
++    there afterwards, not merely "we passed the right keyword".
++    """
++    from hermes_state import SessionDB
++
++    db = SessionDB(db_path=tmp_path / "state.db")
++    db.create_session("arch-sid", source="tui")
++    db.append_message("arch-sid", role="user", content="archived question")
++    db.append_message("arch-sid", role="assistant", content="archived answer")
++    # Soft-archive that exchange, as compaction/undo would.
++    with db._lock:  # noqa: SLF001 - no public API to archive an arbitrary row
++        db._conn.execute("UPDATE messages SET active = 0 WHERE session_id = ?", ("arch-sid",))
++        db._conn.commit()
++    db.append_message("arch-sid", role="user", content="first")
++    db.append_message("arch-sid", role="assistant", content="reply")
++
++    assert db.has_archived_messages("arch-sid") is True
++    live_before = [m for m in db.get_messages("arch-sid")]
++    assert [m["content"] for m in live_before] == ["first", "reply"]
++
++    history = [
++        {"role": "user", "content": "first"},
++        {"role": "assistant", "content": "reply"},
++        {"role": "user", "content": "second"},
++        {"role": "assistant", "content": "second reply"},
++    ]
++
++    class _Agent:
++        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
++            return {
++                "final_response": "redone",
++                "messages": [*(conversation_history or []), {"role": "user", "content": prompt}],
++            }
++
++    class _ImmediateThread:
++        def __init__(self, target=None, daemon=None):
++            self._target = target
++
++        def start(self):
++            self._target()
++
++    server._sessions["arch-sid"] = _session(
++        agent=_Agent(), history=list(history), session_key="arch-sid"
++    )
++    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
++    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
++    monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
++    monkeypatch.setattr(server, "_emit", lambda *a: None)
++    monkeypatch.setattr(server, "_get_db", lambda: db)
++
++    try:
++        resp = server.handle_request(
++            {
++                "id": "1",
++                "method": "prompt.submit",
++                "params": {
++                    "session_id": "arch-sid",
++                    "text": "redo second",
++                    "truncate_before_message_id": _rid(history, 1),
++                },
++            }
++        )
++        assert resp.get("result"), f"got error: {resp.get('error')}"
++
++        # The archived exchange survives the rewind.
++        assert db.has_archived_messages("arch-sid") is True
++        archived = [
++            row
++            for row in db.get_messages("arch-sid", include_inactive=True)
++            if row.get("active") == 0
++        ]
++        assert [row["content"] for row in archived] == ["archived question", "archived answer"]
++    finally:
++        server._sessions.pop("arch-sid", None)
++        db.close()
++
++
+ def test_prompt_submit_truncates_by_message_id(monkeypatch):
+     """A rewind addressed by id cuts at the turn that id names."""
+ 
