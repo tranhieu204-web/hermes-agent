@@ -124,7 +124,7 @@
   },
   "record_hygiene_gate_binding": {
     "path": "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json",
-    "sha256": "c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e"
+    "sha256": "3946d59c1f23ab4609326f0a9bd1849e54fa51b275fd6a15fb3902f0b3971925"
   },
   "protected_existing_test_bodies": [
     {
@@ -166,7 +166,7 @@
     }
   },
   "lifecycle": {
-    "candidate": "COMMITTED_SUBJECT_DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+    "candidate": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "final_inspection": "PENDING_NEW_INSPECTION_M14_M16",
     "submission_clearance": "NONE_FOR_NEW_SUBJECT",
     "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"

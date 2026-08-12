@@ -62,7 +62,7 @@ The executable pin is representative, not exhaustive: it covers memory-context a
 
 ## Code subject versus record commit
 
-Final Inspection 4 inspected exact M13 **CODE SUBJECT** `389640f70679257b7acf074808e44277f31fb92a` (tree `f850cb16b89bcb2629d1745eaac3631bdb254300`) and returned `PASS — CLEARED FOR SUBMISSION`. M14-M16 changes test code and therefore supersedes that clearance. The new subject is the commit containing this record; exact self-identity is discovered from Git rather than recursively embedded. No production source changed.
+Final Inspection 4 inspected exact M13 **CODE SUBJECT** `389640f70679257b7acf074808e44277f31fb92a` (tree `f850cb16b89bcb2629d1745eaac3631bdb254300`) and returned `PASS — CLEARED FOR SUBMISSION`. M14-M16 changes test code and therefore supersedes that clearance. The current subject is the **uncommitted working-tree record/evidence set**; any future commit, if authorized and created, is a later lifecycle action. No production source changed.
 
 ## Other Stage 6 dispositions
 

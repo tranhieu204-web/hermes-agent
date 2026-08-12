@@ -68,7 +68,7 @@
   "lifecycle": {
     "gate": "PASS",
     "independent_review": "PENDING",
-    "commit": "NOT_DONE",
+    "commit": "OBSERVED_EXTERNAL_COMMIT_47DDA59B1809F80BEC8A5E21318E2AE4C4A7DC3D",
     "push": "NOT_DONE",
     "deploy": "NOT_DONE",
     "activation": "OFF"

@@ -197,7 +197,7 @@
       "discovered": 1286,
       "passed": 1286,
       "failed": 0,
-      "exactCodeSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+      "exactCodeSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
       "receipt": "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt sha256 416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9"
     }
   ],
@@ -242,10 +242,10 @@
   ],
   "candidate": {
     "baseSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "sourceSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "sourceSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "integratedSha": "872c341302b5ed8941f280c3b7939cabba930b5a",
-    "reverifiedSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
-    "state": "M14_M16_CANDIDATE_COMMITTED_FINAL_INSPECTION_PENDING",
+    "reverifiedSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
+    "state": "M14_M16_CANDIDATE_UNCOMMITTED_WORKING_TREE_FINAL_INSPECTION_PENDING",
     "workingTreeParentCommit": "389640f70679257b7acf074808e44277f31fb92a",
     "workingTreeParent": "389640f70679257b7acf074808e44277f31fb92a",
     "committedSourceSha256": {
@@ -261,7 +261,7 @@
   },
   "submission": {
     "verdict": "BLOCKED_NO_CURRENT_FINAL_INSPECTION_CLEARANCE",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "exactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "historicalClearedSha": "389640f70679257b7acf074808e44277f31fb92a",
     "scope": "NO_SUBMISSION_CLEARANCE_FOR_M14_M16_SUBJECT",
     "executed": false
@@ -296,12 +296,12 @@
     "finalInspectionPerformed": true,
     "clearance": false,
     "scope": "HISTORICAL_389640F70_NOT_CURRENT_M14_M16_SUBJECT",
-    "currentCandidateExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "currentCandidateExactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "currentCandidateInspection": "PENDING"
   },
   "clearance": {
     "status": "NONE_FOR_M14_M16_CANDIDATE",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "exactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "historicalExactSha": "389640f70679257b7acf074808e44277f31fb92a",
     "clearance": false,
     "scope": "NEW_FINAL_INSPECTION_REQUIRED"
@@ -495,7 +495,7 @@
   },
   "closure": {
     "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
-    "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD"
+    "exactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE"
   },
   "bindings": {
     "intakePath": ".ai/builds/rewind-archive-dropped-20260810/INTAKE.md",
@@ -524,7 +524,7 @@
     "p3Med4DecisionSha256": "1fadeafeb3361c517832b58d200d052c0e971e5a413dc03323b5bade8b0c5a51",
     "p3AcpResidualSha256": "21e99eb7cdef7dfdd2ee82f6d2a2516ee4c6566e4bc8517ea28abe08dab255c4",
     "stage6RepairDecisionPath": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "stage6RepairDecisionSha256": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e",
+    "stage6RepairDecisionSha256": "b7453f18252fc8d39b2ef718f4b61904707d6f0f5ee1d56b113d351a628f48a9",
     "stage6RepairMutationManifestSha256": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
     "stage6RepairFullGateSha256": "5f5c3bdfce8c01fbdb74603fdced5b2ba2fad341aac715d96b9bb7bf6015d887",
     "stage6RepairCodeCommit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
@@ -536,7 +536,7 @@
     },
     "repairDecision": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-      "sha256": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e"
+      "sha256": "b7453f18252fc8d39b2ef718f4b61904707d6f0f5ee1d56b113d351a628f48a9"
     },
     "stage6RecheckProvenance": {
       "path": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/PROVENANCE.json",
@@ -557,7 +557,7 @@
     "m13MutationManifestSha256": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
     "currentCodeSubject": {
       "binding": "COMMIT_CONTAINING_THIS_RECORD",
-      "exactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+      "exactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
       "parent": "389640f70679257b7acf074808e44277f31fb92a",
       "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT"
     },
@@ -567,14 +567,14 @@
       "status": "PASS_SUPERSEDED_BY_M14_M16"
     },
     "m14M16AssuranceClosurePath": "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json",
-    "m14M16AssuranceClosureSha256": "aecad7fcd4f697216ce5a366e4c6f558c919a7981ef58234a02055fed011f7ee",
+    "m14M16AssuranceClosureSha256": "c359c96d0f6132be28b74b6fd8d36362f7af124590233b274c06629d9c968816",
     "m14M16PropertyFreezeSha256": "603add7cf9a23009e6b15fd4e932f720aafb4becdb27ad174fe023d688bec03c",
     "m14M16FullGovernedGateSha256": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9",
     "m14M16PropertyTestBodySha256": "84e33c30dd8db64a36635b98145b1c58a5c0e0ffca24bdf3692da5bbca0f74ae",
     "m14M16MutationManifestPath": "assurance-gap-m14-m16/MUTATION-MANIFEST.json",
     "m14M16MutationManifestSha256": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
     "m14M16RecordHygieneGateBindingPath": "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json",
-    "m14M16RecordHygieneGateBindingSha256": "c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e"
+    "m14M16RecordHygieneGateBindingSha256": "3946d59c1f23ab4609326f0a9bd1849e54fa51b275fd6a15fb3902f0b3971925"
   },
   "updatedAt": "2026-08-12T00:41:50+07:00",
   "updatedAtSemantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
@@ -1725,7 +1725,7 @@
   "updatedAtIct": "2026-08-12T00:41:50+07:00",
   "updatedAtIctSemantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
   "codeSubject": {
-    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "exact_sha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
     "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT",
     "production_source_changed": false,
@@ -1738,9 +1738,9 @@
     }
   },
   "recordRecursion": {
-    "currentSubjectExactSha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "currentSubjectExactSha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
-    "bindingRule": "M14-M16 test code and evidence are committed together; exact subject is the commit containing this record.",
+    "bindingRule": "M14-M16 test code and evidence are bound to the uncommitted working-tree candidate; a future commit, if authorized and created, is a later lifecycle action.",
     "historicalClearanceApplicability": "SUPERSEDED"
   },
   "stage6CloseoutTestCommit": {
@@ -2247,7 +2247,7 @@
       }
     },
     "lifecycle": {
-      "candidate": "COMMITTED_SUBJECT_DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+      "candidate": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
       "final_inspection": "PENDING_NEW_INSPECTION_M14_M16",
       "submission_clearance": "NONE_FOR_NEW_SUBJECT",
       "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
@@ -2255,7 +2255,7 @@
   },
   "authoritativeCurrentState": {
     "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
-    "subject_binding": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "subject_binding": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
     "current_clearance": false,
     "reason": "Final Inspection 4 PASS is exact-subject historical and was knowingly superseded by M14-M16 test code.",

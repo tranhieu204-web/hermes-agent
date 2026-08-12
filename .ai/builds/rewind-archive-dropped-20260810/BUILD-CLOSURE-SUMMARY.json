@@ -62,10 +62,10 @@
     "statement": "Final Inspection 4 PASS remains true only for exact 389640f70. M14-M16 changes test code and knowingly supersedes that clearance.",
     "final_inspection": "HISTORICAL_PASS_SUPERSEDED_FOR_M14_M16",
     "current_clearance": "NONE",
-    "current_candidate": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD"
+    "current_candidate": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE"
   },
   "final_governed_gate": {
-    "exact_code_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "exact_code_sha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "files": 10,
     "passed": 1286,
     "failed": 0,
@@ -221,10 +221,10 @@
     "orders": false
   },
   "durable_files": {
-    "README.md": "77be384cc10905a8d4c4bbf6f1de2842bb643ab223903091120dafb9fc702591",
-    "ledger.json": "384044253ec8d67b3718066686c920c82fa8c39b0907483d7791f22fd4ff41a6",
+    "README.md": "751515f04d0d41f7afa95b17510594f1c27342888f118a5c4a237cea0c286322",
+    "ledger.json": "1f9fcf15e871ba792f85a3c061920eb63cd28d150110fd555140d22a4eb39350",
     "canary_rewind_archive.py": "10fc9688e68239ca52e735ca6ae313bf3e267554fb94c1d54aa23d56120c294d",
-    "repair-epoch-1/REPAIR-DECISION.md": "fb61f48aa0b7d1fc8de5acbc59e55b8a39a7a12993c2b02ccd92caca4963f77e",
+    "repair-epoch-1/REPAIR-DECISION.md": "b7453f18252fc8d39b2ef718f4b61904707d6f0f5ee1d56b113d351a628f48a9",
     "repair-epoch-1/run_mutations.py": "b3c65e6fa1b40305e394056ff37b708aeff927ea86744d8f6faa458c28eebf92",
     "repair-epoch-1/test_closure_reclassifications.py": "132d8d80cb28f98f538875b57a149e49e63831de1a70994083b11a7e292787ee",
     "repair-epoch-1/mutation-manifest.json": "f8fe158f93827f0b725a76a7eac9043e0ffcb703b54356229bafe0923da874b0",
@@ -236,17 +236,17 @@
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/result.json": "635297a2600144570719e2ad665e9d0384c3de321c4d71635e719f45f74417cb",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/reviewer-output-verbatim.txt": "e5fd5b3ed57de6615f37bf6264dbfc0990c425275d3cc716e79cfacf86a647a7",
     "repair-epoch-1/stage6-recheck-run-20260811-104048-ICT-c4057c52/reviewer-receipt/exit-code.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
-    "P3-FINAL-BINDING.json": "b8cc3f43477c69c0ec382ab0acdaaea765fb1c8f61f993bb6cf5b553abe4e4ee",
+    "P3-FINAL-BINDING.json": "163f33b7f1fccb901873bab5f7e6b4551bccf8d12d4fc4b90ee3182b9ee12e05",
     "assurance-gap-m13/ASSURANCE-GAP-CLOSURE.json": "5f324b4b9be1edd4e61ff36ce6416532b518b1960bd98ea73eb0b17976e00f15",
     "assurance-gap-m13/M13-PROPERTY-FREEZE.json": "7a58e671828f1a522f3bcb8f87a4ccf62c09a37c8c55ad2207956e7b207b9f6c",
     "assurance-gap-m13/FULL-GOVERNED-GATE.txt": "a1b5dcd10601fba649bf5de5f17122925f71c3b360b0087d3c086c9750f97961",
     "assurance-gap-m13/mutation-campaign/mutation-manifest.json": "3abcaa32afba95c1d7d4df0c1fcf01bf66a5b574e4b1bb8c7228a4eb47f0c3fa",
     "repair-epoch-1/M13_WIDEN_ACCEPTANCE_CLASS_SYMMETRIC_FOLD.txt": "b7b6bc010f9a4c7257f78b76c1ead81cdb0a9515c204d8b1e7a63d4f589ec92c",
-    "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json": "aecad7fcd4f697216ce5a366e4c6f558c919a7981ef58234a02055fed011f7ee",
+    "assurance-gap-m14-m16/ASSURANCE-GAP-CLOSURE.json": "c359c96d0f6132be28b74b6fd8d36362f7af124590233b274c06629d9c968816",
     "assurance-gap-m14-m16/PROPERTY-FREEZE.json": "603add7cf9a23009e6b15fd4e932f720aafb4becdb27ad174fe023d688bec03c",
     "assurance-gap-m14-m16/MUTATION-MANIFEST.json": "a7499d2254e06c1000045c3a082e9b6b12e95ba2d4fa40bd3b759c6e0a2b5258",
     "assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt": "416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9",
-    "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json": "c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e"
+    "assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json": "3946d59c1f23ab4609326f0a9bd1849e54fa51b275fd6a15fb3902f0b3971925"
   },
   "per_agent_token_spend": {
     "Hermes_openai_codex_gpt_5_6_sol": "UNKNOWN_NOT_EXPOSED",
@@ -446,7 +446,7 @@
     "repair_code_commit": "d540eaee9764fbc3194c493946cd6624f447c3a5",
     "repair_code_tree": "07eded674d1b1352759ef7ff65bd5a84a4314575",
     "decision_record": ".ai/builds/rewind-archive-dropped-20260810/repair-epoch-1/REPAIR-DECISION.md",
-    "decision_record_sha256": "b1932716a5262cbff0feb88a2c8478cc0121935bbab1bd7a577bfd7144541be0",
+    "decision_record_sha256": "b7453f18252fc8d39b2ef718f4b61904707d6f0f5ee1d56b113d351a628f48a9",
     "B-1": {
       "severity": "HIGH",
       "classification": "PLAN_AND_IMPLEMENTATION_DEFECT",
@@ -903,7 +903,7 @@
   "updated_at_ict": "2026-08-12T00:41:50+07:00",
   "updated_at_ict_semantics": "RECORD_MATERIALIZATION_TIME_NOT_EXECUTION_TIME",
   "code_subject": {
-    "exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "exact_sha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
     "scope": "M14_M16_TEST_MUTATION_RUNNER_AND_RECORD_SUBJECT",
     "production_source_changed": false,
@@ -916,9 +916,9 @@
     }
   },
   "record_recursion": {
-    "current_subject_exact_sha": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "current_subject_exact_sha": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "parent": "389640f70679257b7acf074808e44277f31fb92a",
-    "binding_rule": "M14-M16 test code and evidence are committed together; exact subject is the commit containing this record.",
+    "binding_rule": "M14-M16 test code and evidence are bound to the uncommitted working-tree candidate; a future commit, if authorized and created, is a later lifecycle action.",
     "historical_clearance_applicability": "SUPERSEDED"
   },
   "stage6_closeout_test_commit": {
@@ -1489,7 +1489,7 @@
       }
     },
     "lifecycle": {
-      "candidate": "COMMITTED_SUBJECT_DISCOVER_FROM_COMMIT_CONTAINING_THIS_RECORD",
+      "candidate": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
       "final_inspection": "PENDING_NEW_INSPECTION_M14_M16",
       "submission_clearance": "NONE_FOR_NEW_SUBJECT",
       "push_merge_deploy_activation_trading_orders": "NOT_RUN_NOT_AUTHORIZED"
@@ -1497,7 +1497,7 @@
   },
   "authoritative_current_state": {
     "status": "M14_M16_CANDIDATE_VERIFIED_FINAL_INSPECTION_PENDING",
-    "subject_binding": "DISCOVER_FROM_COMMIT_CONTAINING_M14_M16_RECORD",
+    "subject_binding": "UNCOMMITTED_WORKING_TREE_M14_M16_CANDIDATE",
     "current_clearance": false,
     "fenced_dimensions": [
       "content projection representatives from M13 corpus",

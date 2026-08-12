@@ -10,7 +10,7 @@ Stage 6 repair code commit: `d540eaee9764fbc3194c493946cd6624f447c3a5`
 
 Historical Final Inspection 4 code subject: `389640f70679257b7acf074808e44277f31fb92a`
 
-M14-M16 candidate parent: `389640f70679257b7acf074808e44277f31fb92a`; the new exact candidate SHA is the commit containing this record.
+M14-M16 candidate parent: `389640f70679257b7acf074808e44277f31fb92a`; the current candidate is the **uncommitted working-tree record/evidence set**.
 
 Status: `M14-M16 RECORD-HYGIENE SUCCESSOR IN PROGRESS — FINAL INSPECTION 4 PASS SUPERSEDED — NEW FINAL INSPECTION PENDING`
 
@@ -57,7 +57,7 @@ Final Inspection 4 independently passed exact M13 subject `389640f70679257b7acf0
 
 Current M14-M16 candidate result: `1,286 passed / 0 failed` across the same ten governed files in `122.4s`, with 64 workers and zero file retries. Actual runner output: `assurance-gap-m14-m16/FULL-GOVERNED-GATE.txt`, SHA-256 `416e81f888c9b0dde40f9413ffade407d4022ad59c08f60f24c5de0a091269a9`.
 
-Record-hygiene gate binding: `assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json`, SHA-256 `c2a4d9c07ce4dc8d403c88720b876bf7fe0f00ee2ec1f2e5344b64f7218d523e`. Timestamps in the successor records are explicitly materialization timestamps, not execution timestamps.
+Record-hygiene gate binding: `assurance-gap-m14-m16/RECORD-HYGIENE-GATE-BINDING.json`, SHA-256 `3946d59c1f23ab4609326f0a9bd1849e54fa51b275fd6a15fb3902f0b3971925`. Timestamps in the successor records are explicitly materialization timestamps, not execution timestamps.
 
 Repair plus M13-M16 mutation runner:
 
@@ -155,7 +155,7 @@ Any rollback is a new authority-gated transaction. The Final Inspector warned th
 
 Final Inspection 4 **CODE SUBJECT** is `389640f70679257b7acf074808e44277f31fb92a` (tree `f850cb16b89bcb2629d1745eaac3631bdb254300`). It returned `PASS — CLEARED FOR SUBMISSION` for that exact subject only.
 
-M14-M16 changes `tests/test_hermes_state.py`, the permanent mutation runner, and the evidence record. Therefore Final Inspection 4 clearance is historical and no longer current. The new code/test subject is the commit containing this record and must receive a new independent Final Inspection before submission clearance can exist. No production source byte changed; `hermes_state.py` remains SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
+M14-M16 changes `tests/test_hermes_state.py`, the permanent mutation runner, and the evidence record. Therefore Final Inspection 4 clearance is historical and no longer current. The current code/test subject is the **uncommitted working-tree record/evidence set** and must receive a new independent Final Inspection before submission clearance can exist. No production source byte changed; `hermes_state.py` remains SHA-256 `57f8332f35c4b9080365ac0881db06e66ce00c2ec2d4e8115f8ed1ef9e8468cf`.
 
 ## Why the B-1 limit is pinned, not normalized
 
