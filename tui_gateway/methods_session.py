@@ -130,7 +130,7 @@ def _(rid, params: dict) -> dict:
             "session_id": sid,
             "stored_session_id": key,
             "message_count": len(history),
-            "messages": _history_to_messages(history),
+            "messages": _history_to_client_messages(history, history),
             "info": {
                 # Reflect the per-session model override (desktop composer pick)
                 # in the immediate response so the client doesn't briefly clobber
@@ -491,7 +491,7 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 logger.debug("child-watch display projection read failed", exc_info=True)
                 display_history = history
-            messages = [] if omit_messages else _history_to_messages(display_history)
+            messages = [] if omit_messages else _history_to_client_messages(display_history, history)
             return _ok(
                 rid,
                 {
@@ -578,7 +578,7 @@ def _(rid, params: dict) -> dict:
             _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
             auto_continue = _maybe_schedule_auto_continue(sid, record, target)
 
-            messages = [] if omit_messages else _history_to_messages(display_history)
+            messages = [] if omit_messages else _history_to_client_messages(display_history, history)
             payload = {
                 "session_id": sid,
                 "resumed": target,
@@ -640,7 +640,7 @@ def _(rid, params: dict) -> dict:
                 [] if omit_messages else db.get_ancestor_display_prefix(target)
             )
             history = sanitize_replay_history(raw_history)
-            messages = [] if omit_messages else _history_to_messages(display_history)
+            messages = [] if omit_messages else _history_to_client_messages(display_history, history)
             tokens = _set_session_context(target)
             try:
                 # Pass the profile's db so the agent persists turns to the right
@@ -2458,7 +2458,8 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "count": len(history),
-            "messages": _history_to_messages(history),
+            # Ancestor-inclusive display is not the current model ordinal space.
+            "messages": _history_to_client_messages(history, []),
         },
     )
 
@@ -2533,7 +2534,7 @@ def _(rid, params: dict) -> dict:
             # success toast.
             return _ok(rid, {**host_result, "turn_isolation": True})
         host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
-        host_messages = _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else []
+        host_messages = list(ack.get("messages")) if isinstance(ack.get("messages"), list) else []
         # `messages` is returned at top level for the desktop transcript
         # replacement. Keep the host acknowledgement metadata, but do not send
         # the same (potentially large) transcript a second time inside it.
@@ -2647,7 +2648,7 @@ def _(rid, params: dict) -> dict:
                     # raw tool results can contain large or sensitive payloads
                     # that belong in persisted history, not the transcript
                     # replacement response.
-                    "messages": _history_to_messages(messages),
+                    "messages": _history_to_client_messages(messages, messages),
                 },
             )
         finally:
@@ -2933,7 +2934,7 @@ def _(rid, params: dict) -> dict:
             "title": title,
             "parent": old_key,
             "message_count": len(history),
-            "messages": _history_to_messages(history),
+            "messages": _history_to_client_messages(history, history),
             "info": _session_info(agent, branched_session),
         },
     )

@@ -7231,6 +7231,14 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     return messages
 
 
+def _history_to_client_messages(
+    display_history: list[dict], model_history: list[dict]
+) -> list[dict]:
+    from tui_gateway.rewind_identity import annotate_rewind_ids
+
+    return annotate_rewind_ids(_history_to_messages(display_history), model_history)
+
+
 def _coerce_seed_history(value: Any) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -8196,7 +8204,11 @@ def _live_session_payload(
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
-        "messages": [] if omit_messages else _history_to_messages(history),
+        "messages": (
+            [] if omit_messages else _history_to_client_messages(
+                history, list(session.get("history") or [])
+            )
+        ),
         "messages_omitted": omit_messages,
         "running": running,
         "session_id": sid,

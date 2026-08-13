@@ -2587,10 +2587,13 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
         {"id": "1", "method": "session.resume", "params": params}
     )
 
-    expected = [] if omit_messages else [
-        {"role": "user", "text": "root prompt"},
-        {"role": "assistant", "text": "root answer"},
-    ]
+    expected = [] if omit_messages else server._history_to_client_messages(
+        [
+            {"role": "user", "content": "root prompt"},
+            {"role": "assistant", "content": "root answer"},
+        ],
+        [{"role": "user", "content": "tip prompt"}],
+    )
     assert resp["result"]["messages"] == expected
     assert resp["result"]["message_count"] == (1 if omit_messages else 2)
     assert resp["result"]["messages_omitted"] is omit_messages
@@ -3692,6 +3695,442 @@ def _session(agent=None, **extra):
         "tool_progress_mode": "all",
         **extra,
     }
+
+
+# CP-1 rewind identity contract. State tests use live JSON-RPC handlers; pure
+# tests pin the shared producer/consumer address space.
+def _cp1_identity():
+    import importlib.util
+    assert importlib.util.find_spec("tui_gateway.rewind_identity") is not None, "rewind identity interface is absent"
+    from tui_gateway import rewind_identity
+    return rewind_identity
+
+
+def _cp1_history():
+    return [
+        {"role": "user", "content": "same"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "same"},
+        {"role": "assistant", "content": "two"},
+    ]
+
+
+def _cp1_producer_history():
+    return [
+        {"role": "user", "content": "timeline", "display_kind": "event"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "two"},
+    ]
+
+
+def _assert_cp1_producer_ids(messages, model_history, *, all_null=False):
+    ri = _cp1_identity()
+    users = [message for message in messages if message.get("role") == "user"]
+    assert users
+    assert all("rewind_id" in message for message in users)
+    assert all("rewind_id" not in message for message in messages if message.get("role") != "user")
+    if all_null:
+        assert all(message["rewind_id"] is None for message in users)
+        return
+    marker = next((message for message in users if message.get("display_kind")), None)
+    if marker is not None:
+        assert marker["rewind_id"] is None
+    reachable = [message for message in users if not message.get("display_kind")]
+    assert reachable and all(message["rewind_id"] for message in reachable)
+    assert [ri.resolve_rewind_ordinal(model_history, message["rewind_id"]) for message in reachable] == list(
+        range(len(reachable))
+    )
+
+
+class _CP1ResumeDB:
+    def __init__(self, history):
+        self.history = list(history)
+
+    def get_session(self, target):
+        return {"id": target}
+
+    def get_session_by_title(self, _target):
+        return None
+
+    def reopen_session(self, _target):
+        return None
+
+    def assert_resume_safe(self, _target):
+        return None
+
+    def resolve_resume_session_id(self, target):
+        return target
+
+    def get_resume_conversations(self, _target):
+        return list(self.history), list(self.history)
+
+    def get_messages_as_conversation(self, _target, **_kwargs):
+        return list(self.history)
+
+    def get_ancestor_display_prefix(self, _target):
+        return []
+
+
+def _cp1_prepare_resume(monkeypatch, history):
+    db = _CP1ResumeDB(history)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test"))
+    monkeypatch.setattr(server, "_session_info", lambda *_a: {})
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    return db
+
+
+def test_rewind_identity_exact_occurrence_and_prefix():
+    ri = _cp1_identity()
+    history = _cp1_history()
+    rows = [{"role": m["role"], "text": m["content"]} for m in history]
+    ri.annotate_rewind_ids(rows, history)
+    first, second = rows[0]["rewind_id"], rows[2]["rewind_id"]
+    assert first != second
+    assert ri.resolve_rewind_ordinal(history, first) == 0
+    assert ri.resolve_rewind_ordinal(history, second) == 1
+    assert ri.resolve_rewind_ordinal(history[2:], second) is None
+    assert ri.resolve_rewind_ordinal(history, "r2:-1:bad") is None
+    assert ri.resolve_rewind_ordinal(history, "r2:1:bad") is None
+    assert ri.resolve_rewind_ordinal(history, "not-an-id") is None
+
+
+def test_rewind_display_kind_does_not_occupy_ordinal_space():
+    ri = _cp1_identity()
+    assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+    history = [
+        {"role": "user", "content": "marker before", "display_kind": "model_switch"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "marker between", "display_kind": "event"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "marker after", "display_kind": "event"},
+    ]
+    rows = server._history_to_client_messages(history, history)
+    users = [row for row in rows if row["role"] == "user"]
+    assert ri.model_user_indices(history) == [1, 4]
+    assert [row.get("rewind_id") for row in users] == [None, users[1]["rewind_id"], None, users[3]["rewind_id"], None]
+    assert ri.resolve_rewind_ordinal(history, users[1]["rewind_id"]) == 0
+    assert ri.resolve_rewind_ordinal(history, users[3]["rewind_id"]) == 1
+
+
+def test_rewind_identity_accepts_text_and_content_rows():
+    ri = _cp1_identity()
+    history = _cp1_history()
+    text_rows = [{"role": m["role"], "text": m["content"]} for m in history]
+    content_rows = [dict(m) for m in history]
+    assert ri.annotate_rewind_ids(text_rows, history)[2]["rewind_id"] == ri.annotate_rewind_ids(content_rows, history)[2]["rewind_id"]
+
+
+def test_rewind_producer_create_and_live_payload(monkeypatch):
+    assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+    history = _cp1_history()
+    created = server.handle_request({"id": "c", "method": "session.create", "params": {"messages": history}})
+    sid = created["result"]["session_id"]
+    try:
+        assert created["result"]["messages"][2]["rewind_id"]
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        live = server._live_session_payload(sid, server._sessions[sid])
+        assert live["messages"][2]["rewind_id"] == created["result"]["messages"][2]["rewind_id"]
+        assert server._live_session_payload(sid, server._sessions[sid], omit_messages=True)["messages"] == []
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_rewind_producer_session_create_ids_resolve_on_registered_path():
+    history = _cp1_history()
+    created = server.handle_request(
+        {"id": "create-ids", "method": "session.create", "params": {"messages": history}}
+    )
+    sid = created["result"]["session_id"]
+    try:
+        _assert_cp1_producer_ids(created["result"]["messages"], history)
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_rewind_producer_child_watch_resume_ids_resolve_on_registered_path(monkeypatch):
+    history = _cp1_producer_history()
+    _cp1_prepare_resume(monkeypatch, history)
+    monkeypatch.setattr(server, "_child_run_active", lambda *_a: False)
+    monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *_a: None)
+    response = server.handle_request(
+        {"id": "watch-ids", "method": "session.resume", "params": {"session_id": "watch", "lazy": True}}
+    )
+    sid = response["result"]["session_id"]
+    try:
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_rewind_producer_deferred_cold_resume_ids_resolve_on_registered_path(monkeypatch):
+    history = _cp1_producer_history()
+    _cp1_prepare_resume(monkeypatch, history)
+    monkeypatch.setattr(server, "_claim_or_reuse_live", lambda *_a: None)
+    response = server.handle_request(
+        {"id": "cold-ids", "method": "session.resume", "params": {"session_id": "cold"}}
+    )
+    sid = response["result"]["session_id"]
+    try:
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_rewind_producer_eager_resume_ids_resolve_on_registered_path(monkeypatch):
+    history = _cp1_producer_history()
+    _cp1_prepare_resume(monkeypatch, history)
+
+    def init_session(sid, key, agent, restored, **_kwargs):
+        server._sessions[sid] = _session(agent=agent, session_key=key, history=list(restored))
+
+    monkeypatch.setattr(server, "_init_session", init_session)
+    response = server.handle_request(
+        {"id": "eager-ids", "method": "session.resume", "params": {"session_id": "eager", "eager_build": True}}
+    )
+    sid = response["result"]["session_id"]
+    try:
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_rewind_producer_live_reuse_payload_ids_resolve_on_registered_path(monkeypatch):
+    history = _cp1_producer_history()
+    live = _session(history=list(history), session_key="live-key")
+    server._sessions["live-sid"] = live
+    _cp1_prepare_resume(monkeypatch, history)
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: ("live-sid", live))
+    response = server.handle_request(
+        {"id": "live-ids", "method": "session.resume", "params": {"session_id": "live-key"}}
+    )
+    try:
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop("live-sid", None)
+
+
+def test_rewind_producer_session_history_is_conservative_for_db_display(monkeypatch):
+    assert hasattr(server, "_history_to_client_messages"), "annotating gateway producer is absent"
+    import contextlib
+    history = _cp1_history()
+    ancestor = [{"role": "user", "content": "ancestor"}, {"role": "assistant", "content": "old"}, *history]
+    class DB:
+        def get_messages_as_conversation(self, *_a, **_k):
+            return ancestor
+    server._sessions["hist"] = _session(history=history, session_key="hist-key")
+    monkeypatch.setattr(server, "_session_db", lambda _session: contextlib.nullcontext(DB()))
+    try:
+        result = server.handle_request({"id": "h", "method": "session.history", "params": {"session_id": "hist"}})["result"]
+        _assert_cp1_producer_ids(result["messages"], history, all_null=True)
+    finally:
+        server._sessions.pop("hist", None)
+
+
+def test_rewind_producer_local_compression_ids_resolve_on_registered_path(monkeypatch):
+    history = _cp1_producer_history()
+    server._sessions["compress-ids"] = _session(
+        agent=types.SimpleNamespace(_cached_system_prompt="", tools=None), history=list(history)
+    )
+    monkeypatch.setattr(server, "_compress_session_history", lambda *_a, **_k: (0, {}))
+    monkeypatch.setattr(server, "_session_info", lambda *_a: {})
+    try:
+        response = server.handle_request(
+            {"id": "compress-ids", "method": "session.compress", "params": {"session_id": "compress-ids"}}
+        )
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop("compress-ids", None)
+
+
+def test_rewind_producer_session_branch_ids_resolve_on_registered_path(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    history = _cp1_producer_history()
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("session-key", source="tui")
+    server._sessions["branch-parent"] = _session(history=list(history))
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_session_cwd", lambda _session: str(tmp_path))
+    monkeypatch.setattr(server, "_make_agent", lambda *a, **k: types.SimpleNamespace())
+
+    def init_session(sid, key, agent, restored, **_kwargs):
+        server._sessions[sid] = _session(agent=agent, session_key=key, history=list(restored))
+
+    monkeypatch.setattr(server, "_init_session", init_session)
+    monkeypatch.setattr(server, "_session_info", lambda *_a: {})
+    try:
+        response = server.handle_request(
+            {"id": "branch-ids", "method": "session.branch", "params": {"session_id": "branch-parent"}}
+        )
+        new_sid = response["result"]["session_id"]
+        _assert_cp1_producer_ids(response["result"]["messages"], history)
+    finally:
+        server._sessions.pop("branch-parent", None)
+        if "new_sid" in locals():
+            server._sessions.pop(new_sid, None)
+        db.close()
+
+
+def test_rewind_producer_compute_host_control_ack_ids_resolve_in_host_frame(monkeypatch):
+    import io
+    from tui_gateway.compute_host import ComputeHost
+
+    history = _cp1_producer_history()
+    server._sessions["host-frame"] = _session(history=list(history))
+    output = io.StringIO()
+    host = ComputeHost(stdout=output, heartbeat_secs=0)
+    monkeypatch.setattr(server, "_mirror_slash_side_effects", lambda *_a: "")
+    monkeypatch.setattr(server, "_session_info", lambda *_a: {})
+    try:
+        host._handle_control(
+            {"sid": "host-frame", "request_id": "host-ids", "route_name": "slash.model", "command": ""}
+        )
+        frame = json.loads(output.getvalue().strip())
+        assert frame["type"] == "control.ack"
+        _assert_cp1_producer_ids(frame["messages"], history)
+    finally:
+        host.close()
+        server._sessions.pop("host-frame", None)
+
+
+def _cp1_submit(monkeypatch, sid, history, params, *, db=None):
+    calls = []
+    class Agent:
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            return {"final_response": "ok", "messages": list(conversation_history or [])}
+    class DB:
+        def replace_messages(self, key, messages, **kwargs):
+            calls.append((key, list(messages), kwargs))
+    server._sessions[sid] = _session(agent=Agent(), history=list(history), session_key=sid)
+    monkeypatch.setattr(server, "_get_db", lambda: db or DB())
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: calls.append(("started",)))
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: calls.append(("turn",)))
+    response = server.handle_request({"id": sid, "method": "prompt.submit", "params": {"session_id": sid, "text": "redo", **params}})
+    return response, calls
+
+
+def test_rewind_confirm_matrix_and_dual_target(monkeypatch):
+    ri = _cp1_identity()
+    assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+    history = _cp1_history()
+    rows = server._history_to_client_messages(history, history)
+    first, second = rows[0]["rewind_id"], rows[2]["rewind_id"]
+    cases = [
+        ({"truncate_before_message_id": second}, 4029),
+        ({"truncate_before_message_id": "r2:1:bad", "confirm_truncate": True}, 4018),
+        ({"truncate_before_message_id": first, "confirm_truncate": True}, 4028),
+        ({"truncate_before_message_id": first, "confirm_truncate": True, "confirm_empty_truncate": True}, 4028),
+        ({"truncate_before_message_id": second, "truncate_before_user_ordinal": 1, "confirm_truncate": True}, 4004),
+        ({"confirm_delete_entire_transcript": True}, 4004),
+    ]
+    for n, (params, code) in enumerate(cases):
+        response, calls = _cp1_submit(monkeypatch, f"matrix-{n}", history, params)
+        assert response["error"]["code"] == code
+        assert calls == []
+        server._sessions.pop(f"matrix-{n}", None)
+    response, calls = _cp1_submit(monkeypatch, "valid", history, {"truncate_before_message_id": second, "confirm_truncate": True})
+    assert response.get("result") and calls[0] == ("valid", history[:2], {"active_only": True, "archive_dropped": True})
+    server._sessions.pop("valid", None)
+    response, calls = _cp1_submit(monkeypatch, "opening", history, {"truncate_before_message_id": first, "confirm_truncate": True, "confirm_delete_entire_transcript": True})
+    assert response.get("result") and calls[0][1] == []
+    server._sessions.pop("opening", None)
+    assert ri.resolve_rewind_ordinal(history, second) == 1
+
+
+def test_rewind_id_db_failure_prevents_memory_and_turn(monkeypatch):
+    assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+    history = _cp1_history()
+    rid = server._history_to_client_messages(history, history)[2]["rewind_id"]
+    class BrokenDB:
+        def replace_messages(self, *_a, **_k):
+            raise OSError("disk failed")
+    response, calls = _cp1_submit(monkeypatch, "db-fail", history, {"truncate_before_message_id": rid, "confirm_truncate": True}, db=BrokenDB())
+    try:
+        assert response["error"]["code"] == 5008
+        assert server._sessions["db-fail"]["history"] == history
+        assert calls == []
+    finally:
+        server._sessions.pop("db-fail", None)
+
+
+def test_rewind_id_busy_submit_does_not_queue_destructive_state(monkeypatch):
+    history = _cp1_history()
+    rewind_id = server._history_to_client_messages(history, history)[2]["rewind_id"]
+    session = _session(history=history, running=True, queued_prompt=None)
+    server._sessions["busy-rewind"] = session
+    monkeypatch.setattr(
+        server, "_handle_busy_submit", lambda *_a, **_k: pytest.fail("rewind must not queue")
+    )
+    try:
+        response = server.handle_request(
+            {
+                "id": "busy",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "busy-rewind",
+                    "text": "redo",
+                    "truncate_before_message_id": rewind_id,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert response["error"]["code"] == 4009
+        assert session.get("queued_prompt") is None
+        assert session["history"] == history
+    finally:
+        server._sessions.pop("busy-rewind", None)
+
+
+def test_rewind_preserves_soft_archived_rows(tmp_path, monkeypatch):
+    assert hasattr(server, "_history_to_client_messages"), "ID-addressed submit interface is absent"
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("arch", source="tui")
+    for role, content in [("user", "old"), ("assistant", "old reply")]:
+        db.append_message("arch", role=role, content=content)
+    with db._lock:
+        db._conn.execute("UPDATE messages SET active=0 WHERE session_id='arch'")
+        db._conn.commit()
+    history = _cp1_history()
+    for m in history:
+        db.append_message("arch", role=m["role"], content=m["content"])
+    rid = server._history_to_client_messages(history, history)[2]["rewind_id"]
+    response, _ = _cp1_submit(monkeypatch, "arch", history, {"truncate_before_message_id": rid, "confirm_truncate": True}, db=db)
+    try:
+        assert response.get("result")
+        inactive = [m for m in db.get_messages("arch", include_inactive=True) if not m.get("active")]
+        contents = [m["content"] for m in inactive]
+        assert contents[:2] == ["old", "old reply"]
+        assert contents[-2:] == ["same", "two"]
+    finally:
+        server._sessions.pop("arch", None)
+        db.close()
+
+
+def test_rewind_compute_host_parent_preserves_annotated_rows(monkeypatch):
+    assert hasattr(server, "_history_to_client_messages"), "annotated compute-host interface is absent"
+    history = _cp1_history()
+    messages = server._history_to_client_messages(history, history)
+    server._sessions["host"] = _session(history=history, _compute_host_active=True)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s: True)
+    monkeypatch.setattr(server, "_send_compute_host_control", lambda *_a, **_k: {"type": "control.ack", "messages": messages, "session_info": {}})
+    monkeypatch.setattr(server, "_apply_compute_host_metadata_mirror", lambda *_a: None)
+    try:
+        result = server.handle_request({"id": "x", "method": "session.compress", "params": {"session_id": "host"}})["result"]
+        assert result["messages"] == messages
+        assert result["messages"][2]["rewind_id"]
+    finally:
+        server._sessions.pop("host", None)
 
 
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
@@ -7762,7 +8201,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
     ack = {
         "type": "control.ack",
         "output": "Compressed 4 → 2 messages",
-        "messages": [{"role": "user", "content": "compressed context"}],
+        "messages": [{"role": "user", "text": "compressed context", "rewind_id": "r2:0:host-proof"}],
         "session_info": {"usage": {"total": 42}},
     }
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
@@ -7780,7 +8219,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
         "turn_isolation": True,
         "host_ack": {key: value for key, value in ack.items() if key != "messages"},
         "info": {"usage": {"total": 42}},
-        "messages": [{"role": "user", "text": "compressed context"}],
+        "messages": [{"role": "user", "text": "compressed context", "rewind_id": "r2:0:host-proof"}],
         "usage": {"total": 42},
     }
 
@@ -12723,10 +13162,16 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             }
         )
         assert completed["result"].get("inflight") is None
-        assert completed["result"]["messages"] == [
-            {"role": "user", "text": "write a long answer"},
-            {"role": "assistant", "text": "partial answer complete"},
-        ]
+        assert completed["result"]["messages"] == server._history_to_client_messages(
+            [
+                {"role": "user", "content": "write a long answer"},
+                {"role": "assistant", "content": "partial answer complete"},
+            ],
+            [
+                {"role": "user", "content": "write a long answer"},
+                {"role": "assistant", "content": "partial answer complete"},
+            ],
+        )
     finally:
         release.set()
         done.wait(2)
@@ -12801,10 +13246,13 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         assert resp["result"]["running"] is True
         assert resp["result"]["status"] == "working"
         assert resp["result"]["info"] == {"model": "model-b"}
-        assert resp["result"]["messages"] == [
-            {"role": "user", "text": "new prompt"},
-            {"role": "assistant", "text": "new answer"},
+        expected_history = [
+            {"role": "user", "content": "new prompt"},
+            {"role": "assistant", "content": "new answer"},
         ]
+        assert resp["result"]["messages"] == server._history_to_client_messages(
+            expected_history, expected_history
+        )
     finally:
         server._sessions.pop("sid-a", None)
         server._sessions.pop("sid-b", None)

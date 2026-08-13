@@ -1926,6 +1926,165 @@ class TestWebServerEndpoints:
             "msg 499",
         ]
 
+    def test_get_session_messages_rewind_ids_only_on_proven_tip_windows(
+        self, monkeypatch
+    ):
+        from agent.replay_cleanup import sanitize_replay_history
+        from hermes_cli.web_routers import sessions as sessions_router
+        from hermes_state import SessionDB
+        from tui_gateway.rewind_identity import (
+            annotate_rewind_ids as real_annotate,
+            resolve_rewind_ordinal,
+        )
+
+        annotation_calls = []
+
+        def tracked_annotate(rows, history):
+            annotation_calls.append((rows, history))
+            return real_annotate(rows, history)
+
+        monkeypatch.setattr(sessions_router, "annotate_rewind_ids", tracked_annotate)
+
+        session_id = "rest-rewind-tip"
+        rows = []
+        for i in range(251):
+            # The final two identical user turns prove occurrence identity is
+            # not a content-only lookup.
+            user_text = "duplicate" if i >= 249 else f"user {i}"
+            rows.extend(
+                [
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": f"assistant {i}"},
+                ]
+            )
+        db = SessionDB()
+        try:
+            db.create_session(session_id=session_id, source="cli")
+            db.append_messages_batch(session_id, rows)
+            model_history, _ = db.get_resume_conversations(session_id)
+        finally:
+            db.close()
+        model_history = sanitize_replay_history(model_history)
+
+        response = self.client.get(f"/api/sessions/{session_id}/messages")
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload["messages"]) == 500
+        users = [row for row in payload["messages"] if row["role"] == "user"]
+        assert users
+        assert all(row.get("rewind_id") for row in users)
+        assert [row["rewind_id"] for row in users[-2:]][0] != users[-1]["rewind_id"]
+        assert [
+            resolve_rewind_ordinal(model_history, row["rewind_id"]) for row in users
+        ] == list(range(1, 251))
+
+        unsafe_urls = [
+            f"/api/sessions/{session_id}/messages?limit=100&offset=1&order=latest",
+            f"/api/sessions/{session_id}/messages?limit=100&offset=0&order=oldest",
+            f"/api/sessions/{session_id}/messages?limit=100&offset=0",
+        ]
+        for url in unsafe_urls:
+            unsafe = self.client.get(url)
+            assert unsafe.status_code == 200
+            assert all("rewind_id" not in row for row in unsafe.json()["messages"])
+
+        empty = self.client.get(
+            f"/api/sessions/{session_id}/messages?limit=100&offset=999&order=latest"
+        )
+        assert empty.status_code == 200
+        assert empty.json()["messages"] == []
+        assert len(annotation_calls) == 1
+
+    def test_get_session_messages_rewind_failure_is_unmodified_and_uses_one_profile_db(
+        self, monkeypatch
+    ):
+        from hermes_cli import web_server
+        from hermes_cli.web_routers import sessions as sessions_router
+
+        raw_rows = [
+            {"id": 1, "role": "user", "content": "same", "active": 1},
+            {"id": 2, "role": "assistant", "content": "reply", "active": 1},
+        ]
+
+        class TrackingDB:
+            def __init__(self):
+                self.calls = []
+                self._conn = MagicMock()
+
+            def resolve_session_id(self, value):
+                self.calls.append(("resolve", value))
+                return value
+
+            def resolve_resume_session_id(self, value):
+                self.calls.append(("resume_id", value))
+                return value
+
+            def get_messages(self, value, **kwargs):
+                self.calls.append(("page", value))
+                return [dict(row) for row in raw_rows]
+
+            def get_resume_conversations(self, value):
+                self.calls.append(("history", value))
+                return ([{"role": row["role"], "content": row["content"]} for row in raw_rows], [])
+
+            def close(self):
+                self.calls.append(("close", None))
+
+        db = TrackingDB()
+        opened = []
+        monkeypatch.setattr(
+            web_server,
+            "_open_session_db_for_profile",
+            lambda profile, read_only: opened.append((profile, read_only, db)) or db,
+        )
+        monkeypatch.setattr(
+            sessions_router,
+            "annotate_rewind_ids",
+            MagicMock(side_effect=RuntimeError("annotation failed")),
+            raising=False,
+        )
+
+        response = self.client.get("/api/sessions/profile-session/messages?profile=work")
+        assert response.status_code == 200
+        assert response.json()["messages"] == raw_rows
+        assert opened == [("work", True, db)]
+        assert ("page", "profile-session") in db.calls
+        assert ("history", "profile-session") in db.calls
+
+    def test_get_session_messages_rewind_page_and_history_share_snapshot(
+        self, monkeypatch
+    ):
+        from hermes_state import SessionDB
+
+        session_id = "rest-rewind-snapshot"
+        writer = SessionDB()
+        writer.create_session(session_id=session_id, source="cli")
+        writer.append_messages_batch(
+            session_id,
+            [
+                {"role": "user", "content": "before"},
+                {"role": "assistant", "content": "reply"},
+            ],
+        )
+        original_get_messages = SessionDB.get_messages
+        wrote = False
+
+        def write_between_reads(db, *args, **kwargs):
+            nonlocal wrote
+            page = original_get_messages(db, *args, **kwargs)
+            if db is not writer and not wrote:
+                wrote = True
+                writer.append_message(session_id, role="user", content="concurrent")
+            return page
+
+        monkeypatch.setattr(SessionDB, "get_messages", write_between_reads)
+        try:
+            response = self.client.get(f"/api/sessions/{session_id}/messages")
+        finally:
+            writer.close()
+        assert response.status_code == 200
+        assert response.json()["messages"][0].get("rewind_id")
+
     def test_export_session_streams_bounded_message_pages(self, monkeypatch):
         from hermes_state import SessionDB
 

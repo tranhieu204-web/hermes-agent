@@ -22,6 +22,9 @@ from fastapi import APIRouter, HTTPException, Query, Request  # noqa: F401
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from agent.replay_cleanup import sanitize_replay_history
+from tui_gateway.rewind_identity import annotate_rewind_ids
+
 from hermes_cli.web_deps import late
 from hermes_cli.web_models import (
     BulkDeleteSessions,
@@ -627,12 +630,41 @@ async def get_session_messages(
             default_page = limit is None
             latest_page = order == "latest" or (order is None and default_page)
             _limit = 500 if default_page else min(limit, 500)
-            return sid, _limit, db.get_messages(
-                sid,
-                limit=_limit,
-                offset=offset,
-                latest=latest_page,
+            snapshot_started = False
+            try:
+                # Keep the page and complete resume projection on one SQLite
+                # read snapshot. A shared SessionDB handle alone is insufficient
+                # in WAL mode: two SELECTs can otherwise observe two commits.
+                db._conn.execute("BEGIN")
+                snapshot_started = True
+            except Exception:
+                pass
+            messages = db.get_messages(
+                sid, limit=_limit, offset=offset, latest=latest_page
             )
+            if latest_page and offset == 0 and messages and snapshot_started:
+                try:
+                    model_history, _ = db.get_resume_conversations(sid)
+                    annotated = annotate_rewind_ids(
+                        [dict(message) for message in messages],
+                        sanitize_replay_history(model_history),
+                    )
+                    # The REST page is asserted only when its entire user spine
+                    # tail-aligns. A partial match is not a proven tip window.
+                    users = [row for row in annotated if row.get("role") == "user"]
+                    if users and all(row.get("rewind_id") for row in users):
+                        messages = annotated
+                except Exception:
+                    # Identity is optional response metadata. Lookup,
+                    # sanitization, or annotation failure must not turn a valid
+                    # transcript read into a 500 or alter its rows.
+                    pass
+            if snapshot_started:
+                try:
+                    db._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+            return sid, _limit, messages
         finally:
             db.close()
 
