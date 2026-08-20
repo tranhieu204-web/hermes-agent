@@ -43,3 +43,27 @@ test('regression: an empty session list clears a stale pin and creates a replace
     { name: 'ops', patch: { chat: 'replacement' } }
   ])
 })
+
+test('regression: a corrupted visible-session pin repairs to the hidden Bot Chat', async () => {
+  const opened = []
+  const runtime = loadCanonicalRecovery({
+    openSession: async id => opened.push(id),
+    request: async method => {
+      if (method === 'session.list') {
+        return {
+          sessions: [
+            { id: 'wrong-visible-session', title: 'Unrelated chat' },
+            { id: 'canonical', title: 'Bot Chat' }
+          ]
+        }
+      }
+      return {}
+    }
+  })
+
+  assert.equal(await runtime.openBotCanonicalChat('ops', 'wrong-visible-session'), 'canonical')
+  assert.deepEqual(opened, ['canonical'])
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.saved)), [
+    { name: 'ops', patch: { chat: 'canonical' } }
+  ])
+})

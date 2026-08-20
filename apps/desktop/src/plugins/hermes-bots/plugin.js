@@ -2230,7 +2230,7 @@ async function openBotCanonicalChat(name, pinned) {
   }
 
   try {
-    const res = await host.request('session.list', { profile: name, limit: 100 })
+    const res = await host.request('session.list', { profile: name, limit: 100, include_hidden: true })
     const rows = res?.sessions ?? []
 
     if (!rows.length) {
@@ -2238,8 +2238,19 @@ async function openBotCanonicalChat(name, pinned) {
       return createCanonicalChat(name)
     }
 
-    if (!rows.some(session => session.id === id)) {
-      id = rows[0].id
+    const pinnedRow = rows.find(session => session.id === id)
+    const canonical = rows.find(session => session.title === 'Bot Chat')
+
+    // Hidden canonical chats were absent from older session.list responses,
+    // which could corrupt the pin to an unrelated visible session. Repair that
+    // state only to the named Bot Chat; never adopt an arbitrary recent row.
+    if (!pinnedRow || pinnedRow.title !== 'Bot Chat') {
+      if (!canonical) {
+        saveBotMeta(name, { chat: null })
+        return createCanonicalChat(name)
+      }
+
+      id = canonical.id
       saveBotMeta(name, { chat: id })
     }
   } catch {

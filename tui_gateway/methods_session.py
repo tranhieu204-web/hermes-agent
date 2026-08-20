@@ -189,6 +189,7 @@ def _(rid, params: dict) -> dict:
                     limit=fetch_limit,
                     order_by_last_active=True,
                     compact_rows=True,
+                    include_hidden=is_truthy_value(params.get("include_hidden", False)),
                 )
                 if (s.get("source") or "").strip().lower() not in deny
             ][:limit]

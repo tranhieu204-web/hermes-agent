@@ -79,11 +79,19 @@ def _(rid, params: dict) -> dict:
             deny = frozenset({"kanban", "tool"})
             db = SessionDB(db_path=db_path)
             try:
-                for s in db.list_sessions_rich(
-                    source=None, limit=20, order_by_last_active=True, compact_rows=True
-                ):
-                    if (s.get("source") or "").strip().lower() in deny:
-                        continue
+                sessions = [
+                    s
+                    for s in db.list_sessions_rich(
+                        source=None,
+                        limit=20,
+                        order_by_last_active=True,
+                        compact_rows=True,
+                        include_hidden=True,
+                    )
+                    if (s.get("source") or "").strip().lower() not in deny
+                ]
+                canonical = next((s for s in sessions if (s.get("title") or "").strip() == "Bot Chat"), None)
+                for s in ([canonical] if canonical else sessions):
                     row = {
                         "id": s["id"],
                         "title": s.get("title") or "",

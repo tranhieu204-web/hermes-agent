@@ -18,11 +18,13 @@ const fnSource = source.slice(start, end === -1 ? undefined : end)
 test('regression: a pinned canonical chat found in the list is opened, not replaced', () => {
   // The pin is opened directly with its own id under the bot's profile.
   assert.match(fnSource, /host\.openSession\(id, \{ profile: name \}\)/)
-  // Replacement (rows[0].id) only happens when the pin is NOT in the list...
-  assert.match(fnSource, /if \(!rows\.some\(session => session\.id === id\)\)/)
-  assert.match(fnSource, /id = rows\[0\]\.id/)
-  // ...and an empty list clears the stale pin before recreating (the #28 fix),
-  // rather than opening a known-bad id.
+  // Plugin-owned chats stay hidden from global Sessions, so validation must
+  // explicitly include them instead of corrupting the pin to a visible row.
+  assert.match(fnSource, /include_hidden: true/)
+  assert.match(fnSource, /rows\.find\(session => session\.title === 'Bot Chat'\)/)
+  assert.doesNotMatch(fnSource, /rows\[0\]\.id/)
+  // An empty list clears the stale pin before recreating (the #28 fix), rather
+  // than opening a known-bad id.
   assert.match(fnSource, /if \(!rows\.length\)/)
   assert.match(fnSource, /return createCanonicalChat\(name\)/)
 })
