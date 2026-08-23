@@ -1323,6 +1323,36 @@ def _clarify_timeout_seconds() -> float | None:
     return 300
 
 
+def _release_pending_clarify_for_session(sid: str) -> int:
+    """Release clarify gates parked on ``sid`` after a typed correction.
+
+    A renderer normally sends ``clarify.respond`` before ``session.steer`` or
+    ``session.redirect`` when the user types a follow-up instead of choosing a
+    card option.  The server must not rely on that two-RPC client choreography:
+    after a reconnect or stale renderer store the correction can be accepted
+    while the clarify Event remains blocked, leaving the message queued behind
+    the question until its (potentially one-hour) timeout.
+
+    The correction itself remains the authoritative user text.  Resolve the
+    clarify with the same empty answer as Skip so the agent sees the correction
+    exactly once through its steer/redirect path.
+    """
+    session_id = str(sid or "")
+    if not session_id:
+        return 0
+
+    released = 0
+    with _prompt_lock:
+        for request_id, (pending_sid, event) in list(_pending.items()):
+            pending_payload = _pending_prompt_payloads.get(request_id)
+            if pending_sid != session_id or not pending_payload or pending_payload[0] != "clarify.request":
+                continue
+            _answers[request_id] = ""
+            event.set()
+            released += 1
+    return released
+
+
 def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
     ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry

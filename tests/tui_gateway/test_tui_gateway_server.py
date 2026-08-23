@@ -12450,6 +12450,44 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert "interrupt_called" not in calls  # must NOT interrupt
 
 
+def test_session_steer_releases_clarify_gate_for_same_runtime_session():
+    clarify_event = threading.Event()
+    other_event = threading.Event()
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(steer=lambda text: True)
+    )
+    server._pending["clarify-sid"] = ("sid", clarify_event)
+    server._pending_prompt_payloads["clarify-sid"] = (
+        "clarify.request",
+        {"question": "Choose a route", "request_id": "clarify-sid"},
+    )
+    server._pending["clarify-other"] = ("other", other_event)
+    server._pending_prompt_payloads["clarify-other"] = (
+        "clarify.request",
+        {"question": "Other session", "request_id": "clarify-other"},
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {"session_id": "sid", "text": "use my typed route"},
+            }
+        )
+
+        assert resp["result"]["status"] == "queued"
+        assert clarify_event.is_set()
+        assert server._answers["clarify-sid"] == ""
+        assert not other_event.is_set()
+        assert "clarify-other" not in server._answers
+    finally:
+        server._sessions.pop("sid", None)
+        for request_id in ("clarify-sid", "clarify-other"):
+            server._pending.pop(request_id, None)
+            server._pending_prompt_payloads.pop(request_id, None)
+            server._answers.pop(request_id, None)
+
+
 def test_session_steer_rejects_empty_text():
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(steer=lambda t: True)

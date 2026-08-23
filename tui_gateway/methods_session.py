@@ -2394,7 +2394,7 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
-def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
+def _apply_correction(rid, session: dict, sid: str, verb: str, text: str, accepted_status: str) -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
     and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
     try:
@@ -2402,6 +2402,11 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
     if accepted:
+        # A typed correction is also "none of these" for a clarify gate.  Do
+        # this server-side after steer/redirect is parked so a renderer
+        # reconnect or stale client store cannot leave the accepted text
+        # waiting behind the question until clarify_timeout expires.
+        _release_pending_clarify_for_session(sid)
         with session["history_lock"]:
             _record_inflight_correction(session, text)
             # #84417: steer does not cancel the live original, but a server queue self-copy of that original
@@ -2432,7 +2437,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
-        return _apply_correction(rid, session, verb, text, accepted_status)
+        return _apply_correction(rid, session, str(params.get("session_id") or ""), verb, text, accepted_status)
 
 
 # Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role
