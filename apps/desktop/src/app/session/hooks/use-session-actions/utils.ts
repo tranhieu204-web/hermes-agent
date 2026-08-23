@@ -7,7 +7,8 @@ import {
   chatMessageText,
   preserveLocalAssistantErrors,
   textPart,
-  toChatMessages
+  toChatMessages,
+  upsertToolPart
 } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -58,6 +59,51 @@ import { reportBackendContract, reportInstallMethodWarning } from '@/store/updat
 import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
+
+/**
+ * Recreate the inline clarify row from the backend's resume snapshot.
+ *
+ * Live `clarify.request` events already upsert this row, but a reconnect can
+ * miss that one-shot event. Restoring only the clarify store leaves the
+ * backend blocked and paints the needs-input dot with no answerable card.
+ */
+export function ensurePendingClarifyToolRow(
+  messages: ChatMessage[],
+  pending: SessionResumeResult['pending_clarify']
+): ChatMessage[] {
+  if (!pending || typeof pending.request_id !== 'string' || typeof pending.question !== 'string') {
+    return messages
+  }
+
+  const payload = {
+    args: {
+      choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : [],
+      ...(pending.multi_select === true ? { multi_select: true } : {}),
+      question: pending.question
+    },
+    name: 'clarify',
+    tool_id: pending.request_id
+  }
+
+  const assistantIndex = messages.findLastIndex(message => message.role === 'assistant')
+
+  if (assistantIndex === -1) {
+    return [
+      ...messages,
+      {
+        id: `clarify-${pending.request_id}`,
+        parts: upsertToolPart([], payload, 'running'),
+        pending: true,
+        role: 'assistant'
+      }
+    ]
+  }
+
+  const assistant = messages[assistantIndex]
+  const parts = upsertToolPart(assistant.parts, payload, 'running')
+
+  return messages.map((message, index) => (index === assistantIndex ? { ...assistant, parts, pending: true } : message))
+}
 
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false

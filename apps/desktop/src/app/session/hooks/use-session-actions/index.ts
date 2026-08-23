@@ -128,6 +128,7 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
+import { requestScrollToBottom } from '@/store/thread-scroll'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
@@ -159,6 +160,7 @@ import {
   chatMessageArraysEquivalent,
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
+  ensurePendingClarifyToolRow,
   findListedSession,
   goneSessionVerdict,
   isSessionGoneError,
@@ -1542,6 +1544,11 @@ export function useSessionActions({
                 )
               }
 
+              if (pendingClarify) {
+                activatedMessages = ensurePendingClarifyToolRow(activatedMessages, activated.pending_clarify)
+                requestScrollToBottom()
+              }
+
               const pendingClarifyProjection = pendingClarify
                 ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
                 : null
@@ -1915,10 +1922,14 @@ export function useSessionActions({
 
         // Prefetch-hit fast path: reuse the live array when neither runtime
         // changes nor in-flight recovery changed the reconciled transcript.
-        const messagesForView =
+        let messagesForView =
           inFlightRecovery.messages === currentMessages
             ? currentMessages
             : preserveLocalAssistantErrors(inFlightRecovery.messages, currentMessages)
+
+        if (resumed.pending_clarify) {
+          messagesForView = ensurePendingClarifyToolRow(messagesForView, resumed.pending_clarify)
+        }
 
         // Fail-latch on the PRE-recovery transcript: an orphan journal tail
         // must not mask a lost transcript (a retry that reloads real history
@@ -1960,6 +1971,10 @@ export function useSessionActions({
 
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
+
+        if (pendingClarify) {
+          requestScrollToBottom()
+        }
 
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 

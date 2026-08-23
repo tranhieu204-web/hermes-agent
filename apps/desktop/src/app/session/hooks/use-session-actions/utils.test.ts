@@ -23,6 +23,7 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   dedupeInflightUserAgainstTranscript,
+  ensurePendingClarifyToolRow,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -36,6 +37,52 @@ import {
   sessionShouldHaveTranscript,
   toBranchMessages
 } from './utils'
+
+describe('ensurePendingClarifyToolRow', () => {
+  const pending = {
+    choices: ['Approve', 'Change'],
+    question: 'Build this version?',
+    request_id: 'clarify-request-1'
+  }
+
+  it('creates an answerable inline row when resume missed clarify.request', () => {
+    const messages: ChatMessage[] = [
+      { id: 'assistant-1', parts: [{ type: 'text', text: 'Here is the mockup.' }], role: 'assistant' }
+    ]
+
+    const restored = ensurePendingClarifyToolRow(messages, pending)
+    const toolParts = restored[0].parts.filter(part => part.type === 'tool-call')
+
+    expect(toolParts).toHaveLength(1)
+    expect(toolParts[0]).toMatchObject({
+      args: { choices: ['Approve', 'Change'], question: 'Build this version?' },
+      toolCallId: 'clarify-request-1',
+      toolName: 'clarify'
+    })
+    expect(restored[0].pending).toBe(true)
+  })
+
+  it('merges with a hydrated clarify call instead of duplicating it', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'assistant-1',
+        parts: [
+          {
+            args: { choices: ['Approve', 'Change'], question: 'Build this version?' },
+            toolCallId: 'model-call-1',
+            toolName: 'clarify',
+            type: 'tool-call'
+          }
+        ],
+        role: 'assistant'
+      }
+    ]
+
+    const restored = ensurePendingClarifyToolRow(messages, pending)
+
+    expect(restored[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
+  })
+})
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
   ({ id, role, parts: [{ type: 'text', text }], ...extra }) as ChatMessage
