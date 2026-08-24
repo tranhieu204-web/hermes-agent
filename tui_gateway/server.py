@@ -1330,26 +1330,25 @@ def _release_pending_clarify_for_session(sid: str) -> int:
     ``session.redirect`` when the user types a follow-up instead of choosing a
     card option.  The server must not rely on that two-RPC client choreography:
     after a reconnect or stale renderer store the correction can be accepted
-    while the clarify Event remains blocked, leaving the message queued behind
-    the question until its (potentially one-hour) timeout.
+    while the clarify wait remains blocked, leaving the message queued behind
+    the question until its (potentially unlimited) timeout.
 
     The correction itself remains the authoritative user text.  Resolve the
     clarify with the same empty answer as Skip so the agent sees the correction
     exactly once through its steer/redirect path.
     """
+    from tui_gateway import server_requests
+
     session_id = str(sid or "")
     if not session_id:
         return 0
 
     released = 0
-    with _prompt_lock:
-        for request_id, (pending_sid, event) in list(_pending.items()):
-            pending_payload = _pending_prompt_payloads.get(request_id)
-            if pending_sid != session_id or not pending_payload or pending_payload[0] != "clarify.request":
-                continue
-            _answers[request_id] = ""
-            event.set()
-            released += 1
+    for req in server_requests.open_requests(session_id):
+        if req["method"] != "clarify":
+            continue
+        server_requests.resolve_response({"id": req["id"], "result": {"answer": ""}})
+        released += 1
     return released
 
 
@@ -1357,18 +1356,21 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
     ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
     result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
-    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all.
+
+    Desktop/TUI waits indefinitely here; messaging adapters keep their
+    own finite configurable timeouts."""
     from tui_gateway import server_requests
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=None,
                                       qids=[e["qid"] for e in questions])
         if not result or "answers" not in result:
             return ""
         return json.dumps(result, ensure_ascii=False)
     params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
+    result = server_requests.send("clarify", sid, params, timeout=None)
     answer = (result or {}).get("answer", "")
     return answer if isinstance(answer, str) else ""
 

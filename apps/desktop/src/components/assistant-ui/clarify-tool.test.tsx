@@ -26,17 +26,26 @@ const gatewayMocks = vi.hoisted(() => ({
   requestGatewayForAgent: vi.fn(async () => ({ ok: true }))
 }))
 
+const clarifyAuiState = vi.hoisted(() => ({ messageRunning: true }))
+
+// Default: the assistant message is still running so existing pending-card
+// tests exercise ClarifyToolPending. Individual tests can seal the message.
+vi.mock('@assistant-ui/react', () => ({
+  useAuiState: (
+    select?: (state: { message: { status?: { type: string } }; thread: { isRunning: boolean } }) => unknown
+  ) => {
+    const state = {
+      message: { status: { type: clarifyAuiState.messageRunning ? 'running' : 'complete' } },
+      thread: { isRunning: clarifyAuiState.messageRunning }
+    }
+
+    return typeof select === 'function' ? select(state) : clarifyAuiState.messageRunning
+  }
+}))
+
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   requestGatewayForAgent: gatewayMocks.requestGatewayForAgent
-}))
-
-// The live pending card used to require message-running. Tests that exercise
-// the pending form force that on; the settle-shift case flips it off.
-let messageRunning = true
-
-vi.mock('@assistant-ui/react', () => ({
-  useAuiState: () => messageRunning
 }))
 
 /** Seed a live `clarify` server request; the card answers it synchronously with
@@ -58,7 +67,7 @@ afterEach(() => {
   resetServerRequestsForTests()
   $activeSessionId.set(null)
   $gateway.set(null)
-  messageRunning = true
+  clarifyAuiState.messageRunning = true
   vi.clearAllMocks()
 })
 
@@ -132,7 +141,7 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
 
 describe('ClarifyTool live card stays mounted across settle', () => {
   it('keeps the question card while the gateway request is open and the turn reports not-running', () => {
-    messageRunning = false
+    clarifyAuiState.messageRunning = false
     renderLiveClarify()
 
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
@@ -141,7 +150,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
   })
 
   it('demotes to a tool row when the turn stopped and no request is left to answer', () => {
-    messageRunning = false
+    clarifyAuiState.messageRunning = false
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn() } as never)
     renderClarify(<ClarifyTool {...liveClarifyProps()} />)
@@ -1200,5 +1209,38 @@ describe('ClarifyTool visible-card scoping', () => {
     // shortcut": neither zone may be permanently starved of its own keys.
     expect(zoneA).toHaveBeenCalledWith({ answer: 'staging' })
     expect(zoneB).not.toHaveBeenCalled()
+  })
+})
+
+describe('ClarifyTool sealed-message persistence', () => {
+  it('keeps a still-live backend request answerable after the assistant message is no longer marked running', async () => {
+    clarifyAuiState.messageRunning = false
+    const request = renderLiveClarify()
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Continue/ })).toBeTruthy()
+    expect(document.querySelector('[data-slot="tool-block"]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'staging',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('falls back when the message is not running and no pending request remains', () => {
+    clarifyAuiState.messageRunning = false
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+    expect(document.querySelector('[data-slot="tool-block"]')).toBeTruthy()
+  })
+})
   })
 })

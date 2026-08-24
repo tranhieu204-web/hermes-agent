@@ -12451,21 +12451,15 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
 
 
 def test_session_steer_releases_clarify_gate_for_same_runtime_session():
-    clarify_event = threading.Event()
-    other_event = threading.Event()
+    from tui_gateway import server_requests
+
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(steer=lambda text: True)
     )
-    server._pending["clarify-sid"] = ("sid", clarify_event)
-    server._pending_prompt_payloads["clarify-sid"] = (
-        "clarify.request",
-        {"question": "Choose a route", "request_id": "clarify-sid"},
-    )
-    server._pending["clarify-other"] = ("other", other_event)
-    server._pending_prompt_payloads["clarify-other"] = (
-        "clarify.request",
-        {"question": "Other session", "request_id": "clarify-other"},
-    )
+    req_sid = server_requests.ServerRequest("sid", "clarify", {"question": "Choose a route"})
+    req_other = server_requests.ServerRequest("other", "clarify", {"question": "Other session"})
+    server_requests._open[req_sid.id] = req_sid
+    server_requests._open[req_other.id] = req_other
     try:
         resp = server.handle_request(
             {
@@ -12476,16 +12470,14 @@ def test_session_steer_releases_clarify_gate_for_same_runtime_session():
         )
 
         assert resp["result"]["status"] == "queued"
-        assert clarify_event.is_set()
-        assert server._answers["clarify-sid"] == ""
-        assert not other_event.is_set()
-        assert "clarify-other" not in server._answers
+        assert req_sid.event.is_set()
+        assert req_sid.answered and req_sid.result == {"answer": ""}
+        assert not req_other.event.is_set()
+        assert req_other.id in server_requests._open
     finally:
         server._sessions.pop("sid", None)
-        for request_id in ("clarify-sid", "clarify-other"):
-            server._pending.pop(request_id, None)
-            server._pending_prompt_payloads.pop(request_id, None)
-            server._answers.pop(request_id, None)
+        server_requests._open.pop(req_sid.id, None)
+        server_requests._open.pop(req_other.id, None)
 
 
 def test_session_steer_rejects_empty_text():
@@ -21127,18 +21119,76 @@ def _capture_server_request(monkeypatch, result):
     return captured
 
 
-def test_clarify_callback_uses_configured_timeout(monkeypatch):
-    """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
-    (via _clarify_timeout_seconds), and returns the response's ``answer``."""
-    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
+def test_desktop_clarify_block_ignores_positive_global_timeout(monkeypatch):
+    """A positive agent.clarify_timeout must not deadline the Desktop/TUI
+    clarify wait. Messaging adapters keep their own finite timeouts."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: 3600)
     captured = _capture_server_request(monkeypatch, {"answer": "answer"})
 
     result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
 
     assert result == "answer"
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
-    assert captured["timeout"] == 42
+    assert captured["timeout"] is None
     assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
+def test_teardown_releases_parked_clarify_block_for_closed_session_only(monkeypatch):
+    """session.close must unpark that session's real _clarify_block and leave
+    an unrelated session's pending request untouched."""
+    from tui_gateway import server_requests
+
+    monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 0.2)
+
+    closed_sid = "sid-teardown-clarify"
+    other_sid = "sid-other-clarify"
+    req_other = server_requests.ServerRequest(other_sid, "clarify", {"question": "Other session"})
+    server_requests._open[req_other.id] = req_other
+    parked = threading.Event()
+    box: dict = {}
+
+    def run_block():
+        parked.set()
+        box["answer"] = server._clarify_block(closed_sid, "Stay visible?", ["yes", "no"])
+
+    thread = threading.Thread(target=run_block, name="clarify-park-closed")
+    session = _session()
+    session["_run_thread"] = thread
+    server._sessions[closed_sid] = session
+
+    try:
+        thread.start()
+        assert parked.wait(2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if any(req.sid == closed_sid for req in server_requests._open.values()):
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("closed session never registered a pending clarify")
+
+        resp = server.handle_request(
+            {
+                "id": "close-clarify",
+                "method": "session.close",
+                "params": {"session_id": closed_sid},
+            }
+        )
+        assert resp.get("result", {}).get("closed") is True
+
+        thread.join(timeout=2)
+        assert not thread.is_alive(), "teardown left _clarify_block parked forever"
+        assert not any(req.sid == closed_sid for req in server_requests._open.values())
+        assert not req_other.event.is_set()
+        assert req_other.id in server_requests._open
+    finally:
+        thread.join(timeout=0.1)
+        server._sessions.pop(closed_sid, None)
+        server_requests._open.pop(req_other.id, None)
+        stale = [req_id for req_id, req in list(server_requests._open.items()) if req.sid == closed_sid]
+        for req_id in stale:
+            req = server_requests._open.pop(req_id)
+            req.event.set()
 
 
 def test_clarify_callback_multi_select_hint(monkeypatch):

@@ -510,6 +510,13 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
+    # Close, shutdown, and orphan reaping all funnel here. Interrupt already
+    # calls _clear_pending, but unlimited Desktop clarify waits on ev.wait(None)
+    # and will leak the turn thread unless this chokepoint releases only the
+    # detached session's pending prompts before joining.
+    sid = str(session.get("_sid") or "")
+    if sid:
+        _clear_pending(sid)
     run_thread = session.get("_run_thread")
     if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
         try:
