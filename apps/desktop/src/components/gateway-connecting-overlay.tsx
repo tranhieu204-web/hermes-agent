@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
-import { $desktopBoot } from '@/store/boot'
+import { $desktopBoot, DESKTOP_BOOT_DEGRADED_PHASE } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $gatewayState } from '@/store/session'
@@ -118,8 +118,11 @@ export function GatewayConnectingOverlay() {
     }
   }, [phase, previewing])
 
-  // Boot failed — BootFailureOverlay owns the screen; don't linger behind it.
-  if (boot.error && !previewing) {
+  // Boot failed, or the startup-service gate declared a required service
+  // degraded/blocked — that report owns the screen and must stay readable.
+  // A full-screen CONNECTING overlay on top of it would hide the one status
+  // naming the failed service and its recovery action.
+  if ((boot.error || boot.phase === DESKTOP_BOOT_DEGRADED_PHASE) && !previewing) {
     return null
   }
 

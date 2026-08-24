@@ -16,7 +16,7 @@ vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn()
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { ProfileTag } = await import('./profile-tag')
-const { setProfileColor } = await import('@/store/profile')
+const { $profiles, setProfileColor } = await import('@/store/profile')
 
 afterEach(cleanup)
 
@@ -47,5 +47,13 @@ describe('ProfileTag', () => {
     const tag = screen.getByRole('img', { name: 'Profile: xavier' })
     // jsdom normalizes hsl() to rgb(); assert the override landed, not the format.
     expect(tag.style.color).toBe('rgb(75, 221, 75)')
+  })
+
+  it('shows the display name and canonical id in explicit All Profiles rows', () => {
+    $profiles.set([{ name: 'grokresearch', display_name: 'Drakthar', is_default: false }] as never)
+
+    render(<ProfileTag expanded profile="grokresearch" />)
+
+    expect(screen.getByLabelText('Profile: Drakthar · grokresearch').textContent).toContain('Drakthar· grokresearch')
   })
 })

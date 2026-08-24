@@ -62,7 +62,7 @@ def client(monkeypatch, profiles_on_disk):
     return c
 
 
-def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False):
+def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False, content="hi"):
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
@@ -76,7 +76,7 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None,
     db = SessionDB(db_path=home / "state.db")
     try:
         db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
-        db.append_message(session_id=session_id, role="user", content="hi")
+        db.append_message(session_id=session_id, role="user", content=content)
         if pinned:
             assert db.set_session_pinned(session_id, True)
     finally:
@@ -108,6 +108,27 @@ def _slice_ids(payload, slice_name):
 
 
 class TestSidebarScope:
+
+    def test_search_is_concrete_by_default_and_all_only_when_explicit(self, client, profiles_on_disk):
+        # Same durable id and same searchable text in two independent DBs:
+        # ownership must come from enumeration, and All must preserve both.
+        _seed_session(profiles_on_disk["default"], "duplicate", source="cli", content="needle owner")
+        _seed_session(profiles_on_disk["worker"], "duplicate", source="cli", content="needle owner")
+
+        concrete = client.get(
+            "/api/profiles/sessions/search", params={"q": "needle", "profile": "worker"}
+        ).json()
+        assert [(row["session_id"], row["profile"]) for row in concrete["results"]] == [
+            ("duplicate", "worker")
+        ]
+
+        combined = client.get(
+            "/api/profiles/sessions/search", params={"q": "needle", "profile": "all"}
+        ).json()
+        assert {(row["session_id"], row["profile"]) for row in combined["results"]} == {
+            ("duplicate", "default"),
+            ("duplicate", "worker"),
+        }
 
     def test_concrete_profile_sees_only_its_own_slices(self, client, profiles_on_disk):
         _seed_session(profiles_on_disk["default"], "default-chat", source="cli")

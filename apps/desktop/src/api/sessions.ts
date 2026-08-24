@@ -403,9 +403,9 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   })
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+export async function searchSessions(query: string, profile: 'all' | (string & {})): Promise<SessionSearchResponse> {
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    path: `/api/profiles/sessions/search?q=${encodeURIComponent(query)}&profile=${encodeURIComponent(profile)}`
   })
 }
 

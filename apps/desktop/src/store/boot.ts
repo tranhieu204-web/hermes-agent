@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import type { DesktopBootProgress } from '@/global'
 import { translateNow } from '@/i18n'
 
+import { formatStartupDegradedMessage, type StartupDegradedReport } from '../../electron/startup-service-gate'
+
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
 }
@@ -98,6 +100,35 @@ export function completeDesktopBoot(message = translateNow('boot.ready')) {
     running: false,
     timestamp: Date.now(),
     visible: false
+  })
+}
+
+/** Phase for a boot the startup-service gate refused to complete. */
+export const DESKTOP_BOOT_DEGRADED_PHASE = 'renderer.degraded'
+
+/**
+ * Terminal startup-service failure: show ONE clear degraded/blocked status
+ * naming the failed service and the recovery action, and leave the boot
+ * incomplete.
+ *
+ * Deliberately not completeDesktopBoot() with a warning: the app is not ready,
+ * and deliberately not a toast per failed probe: the gate stops at the first
+ * terminal failure precisely so this surface stays a single status rather than
+ * a popup storm.
+ */
+export function degradeDesktopBoot(report: StartupDegradedReport) {
+  const current = $desktopBoot.get()
+  const message = formatStartupDegradedMessage(report)
+
+  $desktopBoot.set({
+    ...current,
+    error: message,
+    message,
+    phase: DESKTOP_BOOT_DEGRADED_PHASE,
+    progress: clampProgress(current.progress),
+    running: false,
+    timestamp: Date.now(),
+    visible: true
   })
 }
 

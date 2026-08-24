@@ -25,6 +25,7 @@ import {
   $desktopBoot,
   applyDesktopBootProgress,
   completeDesktopBoot,
+  degradeDesktopBoot,
   failDesktopBoot,
   resumeDesktopBootForRetry,
   setDesktopBootStep
@@ -101,6 +102,18 @@ import {
 } from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+
+import {
+  completeDesktopBootWhenReady,
+  createDesktopStartupServices,
+  findStartupServiceRecord,
+  hasStartupServiceLedger,
+  PROFILE_POOL_SERVICE,
+  runStartupServiceGate,
+  startupModeFromConnection,
+  startupModeFromStartupServices,
+  type StartupProbeResult
+} from '../../../../electron/startup-service-gate'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useDefaultProfilePreference } from './use-default-profile-preference'
@@ -323,6 +336,17 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    // True until THIS cold-start episode publishes its terminal status. While
+    // it holds, the aggregate startup gate — not the backend-exit listener —
+    // owns the verdict, so one failure episode produces one status. Bounded
+    // boot retries stay inside the same episode; a completed, degraded, or
+    // terminally failed boot ends it.
+    let startupVerdictPending = true
+    // The backend child exited during the episode above. Held as evidence for
+    // the required primary-backend row instead of being published as its own
+    // failure state + persistent toast, which used to land BEFORE the gate's
+    // normalized degraded report for the very same failure.
+    let startupExitFailure: string | null = null
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -331,17 +355,17 @@ export function useGatewayBoot({
       }
     }
 
-    // Whether the failed boot is a TRANSIENT remote fault main marked as
-    // retryable (dropped SSH/HTTP registered connection, mint timeout).
-    // Local failures and confirmed reauth rejections come back false and go
-    // straight to the recovery overlay.
-    const bootFailureIsRetryable = async (): Promise<boolean> => {
+    // Main's own record of a failed start. It carries both the transient/
+    // terminal classification (`retryable`: a dropped SSH/HTTP registered
+    // connection or a mint timeout is transient; local failures and confirmed
+    // reauth rejections are not) and the startup-service ledger row naming the
+    // primary backend this mode required. The renderer reads that record
+    // rather than re-running main's probes against the same endpoints.
+    const bootFailureProgress = async (): Promise<DesktopBootProgress | null> => {
       try {
-        const snapshot = await desktop.getBootProgress()
-
-        return snapshot?.retryable === true
+        return await desktop.getBootProgress()
       } catch {
-        return false
+        return null
       }
     }
 
@@ -349,6 +373,29 @@ export function useGatewayBoot({
     // `connectionState` to a constant across the early-return guards (the state
     // genuinely changes between reads).
     const gatewayOpen = () => gateway.connectionState === 'open'
+
+    // The cancellation epoch re-read AFTER every socket dial.
+    //
+    // Cleanup closes this effect's gateway, but that only reaches a socket the
+    // client already holds: a connect() that runs after teardown (because
+    // cancellation landed in one of the owner-side awaits leading up to it)
+    // opens a socket into a window that is gone, and cleanup has already run
+    // and cannot close it. Every `await gateway.connect(...)` therefore ends
+    // by re-reading the epoch and retiring what it may have opened. Returns
+    // true when the caller must stop.
+    const retireGatewayIfCancelled = () => {
+      if (!cancelled) {
+        return false
+      }
+
+      try {
+        gateway.close()
+      } catch {
+        // Already closed by cleanup; retiring twice is not an error.
+      }
+
+      return true
+    }
 
     const clearReconnectTimer = () => {
       if (reconnectTimer !== null) {
@@ -437,12 +484,18 @@ export function useGatewayBoot({
           'Timed out re-minting the gateway WebSocket URL'
         )
 
-        await gateway.connect(wsUrl)
-
         if (cancelled) {
           return
         }
 
+        await gateway.connect(wsUrl)
+
+        if (retireGatewayIfCancelled()) {
+          return
+        }
+
+        reconnectAttempt = 0
+        reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         // A legacy remote primary has no registry identity to scope by; fall
@@ -700,6 +753,20 @@ export function useGatewayBoot({
       }
     }
 
+    // Settings load as a startup-service probe/repair: resolves to null when
+    // the config is loaded, or the failure detail when it is not. Returning
+    // the failure (instead of rethrowing) is what lets the gate spend its one
+    // bounded repair on it.
+    async function runRefreshHermesConfig(): Promise<string | null> {
+      try {
+        await callbacksRef.current.refreshHermesConfig()
+
+        return null
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
+    }
+
     // Soft gateway-mode apply: main tore down the primary without reloading.
     // Wipe session lists so skeletons retrigger, then re-dial in place.
     const softSwitch = async () => {
@@ -768,6 +835,12 @@ export function useGatewayBoot({
         await gateway.connect(wsUrl)
 
         if (!ownsSwitch()) {
+          return
+        }
+
+        await gateway.connect(wsUrl)
+
+        if (retireGatewayIfCancelled()) {
           return
         }
 
@@ -1256,6 +1329,22 @@ export function useGatewayBoot({
       // Retry, and the reconnect handler below is a no-op before boot completes
       // — a toast whose button does nothing would only mislead. Fail the
       // overlay and stop there.
+      //
+      // Startup: the aggregate gate owns this episode's status. A child that
+      // dies mid-cold-start is the required primary-backend row's evidence,
+      // not a verdict of its own — publishing failDesktopBoot() plus a
+      // persistent toast here raced the gate and put a second, differently
+      // shaped status in front of the normalized degraded report for one and
+      // the same failure. Recorded instead, and judged on the row that owns
+      // the backend (probePrimaryBackend below).
+      if (startupVerdictPending) {
+        startupExitFailure = translateNow('boot.errors.backgroundExitedDuringStartup')
+
+        return
+      }
+
+      // Post-boot exit reporting is deliberately unchanged: once the gate has
+      // published this episode's verdict, an exit is its own event again.
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
         // Concludes the in-flight boot on its behalf, so it latches like the
         // catch blocks that conclude one.
@@ -1285,31 +1374,45 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      // Exit evidence belongs to one boot attempt. A later bounded retry must
+      // not inherit a previous child's death.
+      startupExitFailure = null
+
       // Where this boot attempt got to — a historical fact, not a late read of
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
       let stage: 'resolving' | 'minting' | 'dialing' | 'connected' = 'resolving'
 
-      try {
-        // A profile-pinned helper window (the HUD) dials its target profile's
-        // backend directly — ensureBackend spawns/reuses it from the pool.
-        // Full peers use the source/profile Electron pinned before loading.
-        // Bounded like the reconnect path (#93454): a wedged main-process
-        // round-trip must not hang "Starting Hermes…" forever. Initial boot
-        // rides out a full backend cold spawn, so it gets the shared 45s
-        // backend-boot budget, not the 20s reconnect budget.
-        const conn = await withTimeout(
-          getWindowBackend(true),
-          BACKEND_BOOT_WAIT_TIMEOUT_MS,
-          'Timed out connecting to Hermes backend'
-        )
+      // Settings load is a REQUIRED startup service, so its failure is captured
+      // rather than thrown: the gate below owns the verdict, and gets to spend
+      // one bounded repair on it before declaring the app degraded. (Throwing
+      // would skip the repair entirely.)
+      let hermesConfigFailure: string | null = null
+      // The required PRIMARY backend's own start failure, for the boots where
+      // main could not hand the renderer a connection at all. Captured for the
+      // same reason: that failure belongs in the aggregate gate, not in a
+      // parallel failure path with its own recovery rules.
+      let primaryStartFailure: string | null = null
+      // Whether this boot is standing on a live primary connection + socket.
+      let connected = false
 
-        if (cancelled) {
-          return
-        }
+      // The primary-backend row's ready verdicts, filtered through the exit
+      // evidence the backend-exit listener recorded instead of publishing.
+      //
+      // This is where a startup-time child exit is JUDGED, and judging it on
+      // the row that owns the backend is what makes one failure episode
+      // produce one status. It has to override a ready verdict specifically:
+      // main's ledger row (and the connection this boot may already stand on)
+      // describe probes that really did pass — before the process died. A
+      // row that already failed keeps its own, more specific cause.
+      const primaryReady = (result: StartupProbeResult): StartupProbeResult =>
+        startupExitFailure ? { detail: startupExitFailure, ready: false, via: 'desktop.onBackendExit' } : result
 
-        stage = 'minting'
-
+      // Everything the cold start does once the primary connection resolves.
+      // Extracted so the gate's ONE bounded primary-backend repair can continue
+      // THIS boot when the existing owner hands a connection back — a completed
+      // boot must never mean "the backend came up but nothing else ran".
+      const connectPrimary = async (conn: HermesConnection) => {
         setDesktopBootStep({
           phase: 'renderer.gateway.connect',
           message: translateNow('boot.steps.connectingGateway'),
@@ -1317,6 +1420,7 @@ export function useGatewayBoot({
         })
         publish(conn)
         setPrimaryGatewayConnection(conn)
+        stage = 'minting'
 
         // Seed the workspace BEFORE the gateway opens: every session-restore
         // path is gated on gatewayState === 'open', so nothing can be active yet
@@ -1329,6 +1433,15 @@ export function useGatewayBoot({
           await ensureDefaultWorkspaceCwd()
         } catch (err) {
           console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
+        // Each remaining step is an owner-side await, and this closure is also
+        // the gate's ONE primary-backend repair continuing a boot: teardown can
+        // land in any of them. Re-read the epoch between every pair so a dead
+        // effect stops here instead of dialing a socket and running the whole
+        // post-connect boot behind a window that is already gone.
+        if (cancelled) {
+          return
         }
 
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
@@ -1350,10 +1463,15 @@ export function useGatewayBoot({
           stage = 'dialing'
         }
 
+        if (cancelled) {
+          return
+        }
+
         await gateway.connect(wsUrl)
         stage = 'connected'
+        connected = true
 
-        if (cancelled) {
+        if (retireGatewayIfCancelled()) {
           return
         }
 
@@ -1363,6 +1481,10 @@ export function useGatewayBoot({
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
         await adoptPrimaryProfile(conn)
+
+        if (cancelled) {
+          return
+        }
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1375,7 +1497,9 @@ export function useGatewayBoot({
           // post-connect pass covers the remote backend default. Non-fatal: a
           // failed sync must not abort boot (the remembered cwd remains).
           seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
-          callbacksRef.current.refreshHermesConfig(),
+          runRefreshHermesConfig().then(failure => {
+            hermesConfigFailure = failure
+          }),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient
           // blip, or an endpoint the fallback couldn't cover) must leave the
@@ -1386,30 +1510,329 @@ export function useGatewayBoot({
             setSessionsLoading(false)
           })
         ])
+      }
+
+      try {
+        // A profile-pinned helper window (the HUD) dials its target profile's
+        // backend directly — ensureBackend spawns/reuses it from the pool.
+        // Everything else keeps dialing the primary.
+        let conn: HermesConnection | null = null
+        const profileOverride = windowProfileOverride()
+
+        try {
+          // Bounded like the reconnect path (#93454): a wedged main-process
+          // round-trip must not hang "Starting Hermes…" forever. Initial boot
+          // rides out a full backend cold spawn, so it gets the shared 45s
+          // backend-boot budget, not the 20s reconnect budget.
+          conn = await withTimeout(
+            getWindowBackend(true),
+            BACKEND_BOOT_WAIT_TIMEOUT_MS,
+            'Timed out connecting to Hermes backend'
+          )
+        } catch (err) {
+          // A required primary backend that never came up is a startup-SERVICE
+          // failure, and the gate below is where required services are judged.
+          // Capturing it here (instead of throwing straight to the terminal
+          // fail/notify path) is what gives the most important required row the
+          // same treatment as every other one: one repair through its existing
+          // owner, one re-probe, and one normalized degraded status.
+          primaryStartFailure = err instanceof Error ? err.message : String(err)
+        }
 
         if (cancelled) {
           return
         }
 
-        completeDesktopBoot()
-        bootCompleted = true
-        bootRetryAttempt = 0
+        // The failed attempt's boot-progress snapshot: main's retryable
+        // classification plus the ledger row naming the primary this mode
+        // required (there is no connection left to read the mode off).
+        let failureProgress: DesktopBootProgress | null = null
+
+        if (conn) {
+          await connectPrimary(conn)
+
+          if (cancelled) {
+            return
+          }
+        } else {
+          failureProgress = await bootFailureProgress()
+
+          if (cancelled) {
+            return
+          }
+
+          // Transient remote failure (dropped SSH/HTTP registered connection,
+          // mint timeout): self-heal with bounded, jittered retries instead of
+          // parking on "Desktop boot failed" until the user re-enters the same
+          // connection details (#82679). Main already cleared the failed cached
+          // descriptor, so the next getConnection() rebuilds the connection —
+          // exactly what manual re-entry forced. Exhausted retries, local
+          // failures, and confirmed reauth rejections fall through to the
+          // aggregate gate, never to an infinite spinner.
+          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && failureProgress?.retryable === true) {
+            const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
+            bootRetryAttempt += 1
+            bootFailed = false
+            resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
+            clearBootRetryTimer()
+            bootRetryTimer = setTimeout(() => {
+              bootRetryTimer = null
+              void boot()
+            }, delay)
+
+            return
+          }
+
+          // Nothing downstream of the connection ran, so the settings row is
+          // not ready either. The gate stops at the first terminal failure —
+          // the primary row — so this only decides what the run would see if
+          // the owner's one repair brought the backend back.
+          hermesConfigFailure = 'Hermes settings were not loaded: the primary Hermes backend did not start.'
+        }
+
+        // The aggregate startup-service acceptance. Window reveal and a
+        // settled fetch list are not readiness verdicts: every service THIS
+        // mode requires has to answer its own authoritative probe before the
+        // app may call itself ready. Healthy owned services are reused;
+        // recoverable ones get exactly one repair through their existing
+        // owner and one re-probe.
+        const gateResult = await runStartupServiceGate({
+          // This effect's own epoch. A run whose window was torn down stops
+          // where it is: no owner repair, no re-probe, no verdict.
+          cancelled: () => cancelled,
+          mode: conn ? startupModeFromConnection(conn) : startupModeFromStartupServices(failureProgress),
+          services: createDesktopStartupServices({
+            probeGatewaySocket: () =>
+              gatewayOpen()
+                ? { ready: true, reused: true, via: 'gateway.connectionState === "open"' }
+                : {
+                    detail: `The gateway socket is ${gateway.connectionState}.`,
+                    ready: false,
+                    via: 'gateway.connectionState'
+                  },
+            probeHermesConfig: () =>
+              hermesConfigFailure
+                ? { detail: hermesConfigFailure, ready: false, via: 'refreshHermesConfig' }
+                : { ready: true, via: 'refreshHermesConfig' },
+            // Main already ran this backend's authoritative probes (port
+            // announcement, /api/health ladder, dashboard-token adoption, the
+            // /api/ws session-token handshake). Read its record instead of
+            // opening a second owner on the same endpoints.
+            probePrimaryBackend: async serviceId => {
+              // A profile-pinned helper window uses a pool backend owned by
+              // main:ensureBackend, not main's primary ledger row.
+              if (serviceId === PROFILE_POOL_SERVICE) {
+                return connected
+                  ? primaryReady({
+                      ready: true,
+                      reused: true,
+                      via: `resolved profile backend (${profileOverride})`
+                    })
+                  : {
+                      detail: primaryStartFailure ?? `The ${profileOverride ?? 'requested'} profile backend did not start.`,
+                      ready: false,
+                      via: 'main:ensureBackend'
+                    }
+              }
+
+              const snapshot = await desktop.getBootProgress().catch(() => null)
+
+              // Compatibility ladder, tied to an identified older runtime: a
+              // main process that predates the startup-service ledger publishes
+              // no rows at all. Its authoritative probes still ran — they are
+              // what produced the connection this boot is standing on — so
+              // "this build cannot report it" must not read as "it failed".
+              // That reading only holds while there IS a connection: on a boot
+              // whose primary start failed there is no silence to interpret,
+              // because the owner's own failure is the evidence.
+              if (!hasStartupServiceLedger(snapshot)) {
+                return connected
+                  ? primaryReady({ ready: true, reused: true, via: 'main boot-progress (runtime predates the ledger)' })
+                  : {
+                      detail: primaryStartFailure ?? 'The primary Hermes backend did not start.',
+                      ready: false,
+                      via: 'main:startHermes (runtime predates the ledger)'
+                    }
+              }
+
+              const record = findStartupServiceRecord(snapshot, serviceId)
+
+              if (!record) {
+                return connected
+                  ? primaryReady({
+                      ready: true,
+                      reused: true,
+                      via: 'resolved primary connection (main:startHermes)'
+                    })
+                  : {
+                      detail: primaryStartFailure ?? 'The main process has not reported this backend as started.',
+                      ready: false,
+                      via: 'main startup-service ledger'
+                    }
+              }
+
+              return record.status === 'ready'
+                ? primaryReady({ ready: true, reused: true, via: record.via })
+                : {
+                    detail: record.detail || 'The primary Hermes backend did not become ready.',
+                    ready: false,
+                    via: record.via
+                  }
+            },
+            // Each repair re-checks THIS effect's cancellation epoch at every
+            // await boundary. Cleanup closes the socket and marks the epoch
+            // dead; a repair that resumed afterwards would re-dial a gateway
+            // the window no longer owns, or publish state into a torn-down view.
+            repairGatewaySocket: async () => {
+              if (cancelled) {
+                return
+              }
+
+              const repaired = await desktop.getConnection(profileOverride ?? undefined)
+
+              if (cancelled) {
+                return
+              }
+
+              // Rebind through the same continuation so the published
+              // descriptor, active profile, config, sessions, and socket all
+              // describe the same repaired backend.
+              if (connected) {
+                connected = false
+                gateway.close()
+              }
+
+              await connectPrimary(repaired)
+            },
+            repairHermesConfig: async () => {
+              if (cancelled) {
+                return
+              }
+
+              const failure = await runRefreshHermesConfig()
+
+              if (cancelled) {
+                return
+              }
+
+              hermesConfigFailure = failure
+            },
+            // Through the EXISTING owner only: revalidate drops a descriptor
+            // main found dead, and getConnection joins main's single-flight
+            // start. Neither spawns a second backend.
+            //
+            // Cancellation classification: main's single-flight start is
+            // SHARED (other windows may be awaiting the same promise) and has
+            // no abort token, so an owner call already issued cannot be
+            // recalled — it runs to completion on the owner's side. What the
+            // epoch checks below guarantee is the part that belongs to this
+            // effect: nothing the owner returns re-enters a torn-down window.
+            // No second revalidate, no publish, no dial, no re-probe, no
+            // verdict — the gate's own post-repair check then stops the run.
+            repairPrimaryBackend: async () => {
+              if (cancelled) {
+                return
+              }
+
+              if (!profileOverride) {
+                await desktop.revalidateConnection?.()
+              }
+
+              if (cancelled) {
+                return
+              }
+
+              const repaired = await desktop.getConnection(profileOverride ?? undefined)
+
+              if (cancelled) {
+                return
+              }
+
+              // Was this repair triggered by a child that died mid-startup?
+              // Read before the evidence is spent below: it decides whether
+              // `connected` still describes anything real.
+              const exitedDuringStartup = startupExitFailure !== null
+
+              // The owner answered for the backend that had exited, so the
+              // exit evidence is spent: the ONE re-probe reads main's current
+              // record instead of the exit that triggered this repair.
+              startupExitFailure = null
+
+              // `connected` records the dial this boot ALREADY made — at a
+              // process that has since exited. Reusing it here would hand the
+              // re-probe a fresh ready ledger while the renderer still holds
+              // the dead endpoint's socket, and the gate would declare that
+              // ready. A startup exit therefore invalidates the binding, not
+              // just the row.
+              if (connected && !exitedDuringStartup) {
+                return
+              }
+
+              if (connected) {
+                connected = false
+                // Drop the pre-exit socket BEFORE re-dialing. A child's death
+                // and its socket's close event are separate events, and
+                // connect() is a no-op while a socket still reads OPEN — so a
+                // rebind that skipped this would silently keep the renderer on
+                // the dead endpoint. Startup-only: the reconnect loop is gated
+                // on bootCompleted, so nothing re-dials behind this close.
+                gateway.close()
+              }
+
+              // The owner brought the backend back — for a boot that never got
+              // a connection, or one whose connection died under it: continue
+              // THIS boot on the repaired one (publish, open the socket, adopt
+              // the profile, load settings) rather than leaving a half-started
+              // app to be declared ready by the rows below.
+              await connectPrimary(repaired)
+            }
+          }, {
+            primaryBackendRequired: !profileOverride,
+            profileBackendRequired: Boolean(profileOverride)
+          })
+        })
+
+        if (cancelled) {
+          return
+        }
+
         // A Docker/SSH terminal backend that fails its probe means shell
         // commands silently cannot run — say so once, with a way out. Cold
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
+
+        // completeDesktopBoot() is reachable ONLY through this call. Either
+        // branch is this episode's ONE terminal status, so both end the
+        // window in which the backend-exit listener defers to this gate.
+        completeDesktopBootWhenReady({
+          complete: () => {
+            completeDesktopBoot()
+            bootCompleted = true
+            bootRetryAttempt = 0
+            startupVerdictPending = false
+          },
+          degrade: report => {
+            degradeDesktopBoot(report)
+            setSessionsLoading(false)
+            startupVerdictPending = false
+          },
+          result: gateResult
+        })
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
 
-          // Main's classification (#82679) still decides every failure it can
-          // see. The one it cannot see is the renderer-owned WebSocket dial:
-          // after a renderer reload main serves its cached descriptor with a
-          // stale `backend.ready / retryable:false` snapshot, so a remote dial
-          // that never became usable is retryable on its own. Anything after a
-          // successful dial keeps the terminal recovery surface.
+          // Main's classification still decides every failure it can see. The
+          // one it cannot see is the renderer-owned WebSocket dial: after a
+          // renderer reload main serves its cached descriptor with a stale
+          // `backend.ready / retryable:false` snapshot, so a remote dial that
+          // never became usable is retryable on its own. Anything after a
+          // successful dial keeps the terminal recovery surface. Falls back to
+          // the aggregate gate's own retryable classification for everything
+          // the stage tracker above didn't see (#82679).
           const canRetry = bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS
-          const retryable = canRetry && (stage === 'dialing' || (await bootFailureIsRetryable()))
+          const retryable =
+            canRetry && (stage === 'dialing' || (await bootFailureProgress())?.retryable === true)
 
           if (retryable && !cancelled) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
@@ -1429,6 +1852,9 @@ export function useGatewayBoot({
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
           setSessionsLoading(false)
+          // Terminal for this episode too: this IS the one status, so a later
+          // exit is reported by the listener again rather than swallowed.
+          startupVerdictPending = false
         }
       }
     }
@@ -1441,6 +1867,7 @@ export function useGatewayBoot({
     // intact across an HMR update.
     async function adoptBoot() {
       bootCompleted = true
+      startupVerdictPending = false
       completeDesktopBoot()
 
       if (survivor?.connection) {

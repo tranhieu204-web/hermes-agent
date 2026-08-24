@@ -201,8 +201,8 @@ function SidebarSessionRowImpl({
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
 
-  if ((showProfile || pinnedProfile) && hasProfileTag) {
-    trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
+  if (showProfile || pinnedProfile) {
+    trailing.push({ key: 'profile', node: <ProfileTag expanded={showProfile} profile={session.profile} /> })
   }
 
   if (pr) {

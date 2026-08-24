@@ -537,6 +537,62 @@ def get_profiles_sessions_sidebar(
         "errors": errors}
 
 
+@sessions_router.get("/api/profiles/sessions/search")
+async def search_profiles_sessions(q: str = "", limit: int = 20, profile: str = "all"):
+    """Search one authoritative profile DB or the explicit all-profile set.
+
+    Ownership is stamped from the enumerated DB, never from a nullable row
+    column or title inference. Normal profile views pass a concrete name; only
+    the explicit All Profiles surface fans out across every profile.
+    """
+    if not q or not q.strip():
+        return {"results": [], "errors": []}
+
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.web_routers.sessions import search_sessions
+
+    safe_limit = max(1, min(int(limit or 20), 100))
+    if profile and profile != "all":
+        name, _home = _cron_profile_home(profile)
+        targets = [(name, _home)]
+    else:
+        enumeration_error = None
+        try:
+            targets = profiles_mod.profiles_to_serve(multiplex=True)
+        except Exception as exc:
+            _log.exception("GET /api/profiles/sessions/search: profile enumeration failed")
+            targets = []
+            enumeration_error = str(exc)
+        if enumeration_error:
+            return {
+                "results": [],
+                "errors": [{"profile": "all", "error": enumeration_error}],
+            }
+        if not targets:
+            targets = [("default", profiles_mod.get_profile_dir("default"))]
+
+    merged: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+    for name, home in targets:
+        if not (Path(home) / "state.db").exists():
+            continue
+        try:
+            payload = await search_sessions(q=q, limit=safe_limit, profile=name)
+            for result in payload.get("results") or []:
+                tagged = dict(result)
+                tagged["profile"] = name
+                merged.append(tagged)
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            errors.append({"profile": name, "error": str(exc)})
+
+    merged.sort(
+        key=lambda row: row.get("last_active") or row.get("session_started") or row.get("started_at") or 0,
+        reverse=True,
+    )
+    return {"results": merged[:safe_limit], "errors": errors}
+
+
 def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:
     """Fold ``entries`` into ``into`` by id, recursing through one child list (repos merge
     their lanes, lanes merge their sessions). Counts add up; everything else is

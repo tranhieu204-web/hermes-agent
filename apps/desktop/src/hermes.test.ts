@@ -28,6 +28,7 @@ import {
   listSidebarSessions,
   pluginSocket,
   resetSidebarBatchCapability,
+  searchSessions,
   setApiRequestConnection,
   setApiRequestProfile,
   speakText,
@@ -82,6 +83,21 @@ describe('Hermes REST helpers', () => {
         path: '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=all',
         timeoutMs: 60_000
       })
+    )
+  })
+
+  it('searches one concrete profile unless All Profiles is explicitly requested', async () => {
+    api.mockResolvedValue({ results: [{ session_id: 'same', snippet: '', model: null, role: null, session_started: 0, source: null }] })
+
+    const concrete = await searchSessions('needle', 'work')
+    expect(api).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: '/api/profiles/sessions/search?q=needle&profile=work' })
+    )
+    expect(concrete.results[0].session_id).toBe('same')
+
+    await searchSessions('needle', 'all')
+    expect(api).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: '/api/profiles/sessions/search?q=needle&profile=all' })
     )
   })
 

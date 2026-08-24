@@ -1284,6 +1284,8 @@ export interface SessionSearchResult {
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
   model: string | null
+  /** Authoritative owner stamped by profile-DB enumeration. */
+  profile?: string
   role: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
@@ -1294,6 +1296,7 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[]
+  errors?: Array<{ profile: string; error: string }>
 }
 
 export interface LogsResponse {
