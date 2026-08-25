@@ -71,6 +71,15 @@ test('HUD composer remains fully inside the transparent window', async () => {
   const hudPage = await hudPagePromise
   await hudPage.waitForSelector('[data-slot="composer-rich-input"]', { state: 'visible' })
 
+  const openWindowStates = await fixture!.app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().map((window) => ({
+      focused: window.isFocused(),
+      visible: window.isVisible()
+    }))
+  )
+
+  expect(openWindowStates.some((window) => window.visible && window.focused)).toBe(false)
+
   const geometry = await hudPage.evaluate(() => {
     const dock = document.querySelector<HTMLElement>('[data-slot="composer-dock"]')
     const input = document.querySelector<HTMLElement>('[data-slot="composer-rich-input"]')
@@ -125,6 +134,17 @@ test('HUD composer remains fully inside the transparent window', async () => {
   expect(geometry.dockTranslate ?? 'none').not.toContain('%')
 
   await hudPage.close()
+
+  await expect
+    .poll(async () =>
+      fixture!.app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({
+          focused: window.isFocused(),
+          visible: window.isVisible()
+        }))
+      )
+    )
+    .toEqual([{ focused: false, visible: true }])
 })
 
 test('boot progress overlay fades out or shows error state', async () => {

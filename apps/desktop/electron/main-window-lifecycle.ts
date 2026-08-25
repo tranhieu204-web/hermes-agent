@@ -7,6 +7,10 @@ type MainWindowRevealTarget = {
   showInactive: () => void
 }
 
+type FocusedWindowRevealTarget = MainWindowRevealTarget & {
+  focus: () => void
+}
+
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
   isReady: boolean
   createWindow: () => unknown
@@ -40,4 +44,15 @@ export function revealMainWindow(window: MainWindowRevealTarget, isPlaywrightTes
   }
 
   window.show()
+}
+
+export function revealFocusedWindow(window: FocusedWindowRevealTarget, isPlaywrightTest: boolean) {
+  if (isPlaywrightTest) {
+    window.showInactive()
+
+    return
+  }
+
+  window.show()
+  window.focus()
 }
