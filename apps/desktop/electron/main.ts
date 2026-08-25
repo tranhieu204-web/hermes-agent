@@ -183,7 +183,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { ensureMainWindow, revealFocusedWindow, revealMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
@@ -784,6 +784,7 @@ const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
+const IS_PLAYWRIGHT_TEST = process.env.TEST_WORKER_INDEX !== undefined
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
@@ -11447,10 +11448,7 @@ function spawnHudWindow(sessionId, profile) {
   startHudCursorFeed(win)
 
   wireWindowReveal(win, {
-    show: () => {
-      win.show()
-      win.focus()
-    },
+    show: () => revealFocusedWindow(win, IS_PLAYWRIGHT_TEST),
     onRevealed: () => {
       // Step the app aside: the HUD IS the surface now.
       if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
@@ -11494,7 +11492,7 @@ function restoreMainWindowFromHud() {
   hudRestoreMainWindow = false
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
+    revealMainWindow(mainWindow, IS_PLAYWRIGHT_TEST)
   }
 }
 
@@ -11532,7 +11530,11 @@ function openHudWindow(sessionId, profile) {
       broadcastHudState(true)
     }
 
-    focusWindow(hudWindow)
+    if (IS_PLAYWRIGHT_TEST) {
+      hudWindow.showInactive()
+    } else {
+      focusWindow(hudWindow)
+    }
 
     return hudWindow
   }
@@ -11562,7 +11564,7 @@ function closeHudWindow() {
   restoreMainWindowFromHud()
   broadcastHudState(false)
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  if (!IS_PLAYWRIGHT_TEST && mainWindow && !mainWindow.isDestroyed()) {
     focusWindow(mainWindow)
   }
 }
@@ -11841,6 +11843,7 @@ function createWindow() {
   }
 
   const revealController = wireWindowReveal(createdMainWindow, {
+    show: () => revealMainWindow(createdMainWindow, IS_PLAYWRIGHT_TEST),
     onRevealed: () => {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
@@ -11870,7 +11873,7 @@ function createWindow() {
   // Under Playwright testing, instantly show the window: `ready-to-show`
   // doesn't fire in some testing envs, and the suite can't wait out the
   // production fallback.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
+  if (IS_PLAYWRIGHT_TEST) {
     revealController.reveal()
   }
 

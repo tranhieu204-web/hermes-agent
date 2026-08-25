@@ -39,6 +39,19 @@ test('window opens with the Hermes title', async () => {
   expect(title).toContain('Hermes')
 })
 
+test('E2E main window is visible without taking foreground focus', async () => {
+  const windowState = await fixture!.app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    return {
+      focused: window?.isFocused() ?? false,
+      visible: window?.isVisible() ?? false
+    }
+  })
+
+  expect(windowState).toEqual({ focused: false, visible: true })
+})
+
 test('renderer loads and shows DOM content', async () => {
   const page = fixture!.page
   await page.waitForSelector('#root', { state: 'attached', timeout: 30_000 })
@@ -57,6 +70,15 @@ test('HUD composer remains fully inside the transparent window', async () => {
 
   const hudPage = await hudPagePromise
   await hudPage.waitForSelector('[data-slot="composer-rich-input"]', { state: 'visible' })
+
+  const openWindowStates = await fixture!.app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().map((window) => ({
+      focused: window.isFocused(),
+      visible: window.isVisible()
+    }))
+  )
+
+  expect(openWindowStates.some((window) => window.visible && window.focused)).toBe(false)
 
   const geometry = await hudPage.evaluate(() => {
     const dock = document.querySelector<HTMLElement>('[data-slot="composer-dock"]')
@@ -112,6 +134,17 @@ test('HUD composer remains fully inside the transparent window', async () => {
   expect(geometry.dockTranslate ?? 'none').not.toContain('%')
 
   await hudPage.close()
+
+  await expect
+    .poll(async () =>
+      fixture!.app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().map((window) => ({
+          focused: window.isFocused(),
+          visible: window.isVisible()
+        }))
+      )
+    )
+    .toEqual([{ focused: false, visible: true }])
 })
 
 test('boot progress overlay fades out or shows error state', async () => {
