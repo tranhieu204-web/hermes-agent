@@ -39,6 +39,19 @@ test('window opens with the Hermes title', async () => {
   expect(title).toContain('Hermes')
 })
 
+test('E2E main window is visible without taking foreground focus', async () => {
+  const windowState = await fixture!.app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+
+    return {
+      focused: window?.isFocused() ?? false,
+      visible: window?.isVisible() ?? false
+    }
+  })
+
+  expect(windowState).toEqual({ focused: false, visible: true })
+})
+
 test('renderer loads and shows DOM content', async () => {
   const page = fixture!.page
   await page.waitForSelector('#root', { state: 'attached', timeout: 30_000 })
