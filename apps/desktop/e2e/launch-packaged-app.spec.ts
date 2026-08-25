@@ -72,13 +72,17 @@ test('HUD composer remains fully inside the transparent window', async () => {
   await hudPage.waitForSelector('[data-slot="composer-rich-input"]', { state: 'visible' })
 
   const openWindowStates = await fixture!.app.evaluate(({ BrowserWindow }) =>
-    BrowserWindow.getAllWindows().map((window) => ({
+    BrowserWindow.getAllWindows().map((window: { isFocused: () => boolean; isVisible: () => boolean }) => ({
       focused: window.isFocused(),
       visible: window.isVisible()
     }))
   )
 
-  expect(openWindowStates.some((window) => window.visible && window.focused)).toBe(false)
+  expect(
+    openWindowStates.some(
+      (window: { focused: boolean; visible: boolean }) => window.visible && window.focused
+    )
+  ).toBe(false)
 
   const geometry = await hudPage.evaluate(() => {
     const dock = document.querySelector<HTMLElement>('[data-slot="composer-dock"]')
@@ -138,7 +142,7 @@ test('HUD composer remains fully inside the transparent window', async () => {
   await expect
     .poll(async () =>
       fixture!.app.evaluate(({ BrowserWindow }) =>
-        BrowserWindow.getAllWindows().map((window) => ({
+        BrowserWindow.getAllWindows().map((window: { isFocused: () => boolean; isVisible: () => boolean }) => ({
           focused: window.isFocused(),
           visible: window.isVisible()
         }))
