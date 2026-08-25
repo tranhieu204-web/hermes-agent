@@ -735,6 +735,22 @@ export interface SessionResumeResult {
   open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
   // The connection operation still blocking this session; resume restores the backend-owned card projection.
   pending_connection?: ConnectionRequestPayload
+  // The clarify question still blocking this session, if any. Same replay
+  // class as pending_approval: emitted-while-detached prompts are restored
+  // from the resume snapshot instead of being lost until server-side timeout.
+  pending_clarify?: {
+    answers?: Record<string, string>
+    choices?: null | string[]
+    multi_select?: boolean
+    question?: string
+    questions?: Array<{
+      choices?: null | string[]
+      multi_select?: boolean
+      qid?: string
+      question?: string
+    }>
+    request_id?: string
+  }
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
