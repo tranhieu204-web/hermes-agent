@@ -83,7 +83,9 @@ describe('Hermes REST helpers', () => {
   })
 
   it('searches one concrete profile unless All Profiles is explicitly requested', async () => {
-    api.mockResolvedValue({ results: [{ session_id: 'same', snippet: '', model: null, role: null, session_started: 0, source: null }] })
+    api.mockResolvedValue({
+      results: [{ session_id: 'same', snippet: '', model: null, role: null, session_started: 0, source: null }]
+    })
 
     const concrete = await searchSessions('needle', 'work')
     expect(api).toHaveBeenLastCalledWith(

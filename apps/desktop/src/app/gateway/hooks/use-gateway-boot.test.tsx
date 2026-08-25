@@ -899,6 +899,7 @@ describe('useGatewayBoot cold-start startup-service acceptance (real hook seam)'
       token: 'repaired-token',
       wsUrl: 'wss://vps-repaired.example.com/api/ws?token=repaired-token'
     }
+
     const desktop = fakeDesktop()
     let connectionCalls = 0
     desktop.getConnection = vi.fn(async () => {
@@ -910,6 +911,7 @@ describe('useGatewayBoot cold-start startup-service acceptance (real hook seam)'
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
     let configLoads = 0
+
     const refreshHermesConfig = vi.fn(async () => {
       configLoads += 1
 

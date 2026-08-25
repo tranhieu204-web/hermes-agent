@@ -914,195 +914,203 @@ export function useGatewayBoot({
           // where it is: no owner repair, no re-probe, no verdict.
           cancelled: () => cancelled,
           mode: conn ? startupModeFromConnection(conn) : startupModeFromStartupServices(failureProgress),
-          services: createDesktopStartupServices({
-            probeGatewaySocket: () =>
-              gatewayOpen()
-                ? { ready: true, reused: true, via: 'gateway.connectionState === "open"' }
-                : {
-                    detail: `The gateway socket is ${gateway.connectionState}.`,
-                    ready: false,
-                    via: 'gateway.connectionState'
-                  },
-            probeHermesConfig: () =>
-              hermesConfigFailure
-                ? { detail: hermesConfigFailure, ready: false, via: 'refreshHermesConfig' }
-                : { ready: true, via: 'refreshHermesConfig' },
-            // Main already ran this backend's authoritative probes (port
-            // announcement, /api/health ladder, dashboard-token adoption, the
-            // /api/ws session-token handshake). Read its record instead of
-            // opening a second owner on the same endpoints.
-            probePrimaryBackend: async serviceId => {
-              // A profile-pinned helper window uses a pool backend owned by
-              // main:ensureBackend, not main's primary ledger row.
-              if (serviceId === PROFILE_POOL_SERVICE) {
-                return connected
-                  ? primaryReady({
-                      ready: true,
-                      reused: true,
-                      via: `resolved profile backend (${profileOverride})`
-                    })
+          services: createDesktopStartupServices(
+            {
+              probeGatewaySocket: () =>
+                gatewayOpen()
+                  ? { ready: true, reused: true, via: 'gateway.connectionState === "open"' }
                   : {
-                      detail: primaryStartFailure ?? `The ${profileOverride ?? 'requested'} profile backend did not start.`,
+                      detail: `The gateway socket is ${gateway.connectionState}.`,
                       ready: false,
-                      via: 'main:ensureBackend'
-                    }
-              }
+                      via: 'gateway.connectionState'
+                    },
+              probeHermesConfig: () =>
+                hermesConfigFailure
+                  ? { detail: hermesConfigFailure, ready: false, via: 'refreshHermesConfig' }
+                  : { ready: true, via: 'refreshHermesConfig' },
+              // Main already ran this backend's authoritative probes (port
+              // announcement, /api/health ladder, dashboard-token adoption, the
+              // /api/ws session-token handshake). Read its record instead of
+              // opening a second owner on the same endpoints.
+              probePrimaryBackend: async serviceId => {
+                // A profile-pinned helper window uses a pool backend owned by
+                // main:ensureBackend, not main's primary ledger row.
+                if (serviceId === PROFILE_POOL_SERVICE) {
+                  return connected
+                    ? primaryReady({
+                        ready: true,
+                        reused: true,
+                        via: `resolved profile backend (${profileOverride})`
+                      })
+                    : {
+                        detail:
+                          primaryStartFailure ?? `The ${profileOverride ?? 'requested'} profile backend did not start.`,
+                        ready: false,
+                        via: 'main:ensureBackend'
+                      }
+                }
 
-              const snapshot = await desktop.getBootProgress().catch(() => null)
+                const snapshot = await desktop.getBootProgress().catch(() => null)
 
-              // Compatibility ladder, tied to an identified older runtime: a
-              // main process that predates the startup-service ledger publishes
-              // no rows at all. Its authoritative probes still ran — they are
-              // what produced the connection this boot is standing on — so
-              // "this build cannot report it" must not read as "it failed".
-              // That reading only holds while there IS a connection: on a boot
-              // whose primary start failed there is no silence to interpret,
-              // because the owner's own failure is the evidence.
-              if (!hasStartupServiceLedger(snapshot)) {
-                return connected
-                  ? primaryReady({ ready: true, reused: true, via: 'main boot-progress (runtime predates the ledger)' })
+                // Compatibility ladder, tied to an identified older runtime: a
+                // main process that predates the startup-service ledger publishes
+                // no rows at all. Its authoritative probes still ran — they are
+                // what produced the connection this boot is standing on — so
+                // "this build cannot report it" must not read as "it failed".
+                // That reading only holds while there IS a connection: on a boot
+                // whose primary start failed there is no silence to interpret,
+                // because the owner's own failure is the evidence.
+                if (!hasStartupServiceLedger(snapshot)) {
+                  return connected
+                    ? primaryReady({
+                        ready: true,
+                        reused: true,
+                        via: 'main boot-progress (runtime predates the ledger)'
+                      })
+                    : {
+                        detail: primaryStartFailure ?? 'The primary Hermes backend did not start.',
+                        ready: false,
+                        via: 'main:startHermes (runtime predates the ledger)'
+                      }
+                }
+
+                const record = findStartupServiceRecord(snapshot, serviceId)
+
+                if (!record) {
+                  return connected
+                    ? primaryReady({
+                        ready: true,
+                        reused: true,
+                        via: 'resolved primary connection (main:startHermes)'
+                      })
+                    : {
+                        detail: primaryStartFailure ?? 'The main process has not reported this backend as started.',
+                        ready: false,
+                        via: 'main startup-service ledger'
+                      }
+                }
+
+                return record.status === 'ready'
+                  ? primaryReady({ ready: true, reused: true, via: record.via })
                   : {
-                      detail: primaryStartFailure ?? 'The primary Hermes backend did not start.',
+                      detail: record.detail || 'The primary Hermes backend did not become ready.',
                       ready: false,
-                      via: 'main:startHermes (runtime predates the ledger)'
+                      via: record.via
                     }
+              },
+              // Each repair re-checks THIS effect's cancellation epoch at every
+              // await boundary. Cleanup closes the socket and marks the epoch
+              // dead; a repair that resumed afterwards would re-dial a gateway
+              // the window no longer owns, or publish state into a torn-down view.
+              repairGatewaySocket: async () => {
+                if (cancelled) {
+                  return
+                }
+
+                const repaired = await desktop.getConnection(profileOverride ?? undefined)
+
+                if (cancelled) {
+                  return
+                }
+
+                // Rebind through the same continuation so the published
+                // descriptor, active profile, config, sessions, and socket all
+                // describe the same repaired backend.
+                if (connected) {
+                  connected = false
+                  gateway.close()
+                }
+
+                await connectPrimary(repaired)
+              },
+              repairHermesConfig: async () => {
+                if (cancelled) {
+                  return
+                }
+
+                const failure = await runRefreshHermesConfig()
+
+                if (cancelled) {
+                  return
+                }
+
+                hermesConfigFailure = failure
+              },
+              // Through the EXISTING owner only: revalidate drops a descriptor
+              // main found dead, and getConnection joins main's single-flight
+              // start. Neither spawns a second backend.
+              //
+              // Cancellation classification: main's single-flight start is
+              // SHARED (other windows may be awaiting the same promise) and has
+              // no abort token, so an owner call already issued cannot be
+              // recalled — it runs to completion on the owner's side. What the
+              // epoch checks below guarantee is the part that belongs to this
+              // effect: nothing the owner returns re-enters a torn-down window.
+              // No second revalidate, no publish, no dial, no re-probe, no
+              // verdict — the gate's own post-repair check then stops the run.
+              repairPrimaryBackend: async () => {
+                if (cancelled) {
+                  return
+                }
+
+                if (!profileOverride) {
+                  await desktop.revalidateConnection?.()
+                }
+
+                if (cancelled) {
+                  return
+                }
+
+                const repaired = await desktop.getConnection(profileOverride ?? undefined)
+
+                if (cancelled) {
+                  return
+                }
+
+                // Was this repair triggered by a child that died mid-startup?
+                // Read before the evidence is spent below: it decides whether
+                // `connected` still describes anything real.
+                const exitedDuringStartup = startupExitFailure !== null
+
+                // The owner answered for the backend that had exited, so the
+                // exit evidence is spent: the ONE re-probe reads main's current
+                // record instead of the exit that triggered this repair.
+                startupExitFailure = null
+
+                // `connected` records the dial this boot ALREADY made — at a
+                // process that has since exited. Reusing it here would hand the
+                // re-probe a fresh ready ledger while the renderer still holds
+                // the dead endpoint's socket, and the gate would declare that
+                // ready. A startup exit therefore invalidates the binding, not
+                // just the row.
+                if (connected && !exitedDuringStartup) {
+                  return
+                }
+
+                if (connected) {
+                  connected = false
+                  // Drop the pre-exit socket BEFORE re-dialing. A child's death
+                  // and its socket's close event are separate events, and
+                  // connect() is a no-op while a socket still reads OPEN — so a
+                  // rebind that skipped this would silently keep the renderer on
+                  // the dead endpoint. Startup-only: the reconnect loop is gated
+                  // on bootCompleted, so nothing re-dials behind this close.
+                  gateway.close()
+                }
+
+                // The owner brought the backend back — for a boot that never got
+                // a connection, or one whose connection died under it: continue
+                // THIS boot on the repaired one (publish, open the socket, adopt
+                // the profile, load settings) rather than leaving a half-started
+                // app to be declared ready by the rows below.
+                await connectPrimary(repaired)
               }
-
-              const record = findStartupServiceRecord(snapshot, serviceId)
-
-              if (!record) {
-                return connected
-                  ? primaryReady({
-                      ready: true,
-                      reused: true,
-                      via: 'resolved primary connection (main:startHermes)'
-                    })
-                  : {
-                      detail: primaryStartFailure ?? 'The main process has not reported this backend as started.',
-                      ready: false,
-                      via: 'main startup-service ledger'
-                    }
-              }
-
-              return record.status === 'ready'
-                ? primaryReady({ ready: true, reused: true, via: record.via })
-                : {
-                    detail: record.detail || 'The primary Hermes backend did not become ready.',
-                    ready: false,
-                    via: record.via
-                  }
             },
-            // Each repair re-checks THIS effect's cancellation epoch at every
-            // await boundary. Cleanup closes the socket and marks the epoch
-            // dead; a repair that resumed afterwards would re-dial a gateway
-            // the window no longer owns, or publish state into a torn-down view.
-            repairGatewaySocket: async () => {
-              if (cancelled) {
-                return
-              }
-
-              const repaired = await desktop.getConnection(profileOverride ?? undefined)
-
-              if (cancelled) {
-                return
-              }
-
-              // Rebind through the same continuation so the published
-              // descriptor, active profile, config, sessions, and socket all
-              // describe the same repaired backend.
-              if (connected) {
-                connected = false
-                gateway.close()
-              }
-
-              await connectPrimary(repaired)
-            },
-            repairHermesConfig: async () => {
-              if (cancelled) {
-                return
-              }
-
-              const failure = await runRefreshHermesConfig()
-
-              if (cancelled) {
-                return
-              }
-
-              hermesConfigFailure = failure
-            },
-            // Through the EXISTING owner only: revalidate drops a descriptor
-            // main found dead, and getConnection joins main's single-flight
-            // start. Neither spawns a second backend.
-            //
-            // Cancellation classification: main's single-flight start is
-            // SHARED (other windows may be awaiting the same promise) and has
-            // no abort token, so an owner call already issued cannot be
-            // recalled — it runs to completion on the owner's side. What the
-            // epoch checks below guarantee is the part that belongs to this
-            // effect: nothing the owner returns re-enters a torn-down window.
-            // No second revalidate, no publish, no dial, no re-probe, no
-            // verdict — the gate's own post-repair check then stops the run.
-            repairPrimaryBackend: async () => {
-              if (cancelled) {
-                return
-              }
-
-              if (!profileOverride) {
-                await desktop.revalidateConnection?.()
-              }
-
-              if (cancelled) {
-                return
-              }
-
-              const repaired = await desktop.getConnection(profileOverride ?? undefined)
-
-              if (cancelled) {
-                return
-              }
-
-              // Was this repair triggered by a child that died mid-startup?
-              // Read before the evidence is spent below: it decides whether
-              // `connected` still describes anything real.
-              const exitedDuringStartup = startupExitFailure !== null
-
-              // The owner answered for the backend that had exited, so the
-              // exit evidence is spent: the ONE re-probe reads main's current
-              // record instead of the exit that triggered this repair.
-              startupExitFailure = null
-
-              // `connected` records the dial this boot ALREADY made — at a
-              // process that has since exited. Reusing it here would hand the
-              // re-probe a fresh ready ledger while the renderer still holds
-              // the dead endpoint's socket, and the gate would declare that
-              // ready. A startup exit therefore invalidates the binding, not
-              // just the row.
-              if (connected && !exitedDuringStartup) {
-                return
-              }
-
-              if (connected) {
-                connected = false
-                // Drop the pre-exit socket BEFORE re-dialing. A child's death
-                // and its socket's close event are separate events, and
-                // connect() is a no-op while a socket still reads OPEN — so a
-                // rebind that skipped this would silently keep the renderer on
-                // the dead endpoint. Startup-only: the reconnect loop is gated
-                // on bootCompleted, so nothing re-dials behind this close.
-                gateway.close()
-              }
-
-              // The owner brought the backend back — for a boot that never got
-              // a connection, or one whose connection died under it: continue
-              // THIS boot on the repaired one (publish, open the socket, adopt
-              // the profile, load settings) rather than leaving a half-started
-              // app to be declared ready by the rows below.
-              await connectPrimary(repaired)
+            {
+              primaryBackendRequired: !profileOverride,
+              profileBackendRequired: Boolean(profileOverride)
             }
-          }, {
-            primaryBackendRequired: !profileOverride,
-            profileBackendRequired: Boolean(profileOverride)
-          })
+          )
         })
 
         if (cancelled) {

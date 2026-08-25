@@ -683,8 +683,10 @@ export function ChatSidebar({
       }
 
       const loaded = [...sortedSessions, ...visibleCronSessions, ...visibleMessagingSessions].find(
-        session => normalizeProfileKey(session.profile) === normalizeProfileKey(match.profile) && session.id === match.session_id
+        session =>
+          normalizeProfileKey(session.profile) === normalizeProfileKey(match.profile) && session.id === match.session_id
       )
+
       out.set(key, loaded ?? searchResultToSession(match))
     }
 

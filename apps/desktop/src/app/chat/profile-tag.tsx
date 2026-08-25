@@ -41,7 +41,10 @@ export function ProfileTag({
 
   if (expanded) {
     return (
-      <span aria-label={expandedLabel} className="inline-flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
+      <span
+        aria-label={expandedLabel}
+        className="inline-flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)"
+      >
         {glyph}
         <span className="min-w-0 max-w-20 truncate">{displayName}</span>
         <span className="shrink-0">· {key}</span>
@@ -49,9 +52,5 @@ export function ProfileTag({
     )
   }
 
-  return (
-    <Tip label={label}>
-      {glyph}
-    </Tip>
-  )
+  return <Tip label={label}>{glyph}</Tip>
 }
