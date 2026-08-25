@@ -183,7 +183,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { ensureMainWindow, revealMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import {
   oauthGuardMayHardFail,
@@ -11841,6 +11841,7 @@ function createWindow() {
   }
 
   const revealController = wireWindowReveal(createdMainWindow, {
+    show: () => revealMainWindow(createdMainWindow, process.env.TEST_WORKER_INDEX !== undefined),
     onRevealed: () => {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).

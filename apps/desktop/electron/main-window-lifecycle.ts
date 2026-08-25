@@ -2,6 +2,11 @@ type MainWindowLike = {
   isDestroyed: () => boolean
 }
 
+type MainWindowRevealTarget = {
+  show: () => void
+  showInactive: () => void
+}
+
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
   isReady: boolean
   createWindow: () => unknown
@@ -25,4 +30,14 @@ export function ensureMainWindow<T extends MainWindowLike>(
   if (focusExisting) {
     focusWindow(window)
   }
+}
+
+export function revealMainWindow(window: MainWindowRevealTarget, isPlaywrightTest: boolean) {
+  if (isPlaywrightTest) {
+    window.showInactive()
+
+    return
+  }
+
+  window.show()
 }
