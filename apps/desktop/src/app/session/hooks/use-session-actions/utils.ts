@@ -4,6 +4,7 @@ import { assistantTextPart, type ChatMessage, chatMessageText, textPart, upsertT
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { type ClarifyRequest, normalizeChoices, normalizeQuestions } from '@/store/clarify'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
@@ -36,6 +37,50 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 
 import type { ClientSessionState } from '../../../types'
 
+export function restorePendingClarifyRequest(
+  pending: SessionResumeResponse['pending_clarify'],
+  sessionId: string | null
+): ClarifyRequest | null {
+  if (!pending || typeof pending.request_id !== 'string') {
+    return null
+  }
+
+  const questions = normalizeQuestions(pending.questions)
+
+  if (questions.length > 0) {
+    const lockedAnswers =
+      typeof pending.answers === 'object' && pending.answers !== null
+        ? Object.fromEntries(
+            Object.entries(pending.answers).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+          )
+        : undefined
+
+    return {
+      choices: null,
+      lockedAnswers,
+      multiSelect: false,
+      question: '',
+      questions,
+      requestId: pending.request_id,
+      sessionId
+    }
+  }
+
+  if (typeof pending.question !== 'string') {
+    return null
+  }
+
+  const choices = normalizeChoices(pending.choices)
+
+  return {
+    choices: choices.length > 0 ? choices : null,
+    multiSelect: pending.multi_select === true,
+    question: pending.question,
+    requestId: pending.request_id,
+    sessionId
+  }
+}
+
 /**
  * Recreate the inline clarify row from the backend's resume snapshot.
  *
@@ -47,18 +92,28 @@ export function ensurePendingClarifyToolRow(
   messages: ChatMessage[],
   pending: SessionResumeResponse['pending_clarify']
 ): ChatMessage[] {
-  if (!pending || typeof pending.request_id !== 'string' || typeof pending.question !== 'string') {
+  const request = restorePendingClarifyRequest(pending, null)
+
+  if (!request) {
     return messages
   }
 
   const payload = {
-    args: {
-      choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : [],
-      ...(pending.multi_select === true ? { multi_select: true } : {}),
-      question: pending.question
-    },
+    args: request.questions
+      ? {
+          questions: request.questions.map(question => ({
+            choices: question.choices ?? undefined,
+            ...(question.multiSelect ? { multi_select: true } : {}),
+            question: question.question
+          }))
+        }
+      : {
+          choices: request.choices ?? [],
+          ...(request.multiSelect ? { multi_select: true } : {}),
+          question: request.question
+        },
     name: 'clarify',
-    tool_id: pending.request_id
+    tool_id: request.requestId
   }
 
   const assistantIndex = messages.findLastIndex(message => message.role === 'assistant')
@@ -67,7 +122,7 @@ export function ensurePendingClarifyToolRow(
     return [
       ...messages,
       {
-        id: `clarify-${pending.request_id}`,
+        id: `clarify-${request.requestId}`,
         parts: upsertToolPart([], payload, 'running'),
         pending: true,
         role: 'assistant'

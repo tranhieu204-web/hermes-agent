@@ -31,6 +31,7 @@ import {
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
+  restorePendingClarifyRequest,
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
@@ -80,6 +81,46 @@ describe('ensurePendingClarifyToolRow', () => {
     const restored = ensurePendingClarifyToolRow(messages, pending)
 
     expect(restored[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
+  })
+
+  it('restores an answerable batch row and preserves locked answers', () => {
+    const batchPending = {
+      answers: { q0: 'Approve' },
+      questions: [
+        { choices: ['Approve', 'Change'], multi_select: false, qid: 'q0', question: 'Ship it?' },
+        { choices: ['Red', 'Blue'], multi_select: true, qid: 'q1', question: 'Choose colors' }
+      ],
+      request_id: 'clarify-batch-1'
+    } as SessionResumeResponse['pending_clarify']
+
+    const request = restorePendingClarifyRequest(batchPending, 'runtime-1')
+    const restored = ensurePendingClarifyToolRow([], batchPending)
+    const toolParts = restored[0].parts.filter(part => part.type === 'tool-call')
+
+    expect(request).toMatchObject({
+      choices: null,
+      lockedAnswers: { q0: 'Approve' },
+      multiSelect: false,
+      question: '',
+      requestId: 'clarify-batch-1',
+      sessionId: 'runtime-1'
+    })
+    expect(request?.questions).toEqual([
+      { choices: ['Approve', 'Change'], multiSelect: false, qid: 'q0', question: 'Ship it?' },
+      { choices: ['Red', 'Blue'], multiSelect: true, qid: 'q1', question: 'Choose colors' }
+    ])
+    expect(toolParts).toHaveLength(1)
+    expect(toolParts[0]).toMatchObject({
+      args: {
+        questions: [
+          { choices: ['Approve', 'Change'], question: 'Ship it?' },
+          { choices: ['Red', 'Blue'], multi_select: true, question: 'Choose colors' }
+        ]
+      },
+      toolCallId: 'clarify-batch-1',
+      toolName: 'clarify'
+    })
+    expect(restored[0].pending).toBe(true)
   })
 })
 
