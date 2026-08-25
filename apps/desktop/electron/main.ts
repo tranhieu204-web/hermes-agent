@@ -282,7 +282,7 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
-import { ensureMainWindow } from './main-window-lifecycle'
+import { ensureMainWindow, revealFocusedWindow, revealMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -1016,6 +1016,7 @@ enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
 
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
+const IS_PLAYWRIGHT_TEST = process.env.TEST_WORKER_INDEX !== undefined
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
@@ -14835,10 +14836,7 @@ function spawnHudWindow(sessionId, profile) {
   startHudGameOverlayFeed(win)
 
   wireWindowReveal(win, {
-    show: () => {
-      win.show()
-      win.focus()
-    },
+    show: () => revealFocusedWindow(win, IS_PLAYWRIGHT_TEST),
     onRevealed: () => {
       // Step the app aside: the HUD IS the surface now.
       if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
@@ -14888,7 +14886,10 @@ function restoreMainWindowFromHud() {
   }
 
   hudRestoreMainWindow = false
-  focusWindow(mainWindow)
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    revealMainWindow(mainWindow, IS_PLAYWRIGHT_TEST)
+  }
 }
 
 // Take the HUD window down. The 'closed' handler stays attached so ONE path
@@ -14939,7 +14940,11 @@ function openHudWindow(sessionId, profile) {
       broadcastHudState(true)
     }
 
-    focusWindow(hudWindow)
+    if (IS_PLAYWRIGHT_TEST) {
+      hudWindow.showInactive()
+    } else {
+      focusWindow(hudWindow)
+    }
 
     return hudWindow
   }
@@ -14969,6 +14974,10 @@ function closeHudWindow() {
   hudSnapShortcut.dispose()
   restoreMainWindowFromHud()
   broadcastHudState(false)
+
+  if (!IS_PLAYWRIGHT_TEST && mainWindow && !mainWindow.isDestroyed()) {
+    focusWindow(mainWindow)
+  }
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -15254,6 +15263,7 @@ function createWindow() {
   }
 
   const revealController = wireWindowReveal(createdMainWindow, {
+    show: () => revealMainWindow(createdMainWindow, IS_PLAYWRIGHT_TEST),
     onRevealed: () => {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
@@ -15287,7 +15297,7 @@ function createWindow() {
   // Under Playwright testing, instantly show the window: `ready-to-show`
   // doesn't fire in some testing envs, and the suite can't wait out the
   // production fallback.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
+  if (IS_PLAYWRIGHT_TEST) {
     revealController.reveal()
   }
 
