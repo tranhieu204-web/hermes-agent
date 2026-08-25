@@ -380,6 +380,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Provider the --model belongs to (passed as "
                                "--provider <name> to the worker). Requires "
                                "--model.")
+    p_create.add_argument("--fleet-contract", default=None,
+                          dest="fleet_contract",
+                          help="JSON Fleet Scheduler capability contract. "
+                               "Validated and stored on the task; dispatch "
+                               "uses it only when kanban.fleet_scheduler.enabled "
+                               "is true.")
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -1562,6 +1568,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    fleet_contract = None
+    raw_contract = getattr(args, "fleet_contract", None)
+    if raw_contract:
+        try:
+            fleet_contract = kb.parse_fleet_contract_arg(
+                raw_contract, assignee=args.assignee,
+            )
+        except ValueError as exc:
+            print(f"kanban: --fleet-contract: {exc}", file=sys.stderr)
+            return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1586,6 +1602,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            fleet_contract=fleet_contract,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

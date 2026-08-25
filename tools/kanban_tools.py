@@ -166,6 +166,24 @@ def _worker_run_id(task_id: str) -> Optional[int]:
         return None
 
 
+def _expected_heartbeat_run_id(task_id: str) -> tuple[bool, Optional[int]]:
+    """Resolve declared run identity for one heartbeat without downgrading.
+
+    Returns ``(True, run_id)`` when the env either names a parseable run
+    for this task or does not declare one. Returns ``(False, None)`` when
+    the environment declares a run that cannot be bound.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+        return True, None
+    raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+    if not raw:
+        return True, None
+    try:
+        return True, int(raw)
+    except (TypeError, ValueError):
+        return False, None
+
+
 def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
@@ -302,10 +320,12 @@ def heartbeat_current_worker_from_env() -> bool:
     """Best-effort: extend the kanban claim + bump board heartbeat for the
     current dispatcher-spawned worker, using identity from env vars.
 
-    Returns True if a write was attempted (whether or not it succeeded);
-    False if the call was skipped (not a kanban worker, rate-limited, or
-    swallowed exception). The boolean is informational — callers should
-    not branch on it.
+    Returns True only when claim ownership and expected run identity
+    were proven and the task/run expiry plus liveness/event writes
+    committed together. Returns False if the call was skipped — not a
+    kanban worker, rate-limited, swallowed exception, unproven claim,
+    mismatched/stale run, or any heartbeat write failure. The boolean
+    is informational — callers should not branch on it.
 
     Identity comes from:
       * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
@@ -332,26 +352,26 @@ def heartbeat_current_worker_from_env() -> bool:
         kb, conn = _connect()
         try:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            declared_ok, run_id = _expected_heartbeat_run_id(tid)
+            if not declared_ok:
+                return False
             try:
-                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+                return bool(
+                    kb.heartbeat_owned_worker(
+                        conn,
+                        tid,
+                        claimer=claim_lock,
+                        expected_run_id=run_id,
+                    )
+                )
             except Exception:
-                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
-            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
-            run_id: Optional[int]
-            try:
-                run_id = int(run_id_raw) if run_id_raw else None
-            except (TypeError, ValueError):
-                run_id = None
-            try:
-                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
-            except Exception:
-                logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+                logger.debug("auto-heartbeat: heartbeat failed", exc_info=True)
+                return False
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
-        return True
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -1047,23 +1067,30 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            # Extend the claim TTL first. The dispatcher pins
-            # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
-            # (see _default_spawn in kanban_db.py); falling back to the
-            # default _claimer_id() covers locally-driven workers that
-            # never went through the dispatcher path.
+            # One logical heartbeat: claim token and expected run are
+            # proven with the expiry/liveness/event writes. The
+            # dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn time
+            # (see _default_spawn in kanban_db.py); omitting the lock
+            # covers locally-driven workers that never went through
+            # the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
-
-            ok = kb.heartbeat_worker(
+            declared_ok, expected_run_id = _expected_heartbeat_run_id(tid)
+            if not declared_ok:
+                return tool_error(
+                    f"could not heartbeat {tid} "
+                    "(declared run identity is invalid)"
+                )
+            ok = kb.heartbeat_owned_worker(
                 conn,
                 tid,
+                claimer=claim_lock,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=expected_run_id,
             )
             if not ok:
                 return tool_error(
-                    f"could not heartbeat {tid} (unknown id or not running)"
+                    f"could not heartbeat {tid} "
+                    "(ownership unproven or not running)"
                 )
             return _ok(task_id=tid)
         finally:

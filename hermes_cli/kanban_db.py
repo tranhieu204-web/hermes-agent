@@ -1049,6 +1049,31 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 # Data classes
 # ---------------------------------------------------------------------------
 
+def _parse_fleet_contract_json(raw: Any) -> Optional[dict]:
+    """Parse a stored fleet_contract JSON blob. Invalid input is None."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _fleet_preferred_from_contract(
+    contract: Optional[Mapping[str, Any]],
+    assignee: Optional[str],
+) -> Optional[str]:
+    if not contract:
+        return None
+    preferred = contract.get("preferred") or contract.get("preferred_profile")
+    if isinstance(preferred, str) and preferred.strip():
+        return _canonical_assignee(preferred)
+    return assignee
+
+
 @dataclass
 class Task:
     """In-memory view of a row from the ``tasks`` table."""
@@ -1141,6 +1166,12 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    preferred_assignee: Optional[str] = None
+    executing_profile: Optional[str] = None
+    fleet_contract: Optional[dict] = None
+    builder_family: Optional[str] = None
+    reserved_reviewer_family: Optional[str] = None
+    route_epoch: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1265,36 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            preferred_assignee=(
+                row["preferred_assignee"]
+                if "preferred_assignee" in keys and row["preferred_assignee"]
+                else None
+            ),
+            executing_profile=(
+                row["executing_profile"]
+                if "executing_profile" in keys and row["executing_profile"]
+                else None
+            ),
+            fleet_contract=_parse_fleet_contract_json(
+                row["fleet_contract"]
+                if "fleet_contract" in keys
+                else None
+            ),
+            builder_family=(
+                row["builder_family"]
+                if "builder_family" in keys and row["builder_family"]
+                else None
+            ),
+            reserved_reviewer_family=(
+                row["reserved_reviewer_family"]
+                if "reserved_reviewer_family" in keys and row["reserved_reviewer_family"]
+                else None
+            ),
+            route_epoch=(
+                row["route_epoch"]
+                if "route_epoch" in keys and row["route_epoch"]
+                else None
             ),
         )
 
@@ -1422,7 +1483,33 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Fleet Scheduler v1: preferred intent is preserved separately from the
+    -- actual executing profile. NULL on legacy unpooled tasks.
+    preferred_assignee   TEXT,
+    executing_profile    TEXT,
+    -- Explicit capability-pool contract (JSON). NULL = legacy single-assignee.
+    fleet_contract       TEXT,
+    builder_family       TEXT,
+    reserved_reviewer_family TEXT,
+    -- Immutable epoch minted when a route is selected. Stale epochs cannot
+    -- publish accepted terminal state.
+    route_epoch          TEXT
+);
+
+-- Exclusive mutation-root lease. lease_key is the normalized effective
+-- working directory (not the repo root). UNIQUE(lease_key) fail-closes
+-- overlapping writers; UNIQUE(task_id) enforces one active lease per
+-- task. There is no TTL; matching-token release deletes the row.
+CREATE TABLE IF NOT EXISTS task_leases (
+    lease_key    TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    run_id       INTEGER,
+    claim_token  TEXT NOT NULL,
+    host_id      TEXT NOT NULL,
+    route_epoch  TEXT NOT NULL,
+    acquired_at  INTEGER NOT NULL,
+    UNIQUE(task_id)
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2528,6 +2615,101 @@ def init_db(
     return path
 
 
+def _task_leases_has_task_unique(conn: sqlite3.Connection) -> bool:
+    """True when task_leases already enforces one row per task_id."""
+    try:
+        indexes = conn.execute("PRAGMA index_list(task_leases)").fetchall()
+    except sqlite3.DatabaseError:
+        return False
+    for idx in indexes:
+        if not idx["unique"]:
+            continue
+        cols = [
+            info["name"]
+            for info in conn.execute(f"PRAGMA index_info({idx['name']})")
+        ]
+        if cols == ["task_id"]:
+            return True
+    return False
+
+
+def _migrate_task_leases_one_task(conn: sqlite3.Connection) -> None:
+    """Additive one-task/one-lease enforcement. Never discards live rows."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    if "task_leases" not in tables:
+        return
+    if _task_leases_has_task_unique(conn):
+        return
+    duplicates = conn.execute(
+        """
+        SELECT task_id, COUNT(*) AS n
+          FROM task_leases
+         GROUP BY task_id
+        HAVING n > 1
+        """
+    ).fetchall()
+    if duplicates:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_leases_legacy_duplicates (
+                lease_key    TEXT NOT NULL,
+                task_id      TEXT NOT NULL,
+                run_id       INTEGER,
+                claim_token  TEXT,
+                host_id      TEXT,
+                route_epoch  TEXT,
+                acquired_at  INTEGER,
+                recorded_at  INTEGER NOT NULL,
+                disposition  TEXT NOT NULL
+            )
+            """
+        )
+        now = int(time.time())
+        for dup in duplicates:
+            rows = conn.execute(
+                """
+                SELECT lease_key, task_id, run_id, claim_token, host_id,
+                       route_epoch, acquired_at
+                  FROM task_leases
+                 WHERE task_id = ?
+                 ORDER BY acquired_at ASC, lease_key ASC
+                """,
+                (dup["task_id"],),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO task_leases_legacy_duplicates (
+                        lease_key, task_id, run_id, claim_token, host_id,
+                        route_epoch, acquired_at, recorded_at, disposition
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["lease_key"],
+                        row["task_id"],
+                        row["run_id"],
+                        row["claim_token"],
+                        row["host_id"],
+                        row["route_epoch"],
+                        row["acquired_at"],
+                        now,
+                        "preserved_duplicate_task_lease",
+                    ),
+                )
+        # Leave the live duplicate rows in place as evidence. Application
+        # acquire/release/transfer fail closed on ambiguous task ownership.
+        return
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_leases_task_id "
+        "ON task_leases(task_id)"
+    )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -2678,6 +2860,32 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    for _fleet_col, _fleet_ddl in (
+        ("preferred_assignee", "preferred_assignee TEXT"),
+        ("executing_profile", "executing_profile TEXT"),
+        ("fleet_contract", "fleet_contract TEXT"),
+        ("builder_family", "builder_family TEXT"),
+        ("reserved_reviewer_family", "reserved_reviewer_family TEXT"),
+        ("route_epoch", "route_epoch TEXT"),
+    ):
+        if _fleet_col not in cols:
+            _add_column_if_missing(conn, "tasks", _fleet_col, _fleet_ddl)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_leases (
+            lease_key    TEXT PRIMARY KEY,
+            task_id      TEXT NOT NULL,
+            run_id       INTEGER,
+            claim_token  TEXT NOT NULL,
+            host_id      TEXT NOT NULL,
+            route_epoch  TEXT NOT NULL,
+            acquired_at  INTEGER NOT NULL
+        )
+        """
+    )
+    _migrate_task_leases_one_task(conn)
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3040,6 +3248,31 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+_AFTER_COMMIT_HOOKS_ATTR = "_kanban_after_commit_hooks"
+
+
+def _queue_after_commit(conn: sqlite3.Connection, hook) -> None:
+    queued = getattr(conn, _AFTER_COMMIT_HOOKS_ATTR, None)
+    if queued is None:
+        queued = []
+        setattr(conn, _AFTER_COMMIT_HOOKS_ATTR, queued)
+    queued.append(hook)
+
+
+def _clear_after_commit_hooks(conn: sqlite3.Connection) -> None:
+    setattr(conn, _AFTER_COMMIT_HOOKS_ATTR, [])
+
+
+def _run_after_commit_hooks(conn: sqlite3.Connection) -> None:
+    queued = getattr(conn, _AFTER_COMMIT_HOOKS_ATTR, None) or []
+    setattr(conn, _AFTER_COMMIT_HOOKS_ATTR, [])
+    for hook in queued:
+        try:
+            hook()
+        except Exception:
+            continue
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """Context manager for an IMMEDIATE write transaction.
@@ -3074,9 +3307,11 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
             )
         savepoint = f"hermes_nested_{secrets.token_hex(8)}"
         conn.execute(f"SAVEPOINT {savepoint}")
+        queued = list(getattr(conn, _AFTER_COMMIT_HOOKS_ATTR, []))
         try:
             yield conn
         except Exception:
+            setattr(conn, _AFTER_COMMIT_HOOKS_ATTR, queued)
             try:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 conn.execute(f"RELEASE {savepoint}")
@@ -3091,6 +3326,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     try:
         yield conn
     except Exception:
+        _clear_after_commit_hooks(conn)
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
@@ -3103,6 +3339,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         try:
             _execute_boundary_with_retry(conn, "COMMIT")
         except Exception:
+            _clear_after_commit_hooks(conn)
             # COMMIT exhausted retries with the txn still open; roll back so the
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
             try:
@@ -3112,7 +3349,17 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
             raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        #
+        # The COMMIT above is already durable, so the queued hooks belong to
+        # THIS boundary and nowhere else. Draining them in a ``finally`` keeps
+        # exact-once delivery even when the integrity diagnostic raises: the
+        # diagnostic still propagates, but a leaked queue can no longer make
+        # the next unrelated transaction on this connection fire a stale hook
+        # for work it did not do.
+        try:
+            _check_file_length_invariant(conn)
+        finally:
+            _run_after_commit_hooks(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -3140,6 +3387,72 @@ def _claimer_id() -> str:
     except Exception:
         host = "unknown"
     return f"{host}:{os.getpid()}"
+
+
+def _claim_lock_host(lock: Optional[str]) -> Optional[str]:
+    """Return the host prefix stored in a claim lock, if any."""
+    if not lock:
+        return None
+    text = str(lock)
+    if ":" not in text:
+        return None
+    host = text.split(":", 1)[0].strip()
+    return host or None
+
+
+def _new_claim_token(host_id: Optional[str] = None) -> str:
+    """Mint a unique per-claim token that still carries the host prefix."""
+    host = (host_id or fleet_host_id() or "unknown").strip() or "unknown"
+    return f"{host}:{secrets.token_hex(16)}"
+
+
+def _is_foreign_host_lock(lock: Optional[str], host_id: Optional[str] = None) -> bool:
+    """True when a claim lock is owned by a different host than this process."""
+    lock_host = _claim_lock_host(lock)
+    if not lock_host:
+        return False
+    return lock_host != ((host_id or fleet_host_id() or "unknown").strip() or "unknown")
+
+
+def _defer_foreign_host_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lock: Optional[str],
+    source: str,
+) -> None:
+    """Emit a bounded diagnostic and leave foreign-host state untouched."""
+    lease = get_active_lease(conn, task_id=task_id)
+    payload = {
+        "reason": "foreign_host",
+        "source": source,
+        "claim_lock": lock,
+        "lease_host": lease["host_id"] if lease is not None else None,
+        "lease_run_id": lease["run_id"] if lease is not None else None,
+    }
+    with _write_txn_join(conn):
+        recent = conn.execute(
+            """
+            SELECT id FROM task_events
+             WHERE task_id = ? AND kind = 'reclaim_deferred'
+             ORDER BY id DESC LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if recent:
+            # Keep the diagnostic bounded: one live deferral marker is enough.
+            return
+        _append_event(conn, task_id, "reclaim_deferred", payload)
+
+
+@contextlib.contextmanager
+def _write_txn_join(conn: sqlite3.Connection):
+    """Join an open IMMEDIATE txn, otherwise open one."""
+    if getattr(conn, "in_transaction", False):
+        yield conn
+        return
+    with write_txn(conn):
+        yield conn
 
 
 # ---------------------------------------------------------------------------
@@ -3183,6 +3496,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    fleet_contract: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3497,8 +3811,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id,
+                        preferred_assignee, fleet_contract
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3524,6 +3839,10 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        _fleet_preferred_from_contract(fleet_contract, assignee),
+                        json.dumps(dict(fleet_contract), ensure_ascii=False)
+                        if fleet_contract
+                        else None,
                     ),
                 )
                 for pid in parents:
@@ -4620,6 +4939,7 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    emit_claimed_hook: bool = True,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
@@ -4627,9 +4947,10 @@ def claim_task(
     already claimed (or is not in ``ready`` status).
     """
     now = int(time.time())
-    lock = claimer or _claimer_id()
+    lock = claimer or _new_claim_token()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
+    joined = bool(getattr(conn, "in_transaction", False))
+    with _write_txn_join(conn):
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -4726,13 +5047,15 @@ def claim_task(
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
-    _fire_kanban_lifecycle_hook(
-        "kanban_task_claimed",
-        task_id,
-        board=get_current_board(),
-        assignee=claimed.assignee if claimed else None,
-        run_id=run_id,
-    )
+        if claimed is not None and emit_claimed_hook:
+            payload = _claimed_hook_payload(claimed)
+            _queue_after_commit(
+                conn,
+                lambda p=payload: _fire_kanban_lifecycle_hook(
+                    "kanban_task_claimed",
+                    **p,
+                ),
+            )
     return claimed
 
 
@@ -4755,76 +5078,98 @@ def claim_review_task(
     independently from the original worker run.
     """
     now = int(time.time())
-    lock = claimer or _claimer_id()
+    lock = claimer or _new_claim_token()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
-        if not _parents_satisfied(conn, task_id):
-            demoted = conn.execute(
-                "UPDATE tasks SET status = 'todo' "
-                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
-                (task_id,),
+    try:
+        with write_txn(conn):
+            reserved = _task_lease_identity(conn, task_id)
+            if not _parents_satisfied(conn, task_id):
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                    (task_id,),
+                )
+                if demoted.rowcount == 1:
+                    _append_event(
+                        conn,
+                        task_id,
+                        "dependency_wait",
+                        {
+                            "reason": "parent_reopened",
+                            "source_status": "review",
+                        },
+                    )
+                return None
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'running',
+                       claim_lock    = ?,
+                       claim_expires = ?,
+                       started_at    = COALESCE(started_at, ?)
+                 WHERE id = ?
+                   AND status = 'review'
+                   AND claim_lock IS NULL
+                """,
+                (lock, expires, now, task_id),
             )
-            if demoted.rowcount == 1:
-                _append_event(
-                    conn,
+            if cur.rowcount != 1:
+                return None
+            trow = conn.execute(
+                "SELECT assignee, max_runtime_seconds, current_step_key "
+                "FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            run_cur = conn.execute(
+                """
+                INSERT INTO task_runs (
+                    task_id, profile, step_key, status,
+                    claim_lock, claim_expires, max_runtime_seconds,
+                    started_at
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                """,
+                (
                     task_id,
-                    "dependency_wait",
-                    {
-                        "reason": "parent_reopened",
-                        "source_status": "review",
+                    trow["assignee"] if trow else None,
+                    trow["current_step_key"] if trow else None,
+                    lock,
+                    expires,
+                    trow["max_runtime_seconds"] if trow else None,
+                    now,
+                ),
+            )
+            run_id = run_cur.lastrowid
+            conn.execute(
+                "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+                (run_id, task_id),
+            )
+            _append_event(
+                conn, task_id, "claimed",
+                {"lock": lock, "expires": expires, "run_id": run_id,
+                 "source_status": "review"},
+                run_id=run_id,
+            )
+            lease = get_active_lease(conn, task_id=task_id)
+            if lease is not None:
+                transferred, transfer_reason = dispose_matching_lease(
+                    conn,
+                    task_id=task_id,
+                    reason="review_claimed",
+                    claim_token=reserved["claim_token"],
+                    route_epoch=reserved["route_epoch"],
+                    run_id=None,
+                    host_id=reserved["host_id"],
+                    successor={
+                        "run_id": run_id,
+                        "claim_token": lock,
+                        "route_epoch": reserved["route_epoch"],
                     },
                 )
-            return None
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
-             WHERE id = ?
-               AND status = 'review'
-               AND claim_lock IS NULL
-            """,
-            (lock, expires, now, task_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        run_cur = conn.execute(
-            """
-            INSERT INTO task_runs (
-                task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                trow["assignee"] if trow else None,
-                trow["current_step_key"] if trow else None,
-                lock,
-                expires,
-                trow["max_runtime_seconds"] if trow else None,
-                now,
-            ),
-        )
-        run_id = run_cur.lastrowid
-        conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
-        )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
-            run_id=run_id,
-        )
-        return get_task(conn, task_id)
+                if not transferred:
+                    raise _FleetLeaseFenceError(transfer_reason)
+            return get_task(conn, task_id)
+    except _FleetLeaseFenceError:
+        return None
 
 
 def _retry_status_for_run(
@@ -4913,6 +5258,10 @@ def goal_run_status(
     return task.status
 
 
+class _HeartbeatRunProofError(Exception):
+    """Rollback signal when the claimed current run cannot be proven."""
+
+
 def heartbeat_claim(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4927,20 +5276,27 @@ def heartbeat_claim(
     """
     expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock = ?",
-            (expires, task_id, lock),
-        )
-        if cur.rowcount == 1:
+    try:
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET claim_expires = ? "
+                "WHERE id = ? AND status = 'running' AND claim_lock = ?",
+                (expires, task_id, lock),
+            )
+            if cur.rowcount != 1:
+                return False
             run_id = _current_run_id(conn, task_id)
-            if run_id is not None:
-                conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                    (expires, run_id),
-                )
+            if run_id is None:
+                raise _HeartbeatRunProofError
+            run_cur = conn.execute(
+                "UPDATE task_runs SET claim_expires = ? "
+                "WHERE id = ? AND task_id = ?",
+                (expires, run_id, task_id),
+            )
+            if run_cur.rowcount != 1:
+                raise _HeartbeatRunProofError
             return True
+    except _HeartbeatRunProofError:
         return False
 
 
@@ -4988,6 +5344,14 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
+        if not host_local:
+            _defer_foreign_host_state(
+                conn,
+                row["id"],
+                lock=lock,
+                source="release_stale_claims",
+            )
+            continue
         hb = row["last_heartbeat_at"]
         # Heartbeat staleness backstop: if we have a heartbeat at all
         # and it's older than the max-stale threshold, the worker is
@@ -5050,46 +5414,59 @@ def release_stale_claims(
                 reason="ttl_expired_worker_alive",
             )
             continue
-        with write_txn(conn):
-            retry_status = _retry_status_for_run(conn, row["id"])
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (retry_status, row["id"], row["claim_lock"], now),
-            )
-            if cur.rowcount != 1:
-                continue
-            run_id = _end_run(
-                conn, row["id"],
-                outcome="reclaimed", status="reclaimed",
-                error=f"stale_lock={row['claim_lock']}",
-                metadata=termination,
-            )
-            payload = {
-                "stale_lock": row["claim_lock"],
-                "worker_pid": (
-                    int(row["worker_pid"])
-                    if row["worker_pid"] is not None else None
-                ),
-                "claim_expires": int(row["claim_expires"]),
-                "last_heartbeat_at": (
-                    int(row["last_heartbeat_at"])
-                    if row["last_heartbeat_at"] is not None else None
-                ),
-                "now": now,
-                "host_local": host_local,
-                "heartbeat_stale": bool(heartbeat_stale),
-                "retry_status": retry_status,
-            }
-            payload.update(termination)
-            _append_event(
-                conn, row["id"], "reclaimed",
-                payload,
-                run_id=run_id,
-            )
-            reclaimed += 1
+        try:
+            with write_txn(conn):
+                retry_status = _retry_status_for_run(conn, row["id"])
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                    "AND claim_expires IS NOT NULL AND claim_expires < ?",
+                    (retry_status, row["id"], row["claim_lock"], now),
+                )
+                if cur.rowcount != 1:
+                    continue
+                run_id = _end_run(
+                    conn, row["id"],
+                    outcome="reclaimed", status="reclaimed",
+                    error=f"stale_lock={row['claim_lock']}",
+                    metadata=termination,
+                )
+                payload = {
+                    "stale_lock": row["claim_lock"],
+                    "worker_pid": (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    ),
+                    "claim_expires": int(row["claim_expires"]),
+                    "last_heartbeat_at": (
+                        int(row["last_heartbeat_at"])
+                        if row["last_heartbeat_at"] is not None else None
+                    ),
+                    "now": now,
+                    "host_local": host_local,
+                    "heartbeat_stale": bool(heartbeat_stale),
+                    "retry_status": retry_status,
+                }
+                payload.update(termination)
+                _append_event(
+                    conn, row["id"], "reclaimed",
+                    payload,
+                    run_id=run_id,
+                )
+                _require_ended_run_lease_disposed(
+                    conn,
+                    row["id"],
+                    reason="stale_reclaim",
+                    landing=retry_status,
+                    run_id=run_id,
+                    claim_token=row["claim_lock"],
+                )
+                reclaimed += 1
+        except _FleetLeaseFenceError:
+            # The claim we could not prove ownership of stays exactly as it
+            # was; the next tick retries once the lease is provable again.
+            continue
         # Worker-lifecycle observer (RFC #58548): the reclaim txn above has
         # committed. The ``continue`` branches (rowcount mismatch, claim
         # extension, deferred reclaim) never reach this point, so only a
@@ -5127,7 +5504,9 @@ def reclaim_task(
     for the TTL to expire (e.g. after seeing a hallucination warning).
 
     Returns True if a reclaim happened, False if the task isn't in a
-    reclaimable state (not running, or doesn't exist).
+    reclaimable state (not running, or doesn't exist) or if the
+    mutation-root lease could not be disposed — in which case the whole
+    reclaim is rolled back (see :class:`_FleetLeaseFenceError`).
     """
     row = conn.execute(
         "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
@@ -5142,38 +5521,50 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
-    with write_txn(conn):
-        retry_status = _retry_status_for_run(conn, task_id)
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (retry_status, task_id, prev_lock),
-        )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="reclaimed", status="reclaimed",
-            error=(
-                f"manual_reclaim: {reason}" if reason
-                else f"manual_reclaim lock={prev_lock}"
-            ),
-            metadata=termination,
-        )
-        payload = {
-            "manual": True,
-            "reason": reason,
-            "prev_lock": prev_lock,
-            "retry_status": retry_status,
-        }
-        payload.update(termination)
-        _append_event(
-            conn, task_id, "reclaimed",
-            payload,
-            run_id=run_id,
-        )
+    try:
+        with write_txn(conn):
+            retry_status = _retry_status_for_run(conn, task_id)
+            cur = conn.execute(
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
+                "AND claim_lock IS ?",
+                (retry_status, task_id, prev_lock),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn, task_id,
+                outcome="reclaimed", status="reclaimed",
+                error=(
+                    f"manual_reclaim: {reason}" if reason
+                    else f"manual_reclaim lock={prev_lock}"
+                ),
+                metadata=termination,
+            )
+            payload = {
+                "manual": True,
+                "reason": reason,
+                "prev_lock": prev_lock,
+                "retry_status": retry_status,
+            }
+            payload.update(termination)
+            _append_event(
+                conn, task_id, "reclaimed",
+                payload,
+                run_id=run_id,
+            )
+            _require_ended_run_lease_disposed(
+                conn,
+                task_id,
+                reason="reclaimed",
+                landing=retry_status,
+                run_id=run_id,
+                claim_token=prev_lock,
+            )
+    except _FleetLeaseFenceError:
+        # Nothing was reclaimed: the task keeps its claim, run and lease.
+        return False
     # Operator intervention — they've looked at the task, so the
     # consecutive-failures counter is now stale. Give the next retry
     # a fresh budget. (_clear_failure_counter opens its own write_txn,
@@ -5358,6 +5749,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    expected_route_epoch: Optional[str] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """Transition ``running|ready|blocked|review -> done`` and record ``result``.
@@ -5391,7 +5783,36 @@ def complete_task(
     Any suspected phantom references are recorded as a
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
+
+    Returns False — with the whole transition rolled back — when the
+    mutation-root lease cannot be disposed under independently derived
+    authority (see :class:`_FleetLeaseFenceError`).
     """
+    try:
+        return _complete_task_fenced(
+            conn, task_id,
+            result=result, summary=summary, metadata=metadata,
+            created_cards=created_cards, expected_run_id=expected_run_id,
+            expected_route_epoch=expected_route_epoch,
+            fire_lifecycle_hook=fire_lifecycle_hook,
+        )
+    except _FleetLeaseFenceError:
+        return False
+
+
+def _complete_task_fenced(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None,
+    expected_run_id: Optional[int] = None,
+    expected_route_epoch: Optional[str] = None,
+    fire_lifecycle_hook: bool = True,
+) -> bool:
+    """:func:`complete_task` body. Raises the fence when disposal fails."""
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
@@ -5433,6 +5854,21 @@ def complete_task(
         # approval. A parent may have been reopened after this task entered
         # ``review`` or ``running``.
         if not _parents_satisfied(conn, task_id):
+            return False
+        ident = _task_lease_identity(conn, task_id)
+        ok_epoch, _lease_token, _lease_epoch, _lease_run_id = _accept_terminal_fleet_state(
+            conn, task_id,
+            expected_route_epoch=expected_route_epoch,
+            expected_run_id=expected_run_id,
+        )
+        if not ok_epoch:
+            _append_event(
+                conn, task_id, "terminal_rejected",
+                {
+                    "reason": "stale_route_or_claim_epoch",
+                    "expected_route_epoch": expected_route_epoch,
+                },
+            )
             return False
         prior = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
@@ -5476,6 +5912,31 @@ def complete_task(
             )
         if cur.rowcount != 1:
             return False
+        # Whether a lease still exists decides disposal — never how truthy its
+        # identity fields look. ``dispose_matching_lease`` reports ``absent``
+        # when the task holds no lease, so calling it unconditionally keeps
+        # no-lease completion working while forcing the authority check on
+        # every real lease, including one whose ``claim_token`` /
+        # ``route_epoch`` are the empty strings the ``TEXT NOT NULL`` schema
+        # still accepts. Guarding on ``lease_token or lease_epoch or
+        # ident["route_epoch"]`` skipped the fence outright in exactly that
+        # case and published ``done`` over a stranded mutation root.
+        #
+        # Only ``ident`` may authorize this release. It is derived from
+        # task/run state and, for a run-less reservation, from the parking
+        # run's append-only ``claimed`` event. Falling back to the values read
+        # off the lease row itself would let the row vouch for its own
+        # disposal, so a completion with no provable owner released the
+        # mutation root. Missing, empty, malformed, ambiguous or mismatched
+        # authority fences, and the whole completion rolls back.
+        released, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="completed",
+            **ident,
+        )
+        if not released:
+            raise _FleetLeaseFenceError(detail)
         if isinstance(metadata, dict):
             _persist_scratch_completion_artifacts(conn, task_id, metadata)
             for stored_path in metadata.pop("_staged_artifacts", []):
@@ -6276,14 +6737,35 @@ def block_task(
       in the loop breaker so a forever-flaky task eventually escalates.
 
     Returns True on any successful transition (to ``blocked``, ``todo``, or
-    ``triage``), False when the task wasn't in a blockable state.
+    ``triage``), False when the task wasn't in a blockable state or when the
+    mutation-root lease could not be disposed (the whole transition is rolled
+    back in that case — see :class:`_FleetLeaseFenceError`).
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    try:
+        return _block_task_fenced(
+            conn, task_id,
+            reason=reason, kind=kind, expected_run_id=expected_run_id,
+        )
+    except _FleetLeaseFenceError:
+        return False
+
+
+def _block_task_fenced(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    kind: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """:func:`block_task` body. Raises the fence when disposal fails."""
     recurrences = 0
     with write_txn(conn):
+        ident = _task_lease_identity(conn, task_id)
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
             (task_id,),
@@ -6342,6 +6824,14 @@ def block_task(
                 },
                 run_id=run_id,
             )
+            released, detail = dispose_matching_lease(
+                conn,
+                task_id=task_id,
+                reason="blocked",
+                **ident,
+            )
+            if not released:
+                raise _FleetLeaseFenceError(detail)
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
                 "kanban_task_blocked",
@@ -6459,6 +6949,14 @@ def block_task(
                 },
                 run_id=run_id,
             )
+        released, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="blocked",
+            **ident,
+        )
+        if not released:
+            raise _FleetLeaseFenceError(detail)
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
@@ -6521,13 +7019,35 @@ def request_review(
     def _ret(ok: bool, reason: Optional[str] = None):
         return (ok, reason) if with_reason else ok
 
+    try:
+        return _request_review_fenced(
+            conn, task_id,
+            summary=summary, metadata=metadata, reviewer=reviewer,
+            expected_run_id=expected_run_id, force=force, _ret=_ret,
+        )
+    except _FleetLeaseFenceError as exc:
+        return _ret(False, f"mutation-root lease could not be disposed: {exc}")
+
+
+def _request_review_fenced(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    metadata: Optional[dict],
+    reviewer: Optional[str],
+    expected_run_id: Optional[int],
+    force: bool,
+    _ret,
+):
+    """:func:`request_review` body. Raises the fence when disposal fails."""
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
+            "SELECT assignee, status, claim_lock, current_run_id, route_epoch "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
@@ -6586,6 +7106,15 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        allowed, family_reason = review_family_allowed(conn, task_id, reviewer)
+        if not allowed:
+            _append_event(
+                conn,
+                task_id,
+                "review_refused",
+                {"reason": family_reason, "reviewer": reviewer},
+            )
+            return _ret(False, family_reason)
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -6646,6 +7175,25 @@ def request_review(
             },
             run_id=run_id,
         )
+        parked, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="review_requested",
+            **_task_lease_identity(
+                conn,
+                task_id,
+                claim_token=trow["claim_lock"],
+                run_id=trow["current_run_id"],
+                route_epoch=trow["route_epoch"],
+            ),
+            successor={
+                "run_id": None,
+                "claim_token": trow["claim_lock"],
+                "route_epoch": trow["route_epoch"],
+            },
+        )
+        if not parked:
+            raise _FleetLeaseFenceError(detail)
     return _ret(True)
 
 
@@ -6667,8 +7215,24 @@ def request_changes(
     reason = str(redact_review_value(reason or "")).strip()
     if not reason:
         return False, "reason is required"
+    try:
+        return _request_changes_fenced(
+            conn, task_id, reason=reason, expected_run_id=expected_run_id,
+        )
+    except _FleetLeaseFenceError as exc:
+        return False, f"mutation-root lease could not be disposed: {exc}"
 
+
+def _request_changes_fenced(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """:func:`request_changes` body. Raises the fence when disposal fails."""
     with write_txn(conn):
+        ident = _task_lease_identity(conn, task_id)
         task_row = conn.execute(
             "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
             (task_id,),
@@ -6765,6 +7329,14 @@ def request_changes(
             },
             run_id=run_id,
         )
+        released, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="changes_requested",
+            **ident,
+        )
+        if not released:
+            raise _FleetLeaseFenceError(detail)
     return True, implementer
 
 
@@ -6896,9 +7468,23 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Returns False without mutating anything when a lease is still held for
+    this task and cannot be disposed under the task's own expected identity.
     """
+    try:
+        return _unblock_task_fenced(conn, task_id)
+    except _FleetLeaseFenceError:
+        return False
+
+
+def _unblock_task_fenced(conn: sqlite3.Connection, task_id: str) -> bool:
+    """:func:`unblock_task` body. Raises the fence when disposal fails."""
     now = int(time.time())
     with write_txn(conn):
+        # Capture the expected lease identity BEFORE anything clears the
+        # claim/run pointers this resolution reads.
+        ident = _task_lease_identity(conn, task_id)
         current = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
@@ -6945,6 +7531,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 else None
             ),
         )
+        released, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="unblocked",
+            **ident,
+        )
+        if not released:
+            raise _FleetLeaseFenceError(detail)
         return True
 
 
@@ -6960,10 +7554,23 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     Deliberately does NOT touch ``block_recurrences``/``block_kind``: review is
     not a block, so there is no loop counter to reset. (A stale counter from a
     genuine block *before* review is left intact — only :func:`complete_task`
-    clears it.) Returns False when the task is missing or not in ``review``.
+    clears it.) Returns False when the task is missing, not in ``review``, or
+    when its parked review reservation cannot be disposed under the task's own
+    expected identity — in which case nothing is mutated.
     """
+    try:
+        return _reopen_review_task_fenced(conn, task_id)
+    except _FleetLeaseFenceError:
+        return False
+
+
+def _reopen_review_task_fenced(conn: sqlite3.Connection, task_id: str) -> bool:
+    """:func:`reopen_review_task` body. Raises the fence when disposal fails."""
     now = int(time.time())
     with write_txn(conn):
+        # Capture the expected lease identity BEFORE anything clears the
+        # claim/run pointers this resolution reads.
+        ident = _task_lease_identity(conn, task_id)
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",
@@ -7013,6 +7620,14 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             "review_reopened",
             payload if payload != {"status": "ready"} else None,
         )
+        released, detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="review_reopened",
+            **ident,
+        )
+        if not released:
+            raise _FleetLeaseFenceError(detail)
         return True
 
 
@@ -7101,6 +7716,16 @@ def invalidate_descendants_for_parent_reopen(
         for row in rows:
             previous_status = row["status"]
             if previous_status not in {"ready", "review", "running", "done"}:
+                continue
+            released, _detail = _dispose_ended_run_lease(
+                conn,
+                row["id"],
+                reason="ancestor_reopened",
+                landing="todo",
+                run_id=row["current_run_id"],
+                claim_token=row["claim_lock"],
+            )
+            if not released:
                 continue
             resume_status = "ready"
             run_id = None
@@ -7512,6 +8137,20 @@ def decompose_triage_task(
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["status"] == "archived":
+            return False
+        released, _detail = _dispose_ended_run_lease(
+            conn,
+            task_id,
+            reason="archived",
+            landing="archived",
+        )
+        if not released:
+            return False
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -7553,6 +8192,14 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         ).fetchone()
         if not row or row["status"] != "archived":
             return False
+        released, _detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="deleted",
+            **_task_lease_identity(conn, task_id),
+        )
+        if not released:
+            return False
         conn.execute(
             "DELETE FROM task_links WHERE parent_id = ? OR child_id = ?",
             (task_id, task_id),
@@ -7576,6 +8223,20 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     if the task was not found.
     """
     with write_txn(conn):
+        exists = conn.execute(
+            "SELECT 1 FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if exists is None:
+            return False
+        released, _detail = dispose_matching_lease(
+            conn,
+            task_id=task_id,
+            reason="deleted",
+            **_task_lease_identity(conn, task_id),
+        )
+        if not released:
+            return False
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
             return False
@@ -7926,6 +8587,28 @@ def schedule_task(
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
     with write_txn(conn):
+        current = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if current is None or current["status"] not in (
+            "todo", "ready", "running", "blocked",
+        ):
+            return False
+        if expected_run_id is not None and (
+            current["current_run_id"] is None
+            or int(current["current_run_id"]) != int(expected_run_id)
+        ):
+            return False
+        released, _detail = _dispose_ended_run_lease(
+            conn,
+            task_id,
+            reason="scheduled",
+            landing="scheduled",
+            run_id=current["current_run_id"],
+        )
+        if not released:
+            return False
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -7942,11 +8625,12 @@ def schedule_task(
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
             return False
-        run_id = _end_run(
+        ended_run_id = _end_run(
             conn, task_id,
             outcome="scheduled", status="scheduled",
             summary=reason,
         )
+        run_id = ended_run_id
         if run_id is None and reason:
             run_id = _synthesize_ended_run(
                 conn, task_id,
@@ -8049,6 +8733,12 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_fleet_deferred: list[tuple[str, str]] = field(default_factory=list)
+    """Pooled tasks left waiting this tick ``(task_id, reason)``. Exact-pin
+    waits, reviewer-family waits, and lease conflicts are deferrals — they
+    never increment ``consecutive_failures``."""
+    lease_conflicts: list[str] = field(default_factory=list)
+    """Task ids restored to ready because the mutation-root lease collided."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -8387,37 +9077,107 @@ def heartbeat_worker(
     should be heartbeating (not running, or claim expired).
     """
     now = int(time.time())
-    with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
-                "WHERE id = ? AND status = 'running'",
-                (now, task_id),
+    try:
+        with write_txn(conn):
+            if expected_run_id is None:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running'",
+                    (now, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                    (now, task_id, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            run_id = (
+                int(expected_run_id)
+                if expected_run_id is not None
+                else _current_run_id(conn, task_id)
             )
-        else:
-            cur = conn.execute(
-                "UPDATE tasks SET last_heartbeat_at = ? "
-                "WHERE id = ? AND status = 'running' AND current_run_id = ?",
-                (now, task_id, int(expected_run_id)),
+            if run_id is None:
+                raise _HeartbeatRunProofError
+            run_cur = conn.execute(
+                "UPDATE task_runs SET last_heartbeat_at = ? "
+                "WHERE id = ? AND task_id = ?",
+                (now, run_id, task_id),
             )
-        if cur.rowcount != 1:
-            return False
-        run_id = (
-            int(expected_run_id)
-            if expected_run_id is not None
-            else _current_run_id(conn, task_id)
-        )
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
-                (now, run_id),
+            if run_cur.rowcount != 1:
+                raise _HeartbeatRunProofError
+            _append_event(
+                conn, task_id, "heartbeat",
+                {"note": note} if note else None,
+                run_id=run_id,
             )
-        _append_event(
-            conn, task_id, "heartbeat",
-            {"note": note} if note else None,
-            run_id=run_id,
-        )
-    return True
+            return True
+    except _HeartbeatRunProofError:
+        return False
+
+
+def heartbeat_owned_worker(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    ttl_seconds: Optional[int] = None,
+    claimer: Optional[str] = None,
+    note: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> bool:
+    """One logical heartbeat: prove claim + run, then apply all effects.
+
+    Task claim token, current run identity, and the task-owned run row
+    are checked in the same transaction as claim-expiry, liveness, and
+    heartbeat-event writes. Either every effect commits or none do.
+
+    ``expected_run_id`` binds a dispatcher-declared run. When omitted,
+    the live current run is used so locally driven callers without a
+    run identity keep working.
+    """
+    expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
+    lock = claimer or _claimer_id()
+    now = int(time.time())
+    try:
+        with write_txn(conn):
+            if expected_run_id is None:
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running' AND claim_lock = ?",
+                    (expires, now, task_id, lock),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+                    "WHERE id = ? AND status = 'running' AND claim_lock = ? "
+                    "AND current_run_id = ?",
+                    (expires, now, task_id, lock, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            run_id = (
+                int(expected_run_id)
+                if expected_run_id is not None
+                else _current_run_id(conn, task_id)
+            )
+            if run_id is None:
+                raise _HeartbeatRunProofError
+            run_cur = conn.execute(
+                "UPDATE task_runs SET claim_expires = ?, last_heartbeat_at = ? "
+                "WHERE id = ? AND task_id = ?",
+                (expires, now, run_id, task_id),
+            )
+            if run_cur.rowcount != 1:
+                raise _HeartbeatRunProofError
+            _append_event(
+                conn, task_id, "heartbeat",
+                {"note": note} if note else None,
+                run_id=run_id,
+            )
+            return True
+    except _HeartbeatRunProofError:
+        return False
 
 
 def enforce_max_runtime(
@@ -8491,34 +9251,47 @@ def enforce_max_runtime(
                 except (ProcessLookupError, OSError):
                     pass
 
-        with write_txn(conn):
-            retry_status = _retry_status_for_run(conn, tid)
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, tid, pid, row["claim_lock"]),
-            )
-            if cur.rowcount == 1:
-                payload = {
-                    "pid": pid,
-                    "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
-                    "sigkill": killed,
-                    "retry_status": retry_status,
-                }
-                run_id = _end_run(
-                    conn, tid,
-                    outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                    metadata=payload,
+        try:
+            with write_txn(conn):
+                retry_status = _retry_status_for_run(conn, tid)
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (retry_status, tid, pid, row["claim_lock"]),
                 )
-                _append_event(
-                    conn, tid, "timed_out", payload, run_id=run_id,
-                )
-                timed_out.append(tid)
+                if cur.rowcount == 1:
+                    payload = {
+                        "pid": pid,
+                        "elapsed_seconds": int(elapsed),
+                        "limit_seconds": int(row["max_runtime_seconds"]),
+                        "sigkill": killed,
+                        "retry_status": retry_status,
+                    }
+                    run_id = _end_run(
+                        conn, tid,
+                        outcome="timed_out", status="timed_out",
+                        error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                        metadata=payload,
+                    )
+                    _append_event(
+                        conn, tid, "timed_out", payload, run_id=run_id,
+                    )
+                    _require_ended_run_lease_disposed(
+                        conn,
+                        tid,
+                        reason="timed_out",
+                        landing=retry_status,
+                        run_id=run_id,
+                        claim_token=row["claim_lock"],
+                    )
+                    timed_out.append(tid)
+        except _FleetLeaseFenceError:
+            # Rolled back: the run stays open under its claim, so the
+            # failure counter below must not be charged either.
+            continue
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
         # breaker trips, this flips the retried task to ``blocked`` and
@@ -8608,6 +9381,15 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
+        if _is_foreign_host_lock(lock):
+            _defer_foreign_host_state(
+                conn,
+                tid,
+                lock=lock,
+                source="detect_stale_running",
+            )
+            continue
+
         # Terminate the worker if it's still host-local.
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
@@ -8622,47 +9404,59 @@ def detect_stale_running(
             )
             continue
 
-        with write_txn(conn):
-            retry_status = _retry_status_for_run(conn, tid)
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL, "
-                "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (retry_status, tid, row["claim_lock"]),
-            )
-            if cur.rowcount != 1:
-                continue
+        try:
+            with write_txn(conn):
+                retry_status = _retry_status_for_run(conn, tid)
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ?",
+                    (retry_status, tid, row["claim_lock"]),
+                )
+                if cur.rowcount != 1:
+                    continue
 
-            payload = {
-                "elapsed_seconds": int(elapsed),
-                "last_heartbeat_at": (
-                    int(last_hb) if last_hb is not None else None
-                ),
-                "heartbeat_age_seconds": (
-                    int(hb_age) if hb_age is not None else None
-                ),
-                "timeout_seconds": stale_timeout_seconds,
-                "pid": int(pid) if pid else None,
-                "retry_status": retry_status,
-            }
-            payload.update(termination)
+                payload = {
+                    "elapsed_seconds": int(elapsed),
+                    "last_heartbeat_at": (
+                        int(last_hb) if last_hb is not None else None
+                    ),
+                    "heartbeat_age_seconds": (
+                        int(hb_age) if hb_age is not None else None
+                    ),
+                    "timeout_seconds": stale_timeout_seconds,
+                    "pid": int(pid) if pid else None,
+                    "retry_status": retry_status,
+                }
+                payload.update(termination)
 
-            run_id = _end_run(
-                conn, tid,
-                outcome="stale", status="stale",
-                error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
-                ) + f" after {int(elapsed)}s running",
-                metadata=payload,
-            )
-            _append_event(
-                conn, tid, "stale", payload, run_id=run_id,
-            )
-            reclaimed.append(tid)
+                run_id = _end_run(
+                    conn, tid,
+                    outcome="stale", status="stale",
+                    error=(
+                        f"no heartbeat for {int(hb_age)}s "
+                        if hb_age is not None
+                        else "no heartbeat ever"
+                    ) + f" after {int(elapsed)}s running",
+                    metadata=payload,
+                )
+                _append_event(
+                    conn, tid, "stale", payload, run_id=run_id,
+                )
+                _require_ended_run_lease_disposed(
+                    conn,
+                    tid,
+                    reason="stale",
+                    landing=retry_status,
+                    run_id=run_id,
+                    claim_token=row["claim_lock"],
+                )
+                reclaimed.append(tid)
+        except _FleetLeaseFenceError:
+            # Rolled back: the card keeps its claim and open run.
+            continue
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
         # is dispatcher-side detection of an absent heartbeat; the task is
@@ -8711,6 +9505,14 @@ def reconcile_orphaned_running(
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
+        if _is_foreign_host_lock(row["claim_lock"]):
+            _defer_foreign_host_state(
+                conn,
+                tid,
+                lock=row["claim_lock"],
+                source="reconcile_orphaned_running",
+            )
+            continue
         if pid and _pid_alive(pid):
             # The recorded worker may still be doing real work — never
             # requeue beside a live process. Retry next tick.
@@ -8720,6 +9522,14 @@ def reconcile_orphaned_running(
             )
             continue
         with write_txn(conn):
+            released, _detail = _dispose_ended_run_lease(
+                conn,
+                tid,
+                reason="orphaned_running",
+                landing="ready",
+            )
+            if not released:
+                continue
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
@@ -8979,68 +9789,90 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
-            )
-            if cur.rowcount == 1:
-                # Rate-limited requeues are a clean release, not a crash —
-                # record the run outcome as ``rate_limited`` so the board
-                # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
-                run_id = _end_run(
-                    conn, row["id"],
-                    outcome=_run_outcome, status=_run_outcome,
-                    error=error_text,
-                    metadata=dict(event_payload),
-                )
-                _append_event(
-                    conn, row["id"], event_kind,
-                    event_payload,
-                    run_id=run_id,
-                )
-                exited_hook_payloads.append({
-                    "task_id": row["id"],
-                    "assignee": row["assignee"],
-                    "run_id": run_id,
-                    "worker_pid": pid,
-                    "exit_kind": kind,
-                    "exit_code": code,
-                    "outcome": _run_outcome,
-                    "retry_status": retry_status,
-                })
-                if rate_limited_exit:
-                    # Stamp the failure-error column so ``check_respawn_guard``
-                    # recognizes this as a quota blocker and defers the
-                    # respawn until the window clears — WITHOUT touching
-                    # ``consecutive_failures`` (that's the whole point: no
-                    # breaker trip on a throttle).
-                    conn.execute(
-                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
-                        (error_text[:500], row["id"]),
+            # One savepoint per card: this pass shares a single outer
+            # transaction across every dead worker, so an unprovable lease on
+            # one card must roll back that card only — not the reclaims its
+            # neighbours already earned.
+            try:
+                with write_txn(conn, allow_nested=True):
+                    cur = conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL "
+                        "WHERE id = ? AND status = 'running' "
+                        "  AND worker_pid = ? AND claim_lock IS ?",
+                        (retry_status, row["id"], pid, row["claim_lock"]),
                     )
-                    rate_limited.append(row["id"])
-                else:
-                    if protocol_violation:
-                        # Stamp the failure error now: a below-budget
-                        # violation never reaches ``_record_task_failure``
-                        # (which stamps this column for every other failure
-                        # kind), yet the board UI and the retry worker's
-                        # context still need the violation message + the
-                        # corrective guidance it carries.
-                        conn.execute(
-                            "UPDATE tasks SET last_failure_error = ? "
-                            "WHERE id = ?",
-                            (error_text[:500], row["id"]),
+                    if cur.rowcount == 1:
+                        # Rate-limited requeues are a clean release, not a
+                        # crash — record the run outcome as ``rate_limited``
+                        # so the board history doesn't show a phantom crash
+                        # for a quota wall.
+                        _run_outcome = (
+                            "rate_limited" if rate_limited_exit else "crashed"
                         )
-                    crashed.append(row["id"])
-                    crash_details.append(
-                        (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
-                    )
+                        run_id = _end_run(
+                            conn, row["id"],
+                            outcome=_run_outcome, status=_run_outcome,
+                            error=error_text,
+                            metadata=dict(event_payload),
+                        )
+                        _append_event(
+                            conn, row["id"], event_kind,
+                            event_payload,
+                            run_id=run_id,
+                        )
+                        _require_ended_run_lease_disposed(
+                            conn,
+                            row["id"],
+                            reason=_run_outcome,
+                            landing=retry_status,
+                            run_id=run_id,
+                            claim_token=row["claim_lock"],
+                        )
+                        exited_hook_payloads.append({
+                            "task_id": row["id"],
+                            "assignee": row["assignee"],
+                            "run_id": run_id,
+                            "worker_pid": pid,
+                            "exit_kind": kind,
+                            "exit_code": code,
+                            "outcome": _run_outcome,
+                            "retry_status": retry_status,
+                        })
+                        if rate_limited_exit:
+                            # Stamp the failure-error column so
+                            # ``check_respawn_guard`` recognizes this as a
+                            # quota blocker and defers the respawn until the
+                            # window clears — WITHOUT touching
+                            # ``consecutive_failures`` (that's the whole
+                            # point: no breaker trip on a throttle).
+                            conn.execute(
+                                "UPDATE tasks SET last_failure_error = ? "
+                                "WHERE id = ?",
+                                (error_text[:500], row["id"]),
+                            )
+                            rate_limited.append(row["id"])
+                        else:
+                            if protocol_violation:
+                                # Stamp the failure error now: a below-budget
+                                # violation never reaches
+                                # ``_record_task_failure`` (which stamps this
+                                # column for every other failure kind), yet
+                                # the board UI and the retry worker's context
+                                # still need the violation message + the
+                                # corrective guidance it carries.
+                                conn.execute(
+                                    "UPDATE tasks SET last_failure_error = ? "
+                                    "WHERE id = ?",
+                                    (error_text[:500], row["id"]),
+                                )
+                            crashed.append(row["id"])
+                            crash_details.append(
+                                (row["id"], pid, row["claim_lock"],
+                                 protocol_violation, error_text)
+                            )
+            except _FleetLeaseFenceError:
+                continue
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the retried task transitions to blocked with a ``gave_up`` event
     # on top of the event we already emitted).
@@ -9203,7 +10035,41 @@ def _record_task_failure(
     ``detect_crashed_workers``, which resolves the per-task
     ``max_retries`` override against the violation streak itself. The
     failure is still counted into ``consecutive_failures``.
+
+    When ``release_claim=True`` and the ended run's mutation-root lease
+    cannot be disposed under provable authority, nothing is recorded: the
+    counter, status flip, run closure and events are all rolled back and
+    False is returned (see :class:`_FleetLeaseFenceError`). Charging a
+    failure while leaving the lease attached to a dead run would strand the
+    mutation root with no owner able to release it.
     """
+    try:
+        return _record_task_failure_fenced(
+            conn, task_id, error,
+            outcome=outcome,
+            failure_limit=failure_limit,
+            force_trip=force_trip,
+            release_claim=release_claim,
+            end_run=end_run,
+            event_payload_extra=event_payload_extra,
+        )
+    except _FleetLeaseFenceError:
+        return False
+
+
+def _record_task_failure_fenced(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    outcome: str,
+    failure_limit: int = None,
+    force_trip: bool = False,
+    release_claim: bool = False,
+    end_run: bool = False,
+    event_payload_extra: Optional[dict] = None,
+) -> bool:
+    """:func:`_record_task_failure` body. Raises the fence when disposal fails."""
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     blocked = False
@@ -9243,6 +10109,13 @@ def _record_task_failure(
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error[:500], task_id),
+                )
+                _require_ended_run_lease_disposed(
+                    conn,
+                    task_id,
+                    reason=outcome,
+                    landing=retry_status,
+                    run_id=row["current_run_id"],
                 )
             else:
                 # Timeout/crash path: source phase already restored with claim
@@ -9293,6 +10166,13 @@ def _record_task_failure(
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status = 'running'",
                     (retry_status, failures, error[:500], task_id),
+                )
+                _require_ended_run_lease_disposed(
+                    conn,
+                    task_id,
+                    reason=outcome,
+                    landing=retry_status,
+                    run_id=row["current_run_id"],
                 )
             else:
                 # Timeout/crash path: caller already restored the source phase.
@@ -9805,6 +10685,1675 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+
+# ---------------------------------------------------------------------------
+# Fleet Scheduler v1
+# ---------------------------------------------------------------------------
+
+FLEET_UNKNOWN = "UNKNOWN"
+
+
+class _FleetLeaseFenceError(RuntimeError):
+    """Rollback marker when a review claim cannot take over the mutation lease."""
+
+
+@dataclass
+class FleetPeerDecision:
+    profile: str
+    outcome: str
+    reason: str
+    family: str = FLEET_UNKNOWN
+    model: str = FLEET_UNKNOWN
+
+
+@dataclass
+class FleetRouteDecision:
+    kind: str
+    reason: str
+    preferred: Optional[str]
+    selected: Optional[str]
+    considered: list[FleetPeerDecision] = field(default_factory=list)
+    builder_family: Optional[str] = None
+    reserved_reviewer_family: Optional[str] = None
+    route_epoch: Optional[str] = None
+    pin: Optional[str] = None
+    requested_profile: Optional[str] = None
+    requested_model: Optional[str] = None
+    requested_family: Optional[str] = None
+    configured_profile: Optional[str] = None
+    configured_model: Optional[str] = None
+    configured_family: Optional[str] = None
+    observed_profile: str = FLEET_UNKNOWN
+    observed_model: str = FLEET_UNKNOWN
+    observed_family: str = FLEET_UNKNOWN
+    pooled: bool = False
+    launch_model: Optional[str] = None
+    launch_provider: Optional[str] = None
+    reserved_reviewer_profile: Optional[str] = None
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "reason": self.reason,
+            "preferred": self.preferred,
+            "selected": self.selected,
+            "pooled": self.pooled,
+            "pin": self.pin,
+            "builder_family": self.builder_family or FLEET_UNKNOWN,
+            "reserved_reviewer_family": self.reserved_reviewer_family or FLEET_UNKNOWN,
+            "reserved_reviewer_profile": self.reserved_reviewer_profile or FLEET_UNKNOWN,
+            "route_epoch": self.route_epoch,
+            "requested_profile": self.requested_profile or FLEET_UNKNOWN,
+            "requested_model": self.requested_model or FLEET_UNKNOWN,
+            "requested_family": self.requested_family or FLEET_UNKNOWN,
+            "configured_profile": self.configured_profile or FLEET_UNKNOWN,
+            "configured_model": self.configured_model or FLEET_UNKNOWN,
+            "configured_family": self.configured_family or FLEET_UNKNOWN,
+            "launch_model": self.launch_model or FLEET_UNKNOWN,
+            "launch_provider": self.launch_provider or FLEET_UNKNOWN,
+            "observed_profile": self.observed_profile,
+            "observed_model": self.observed_model,
+            "observed_family": self.observed_family,
+            "considered": [
+                {
+                    "profile": p.profile,
+                    "outcome": p.outcome,
+                    "reason": p.reason,
+                    "family": p.family,
+                    "model": p.model,
+                }
+                for p in self.considered
+            ],
+        }
+
+
+def fleet_host_id() -> str:
+    import socket
+    try:
+        return socket.gethostname() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def new_route_epoch() -> str:
+    return secrets.token_hex(16)
+
+
+def normalize_mutation_root(path: str | Path) -> str:
+    """Normalize an effective working directory so case/path aliases collide."""
+    raw = os.path.expanduser(str(path))
+    try:
+        resolved = os.path.realpath(raw)
+    except Exception:
+        resolved = os.path.abspath(raw)
+    norm = os.path.normpath(resolved)
+    if os.name == "nt":
+        norm = os.path.normcase(norm)
+        if len(norm) >= 2 and norm[1] == ":":
+            norm = norm[0].upper() + norm[1:]
+        norm = norm.replace("\\", "/")
+        if len(norm) > 3:
+            norm = norm.rstrip("/")
+        return norm
+    if norm != "/":
+        norm = norm.rstrip("/")
+    return norm
+
+
+def compute_effective_mutation_root(
+    task: "Task",
+    *,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Pure-as-possible effective mutation root. Repo root is never the key."""
+    kind = task.workspace_kind or "scratch"
+    if kind == "scratch":
+        if task.workspace_path:
+            return normalize_mutation_root(task.workspace_path)
+        try:
+            return normalize_mutation_root(workspaces_root(board=board) / task.id)
+        except Exception:
+            return None
+    if kind == "dir":
+        if not task.workspace_path:
+            return None
+        return normalize_mutation_root(task.workspace_path)
+    if kind == "worktree":
+        if task.workspace_path:
+            p = Path(task.workspace_path).expanduser()
+            if p.name == task.id and p.parent.name == ".worktrees":
+                return normalize_mutation_root(p)
+            git_marker = p / ".git"
+            if git_marker.exists():
+                return normalize_mutation_root(p / ".worktrees" / task.id)
+            return normalize_mutation_root(p)
+        try:
+            meta = read_board_metadata(board if board else get_current_board())
+            default = (meta.get("default_workdir") or "").strip()
+            if default:
+                return normalize_mutation_root(
+                    Path(default) / ".worktrees" / task.id
+                )
+        except Exception:
+            return None
+        return None
+    return None
+
+
+def load_fleet_scheduler_config() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        kanban = cfg.get("kanban") if isinstance(cfg, dict) else None
+        block = (kanban or {}).get("fleet_scheduler") if isinstance(kanban, dict) else None
+        return dict(block) if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
+def _fleet_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _fleet_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _profile_exists_safe(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists
+        return bool(profile_exists(name))
+    except Exception:
+        return True
+
+
+def _explicit_family(name: Optional[str], families: Mapping[str, Any]) -> Optional[str]:
+    if not name:
+        return None
+    raw = families.get(name)
+    if raw is None:
+        folded = {str(k).casefold(): v for k, v in families.items()}
+        raw = folded.get(name.casefold())
+    return _canonical_family(raw)
+
+
+def _explicit_model(name: Optional[str], models: Mapping[str, Any]) -> Optional[str]:
+    if not name:
+        return None
+    raw = models.get(name)
+    if raw is None:
+        folded = {str(k).casefold(): v for k, v in models.items()}
+        raw = folded.get(name.casefold())
+    return _fleet_str(raw)
+
+
+def _canonical_family(value: Any) -> Optional[str]:
+    text = _fleet_str(value)
+    return text.casefold() if text else None
+
+
+def _merge_profile_map(
+    *sources: Any,
+    canonicalize: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Merge profile→value maps. Conflicting values fail closed."""
+    out: dict[str, Any] = {}
+    conflict = False
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for key, raw in source.items():
+            name = _canonical_assignee(_fleet_str(key)) or _fleet_str(key)
+            if not name:
+                continue
+            value = _canonical_family(raw) if canonicalize else _fleet_str(raw)
+            if name in out and out[name] != value:
+                conflict = True
+                out[name] = None
+            else:
+                out[name] = value
+    return out, conflict
+
+
+def fleet_scheduler_is_enabled(config: Optional[Mapping[str, Any]] = None) -> bool:
+    cfg = dict(config) if isinstance(config, Mapping) else load_fleet_scheduler_config()
+    return _fleet_bool(cfg.get("enabled"))
+
+
+def parse_fleet_contract_arg(
+    raw: Any,
+    *,
+    assignee: Optional[str] = None,
+) -> dict[str, Any]:
+    """Validate a CLI/backend Fleet Scheduler contract payload."""
+    payload = raw
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid fleet contract JSON: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("fleet contract must be a JSON object")
+    normalized = normalize_fleet_contract(
+        payload,
+        assignee=assignee,
+        enforce_enabled=False,
+    )
+    if not normalized:
+        raise ValueError("fleet contract is empty or invalid")
+    if normalized.get("family_conflict") or normalized.get("model_conflict"):
+        raise ValueError("fleet contract has conflicting family or model data")
+    return dict(payload)
+
+
+def normalize_fleet_contract(
+    raw: Optional[Mapping[str, Any]],
+    *,
+    assignee: Optional[str] = None,
+    config: Optional[Mapping[str, Any]] = None,
+    enforce_enabled: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Return a normalized explicit contract, or None for legacy unpooled work."""
+    cfg = dict(config or load_fleet_scheduler_config())
+    if enforce_enabled and not _fleet_bool(cfg.get("enabled")):
+        return None
+    contract = dict(raw) if raw else {}
+    pool_name = _fleet_str(contract.get("pool") or contract.get("capability_pool"))
+    pools = cfg.get("pools") if isinstance(cfg.get("pools"), dict) else {}
+    if pool_name and pool_name in pools and isinstance(pools[pool_name], dict):
+        merged = dict(pools[pool_name])
+        merged.update({k: v for k, v in contract.items() if v is not None})
+        contract = merged
+    if not contract:
+        return None
+    preferred = _canonical_assignee(
+        _fleet_str(contract.get("preferred") or contract.get("preferred_profile")) or assignee
+    )
+    peers_raw = contract.get("peers") or contract.get("eligible_peers") or []
+    peers: list[str] = []
+    if isinstance(peers_raw, str):
+        peers_raw = [p.strip() for p in peers_raw.split(",") if p.strip()]
+    for peer in peers_raw:
+        name = _canonical_assignee(_fleet_str(peer))
+        if name and name not in peers and name != preferred:
+            peers.append(name)
+    families, family_conflict = _merge_profile_map(
+        cfg.get("profile_families") if isinstance(cfg.get("profile_families"), dict) else {},
+        contract.get("profile_families") if isinstance(contract.get("profile_families"), dict) else {},
+        canonicalize=True,
+    )
+    models, model_conflict = _merge_profile_map(
+        cfg.get("profile_models") if isinstance(cfg.get("profile_models"), dict) else {},
+        contract.get("profile_models") if isinstance(contract.get("profile_models"), dict) else {},
+    )
+    providers, provider_conflict = _merge_profile_map(
+        cfg.get("profile_providers") if isinstance(cfg.get("profile_providers"), dict) else {},
+        contract.get("profile_providers") if isinstance(contract.get("profile_providers"), dict) else {},
+    )
+    reviewer_fams = contract.get("eligible_reviewer_families")
+    if reviewer_fams is None:
+        reviewer_fams = cfg.get("eligible_reviewer_families") or []
+    if isinstance(reviewer_fams, str):
+        reviewer_fams = [reviewer_fams]
+    exact_profile = _fleet_bool(contract.get("exact_profile"))
+    exact_model = _fleet_str(contract.get("exact_model"))
+    exact_family = _canonical_family(contract.get("exact_family"))
+    material = contract.get("material_bytes")
+    if material is None:
+        material = True
+    return {
+        "preferred": preferred,
+        "peers": peers,
+        "exact_profile": exact_profile,
+        "exact_model": exact_model,
+        "exact_family": exact_family,
+        "material_bytes": bool(material),
+        "profile_families": families,
+        "profile_models": models,
+        "profile_providers": providers,
+        "family_conflict": family_conflict,
+        "model_conflict": model_conflict or provider_conflict,
+        "eligible_reviewer_families": [
+            fam for fam in (
+                _canonical_family(x) for x in reviewer_fams
+            ) if fam
+        ],
+        "reserved_reviewer_family": _canonical_family(contract.get("reserved_reviewer_family")),
+        "reserved_reviewer_profile": _canonical_assignee(
+            _fleet_str(contract.get("reserved_reviewer_profile"))
+        ),
+        "unavailable": set(contract.get("unavailable") or []),
+    }
+
+
+def set_fleet_contract(
+    conn: sqlite3.Connection,
+    task_id: str,
+    contract: Mapping[str, Any],
+) -> None:
+    task = get_task(conn, task_id)
+    assignee = task.assignee if task else None
+    preferred = _fleet_preferred_from_contract(contract, assignee)
+    with write_txn(conn):
+        conn.execute(
+            """
+            UPDATE tasks
+               SET fleet_contract = ?,
+                   preferred_assignee = COALESCE(preferred_assignee, ?)
+             WHERE id = ?
+            """,
+            (json.dumps(dict(contract), ensure_ascii=False), preferred, task_id),
+        )
+
+
+def _legacy_route_decision(
+    *,
+    assignee: Optional[str],
+    model_override: Optional[str],
+    provider_override: Optional[str] = None,
+) -> FleetRouteDecision:
+    considered: list[FleetPeerDecision] = []
+    if assignee:
+        considered.append(FleetPeerDecision(
+            profile=assignee,
+            outcome="selected",
+            reason="legacy_unpooled",
+        ))
+    return FleetRouteDecision(
+        kind="legacy",
+        reason="legacy_unpooled",
+        preferred=assignee,
+        selected=assignee,
+        considered=considered,
+        pooled=False,
+        requested_profile=assignee,
+        requested_model=model_override,
+        configured_profile=assignee,
+        configured_model=model_override,
+        launch_model=model_override,
+        launch_provider=provider_override,
+        observed_profile=FLEET_UNKNOWN,
+        observed_model=FLEET_UNKNOWN,
+        observed_family=FLEET_UNKNOWN,
+    )
+
+
+def _pin_kind(contract: Mapping[str, Any]) -> Optional[str]:
+    if contract.get("exact_profile"):
+        return "exact_profile"
+    if contract.get("exact_model"):
+        return "exact_model"
+    if contract.get("exact_family"):
+        return "exact_family"
+    return None
+
+
+def resolve_fleet_route(
+    *,
+    assignee: Optional[str],
+    contract: Optional[Mapping[str, Any]],
+    running: Optional[Mapping[str, int]] = None,
+    cap: Optional[int] = None,
+    older_exact_waiters: Optional[Iterable[Mapping[str, Any]]] = None,
+    model_override: Optional[str] = None,
+    provider_override: Optional[str] = None,
+    config: Optional[Mapping[str, Any]] = None,
+    profile_exists_fn=None,
+) -> FleetRouteDecision:
+    """Pure deterministic resolver used for receipts and dispatch."""
+    normalized = normalize_fleet_contract(contract, assignee=assignee, config=config)
+    if not normalized:
+        return _legacy_route_decision(
+            assignee=assignee,
+            model_override=model_override,
+            provider_override=provider_override,
+        )
+
+    exists = profile_exists_fn or _profile_exists_safe
+    running_map = {k: int(v) for k, v in (running or {}).items()}
+    families = normalized["profile_families"]
+    models = normalized["profile_models"]
+    unavailable = {str(x) for x in normalized["unavailable"]}
+    pin = _pin_kind(normalized)
+    preferred = normalized["preferred"] or assignee
+    if normalized.get("family_conflict") or normalized.get("model_conflict"):
+        return FleetRouteDecision(
+            kind="deferred",
+            reason="family_or_model_conflict",
+            preferred=preferred,
+            selected=None,
+            pin=pin,
+            pooled=True,
+            requested_profile=preferred,
+            requested_model=normalized["exact_model"] or model_override,
+            requested_family=normalized["exact_family"],
+            configured_profile=preferred,
+            observed_profile=FLEET_UNKNOWN,
+            observed_model=FLEET_UNKNOWN,
+            observed_family=FLEET_UNKNOWN,
+        )
+    if model_override and normalized.get("exact_model") and model_override != normalized["exact_model"]:
+        return FleetRouteDecision(
+            kind="deferred",
+            reason="exact_model_override_mismatch",
+            preferred=preferred,
+            selected=None,
+            pin=pin or "exact_model",
+            pooled=True,
+            requested_profile=preferred,
+            requested_model=normalized["exact_model"],
+            requested_family=normalized["exact_family"],
+            configured_profile=preferred,
+            configured_model=model_override,
+            observed_profile=FLEET_UNKNOWN,
+            observed_model=FLEET_UNKNOWN,
+            observed_family=FLEET_UNKNOWN,
+        )
+    candidates: list[str] = []
+    if preferred:
+        candidates.append(preferred)
+    if not normalized["exact_profile"]:
+        for peer in normalized["peers"]:
+            if peer not in candidates:
+                candidates.append(peer)
+
+    reserved: dict[str, int] = {}
+    if cap is not None and cap > 0:
+        for waiter in older_exact_waiters or []:
+            w_contract = normalize_fleet_contract(
+                waiter.get("contract"),
+                assignee=waiter.get("assignee"),
+                config=config,
+            )
+            if not w_contract or not _pin_kind(w_contract):
+                continue
+            w_cands = []
+            w_pref = w_contract["preferred"] or waiter.get("assignee")
+            if w_pref:
+                w_cands.append(w_pref)
+            if not w_contract["exact_profile"]:
+                w_cands.extend(p for p in w_contract["peers"] if p not in w_cands)
+            eligible = []
+            for peer in w_cands:
+                reason = _peer_ineligible_reason(
+                    peer,
+                    contract=w_contract,
+                    running=running_map,
+                    cap=cap,
+                    reserved=reserved,
+                    unavailable=set(w_contract["unavailable"]) | unavailable,
+                    exists=exists,
+                    skip_reservation=True,
+                )
+                if reason is None:
+                    eligible.append(peer)
+            if len(eligible) == 1:
+                last = eligible[0]
+                used = running_map.get(last, 0) + reserved.get(last, 0)
+                if used < cap:
+                    reserved[last] = reserved.get(last, 0) + 1
+
+    considered: list[FleetPeerDecision] = []
+    selected = None
+    selected_reason = "no_eligible_peer"
+    for peer in candidates:
+        family = _explicit_family(peer, families) or FLEET_UNKNOWN
+        model = _explicit_model(peer, models) or FLEET_UNKNOWN
+        reason = _peer_ineligible_reason(
+            peer,
+            contract=normalized,
+            running=running_map,
+            cap=cap,
+            reserved=reserved,
+            unavailable=unavailable,
+            exists=exists,
+        )
+        if reason is None:
+            builder_family = None if family == FLEET_UNKNOWN else family
+            reserved_rev, reserved_profile = _reserve_reviewer(
+                normalized,
+                builder_family,
+                builder_profile=peer,
+                exists=exists,
+                unavailable=unavailable,
+            )
+            if normalized["material_bytes"] and reserved_rev is False:
+                considered.append(FleetPeerDecision(
+                    profile=peer,
+                    outcome="deferred",
+                    reason="reviewer_family_exhausted",
+                    family=family,
+                    model=model,
+                ))
+                selected_reason = "reviewer_family_exhausted"
+                continue
+            launch_model = normalized["exact_model"] or (None if model == FLEET_UNKNOWN else model)
+            launch_provider = (
+                provider_override
+                or _explicit_model(peer, normalized.get("profile_providers") or {})
+            )
+            if model_override and launch_model and model_override != launch_model:
+                considered.append(FleetPeerDecision(
+                    profile=peer,
+                    outcome="rejected",
+                    reason="exact_model_override_mismatch",
+                    family=family,
+                    model=model,
+                ))
+                selected_reason = "exact_model_override_mismatch"
+                continue
+            considered.append(FleetPeerDecision(
+                profile=peer,
+                outcome="selected",
+                reason="preferred" if peer == preferred else "capability_peer",
+                family=family,
+                model=model,
+            ))
+            selected = peer
+            selected_reason = "preferred" if peer == preferred else "capability_peer"
+            epoch = new_route_epoch()
+            return FleetRouteDecision(
+                kind="selected",
+                reason=selected_reason,
+                preferred=preferred,
+                selected=selected,
+                considered=considered,
+                builder_family=builder_family,
+                reserved_reviewer_family=reserved_rev or None,
+                reserved_reviewer_profile=reserved_profile,
+                route_epoch=epoch,
+                pin=pin,
+                pooled=True,
+                requested_profile=preferred,
+                requested_model=normalized["exact_model"] or model_override,
+                requested_family=normalized["exact_family"],
+                configured_profile=selected,
+                configured_model=None if model == FLEET_UNKNOWN else model,
+                configured_family=builder_family,
+                launch_model=launch_model or model_override,
+                launch_provider=launch_provider,
+                observed_profile=FLEET_UNKNOWN,
+                observed_model=FLEET_UNKNOWN,
+                observed_family=FLEET_UNKNOWN,
+            )
+        outcome = "deferred" if reason.startswith("exact_") or reason in {
+            "profile_capped",
+            "preferred_occupied",
+            "unavailable",
+            "exact_waiter_reserved",
+            "reviewer_family_exhausted",
+        } else "rejected"
+        considered.append(FleetPeerDecision(
+            profile=peer,
+            outcome=outcome,
+            reason=reason,
+            family=family,
+            model=model,
+        ))
+        selected_reason = reason
+
+    wait_reason = selected_reason
+    if pin:
+        wait_reason = f"exact_pin_wait:{pin}"
+    return FleetRouteDecision(
+        kind="deferred",
+        reason=wait_reason,
+        preferred=preferred,
+        selected=None,
+        considered=considered,
+        pin=pin,
+        pooled=True,
+        requested_profile=preferred,
+        requested_model=normalized["exact_model"] or model_override,
+        requested_family=normalized["exact_family"],
+        configured_profile=preferred,
+        observed_profile=FLEET_UNKNOWN,
+        observed_model=FLEET_UNKNOWN,
+        observed_family=FLEET_UNKNOWN,
+    )
+
+
+def _peer_ineligible_reason(
+    peer: str,
+    *,
+    contract: Mapping[str, Any],
+    running: Mapping[str, int],
+    cap: Optional[int],
+    reserved: Mapping[str, int],
+    unavailable: set[str],
+    exists,
+    skip_reservation: bool = False,
+) -> Optional[str]:
+    if peer in unavailable:
+        return "unavailable"
+    if not exists(peer):
+        return "profile_missing"
+    family = _explicit_family(peer, contract["profile_families"])
+    model = _explicit_model(peer, contract["profile_models"])
+    if contract.get("exact_profile") and peer != contract.get("preferred"):
+        return "exact_profile"
+    if contract.get("family_conflict") or contract.get("model_conflict"):
+        return "family_or_model_conflict"
+    if contract.get("material_bytes") and not family:
+        return "family_unproven"
+    if contract.get("exact_family") and family != contract["exact_family"]:
+        return "exact_family"
+    if contract.get("exact_model") and model != contract["exact_model"]:
+        return "exact_model"
+    used = int(running.get(peer, 0))
+    if cap is not None and cap > 0 and used >= cap:
+        if peer == contract.get("preferred"):
+            return "preferred_occupied"
+        return "profile_capped"
+    if (
+        not skip_reservation
+        and cap is not None
+        and cap > 0
+        and used + int(reserved.get(peer, 0)) >= cap
+    ):
+        return "exact_waiter_reserved"
+    return None
+
+
+def _reserve_reviewer(
+    contract: Mapping[str, Any],
+    builder_family: Optional[str],
+    *,
+    builder_profile: Optional[str],
+    exists,
+    unavailable: set[str],
+) -> tuple[Optional[bool | str], Optional[str]]:
+    """Return (reserved family or False, reserved profile)."""
+    if not contract.get("material_bytes"):
+        return contract.get("reserved_reviewer_family") or None, contract.get("reserved_reviewer_profile")
+    eligible = list(contract.get("eligible_reviewer_families") or [])
+    if not eligible or not builder_family:
+        return False, None
+    remaining = [fam for fam in eligible if fam != builder_family]
+    pinned = contract.get("reserved_reviewer_family")
+    pinned_profile = contract.get("reserved_reviewer_profile")
+    if pinned:
+        if pinned == builder_family:
+            return False, None
+        if pinned not in remaining and pinned not in eligible:
+            return False, None
+        remaining = [pinned]
+    if not remaining:
+        return False, None
+    families = contract.get("profile_families") or {}
+    candidates: list[tuple[str, str]] = []
+    for name, fam in families.items():
+        prof = _canonical_assignee(_fleet_str(name))
+        family = _canonical_family(fam)
+        if not prof or not family or family not in remaining:
+            continue
+        if prof == builder_profile or prof in unavailable:
+            continue
+        if not exists(prof):
+            continue
+        candidates.append((prof, family))
+    if pinned_profile:
+        match = [c for c in candidates if c[0] == pinned_profile]
+        if not match:
+            return False, None
+        return match[0][1], match[0][0]
+    for fam in remaining:
+        for prof, pfam in candidates:
+            if pfam == fam:
+                return fam, prof
+    return False, None
+
+
+def record_route_receipt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    decision: FleetRouteDecision,
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    payload = decision.as_payload()
+    with _write_txn_join(conn):
+        _append_event(conn, task_id, "route_considered", payload, run_id=run_id)
+        if decision.kind == "selected":
+            _append_event(conn, task_id, "route_selected", payload, run_id=run_id)
+        elif decision.kind == "deferred":
+            _append_event(conn, task_id, "route_deferred", payload, run_id=run_id)
+
+
+def fleet_persisted_launch_args(task: "Task") -> list[str]:
+    """Spawn argv pins come only from the persisted task launch tuple."""
+    args: list[str] = []
+    if task.model_override:
+        args.extend(["-m", task.model_override])
+        if task.provider_override:
+            args.extend(["--provider", task.provider_override])
+    return args
+
+
+def persist_fleet_selection(
+    conn: sqlite3.Connection,
+    task_id: str,
+    decision: FleetRouteDecision,
+) -> None:
+    if decision.kind != "selected" or not decision.selected:
+        return
+    preferred = decision.preferred or decision.selected
+    task = get_task(conn, task_id)
+    contract = dict(task.fleet_contract) if task and task.fleet_contract else {}
+    if decision.reserved_reviewer_family:
+        contract["reserved_reviewer_family"] = decision.reserved_reviewer_family
+    if decision.reserved_reviewer_profile:
+        contract["reserved_reviewer_profile"] = decision.reserved_reviewer_profile
+    contract_json = json.dumps(contract, ensure_ascii=False) if contract else None
+    with _write_txn_join(conn):
+        conn.execute(
+            """
+            UPDATE tasks
+               SET assignee = ?,
+                   executing_profile = ?,
+                   preferred_assignee = COALESCE(preferred_assignee, ?),
+                   builder_family = ?,
+                   reserved_reviewer_family = ?,
+                   route_epoch = ?,
+                   model_override = COALESCE(?, model_override),
+                   provider_override = COALESCE(?, provider_override),
+                   fleet_contract = COALESCE(?, fleet_contract)
+             WHERE id = ?
+               AND status = 'ready'
+               AND claim_lock IS NULL
+            """,
+            (
+                decision.selected,
+                decision.selected,
+                preferred,
+                decision.builder_family,
+                decision.reserved_reviewer_family,
+                decision.route_epoch,
+                decision.launch_model,
+                decision.launch_provider,
+                contract_json,
+                task_id,
+            ),
+        )
+
+
+def _lease_rows_for_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT * FROM task_leases
+             WHERE task_id = ?
+             ORDER BY acquired_at ASC, lease_key ASC
+            """,
+            (task_id,),
+        ).fetchall()
+    )
+
+
+def get_active_lease(
+    conn: sqlite3.Connection,
+    *,
+    lease_key: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> Optional[sqlite3.Row]:
+    if lease_key and task_id:
+        return conn.execute(
+            "SELECT * FROM task_leases WHERE lease_key = ? AND task_id = ?",
+            (lease_key, task_id),
+        ).fetchone()
+    if lease_key:
+        return conn.execute(
+            "SELECT * FROM task_leases WHERE lease_key = ?",
+            (lease_key,),
+        ).fetchone()
+    if task_id:
+        rows = _lease_rows_for_task(conn, task_id)
+        if len(rows) != 1:
+            return None
+        return rows[0]
+    return None
+
+
+def acquire_task_lease(
+    conn: sqlite3.Connection,
+    *,
+    lease_key: str,
+    task_id: str,
+    claim_token: str,
+    route_epoch: str,
+    run_id: Optional[int] = None,
+    host_id: Optional[str] = None,
+    transfer: bool = False,
+) -> tuple[bool, str]:
+    """Bind UNIQUE(lease_key) and UNIQUE(task_id). No TTL."""
+    host = host_id or fleet_host_id()
+    now = int(time.time())
+    owned = _lease_rows_for_task(conn, task_id)
+    if any(row["lease_key"] != lease_key for row in owned):
+        return False, "task_already_leased"
+    if len(owned) > 1:
+        return False, "ambiguous_task_lease"
+    existing = conn.execute(
+        "SELECT * FROM task_leases WHERE lease_key = ?",
+        (lease_key,),
+    ).fetchone()
+    if existing:
+        if existing["host_id"] != host:
+            return False, "foreign_host"
+        if existing["task_id"] != task_id:
+            return False, "collision"
+        if (
+            existing["run_id"] is not None
+            and run_id is not None
+            and int(existing["run_id"]) != int(run_id)
+            and not transfer
+        ):
+            return False, "run_id_mismatch"
+        if existing["claim_token"] != claim_token and not transfer:
+            if (
+                existing["run_id"] is not None
+                and run_id is not None
+                and int(existing["run_id"]) != int(run_id)
+            ):
+                return False, "stale_claim_token"
+        cur = conn.execute(
+            """
+            UPDATE task_leases
+               SET run_id = ?, claim_token = ?, route_epoch = ?, acquired_at = ?
+             WHERE lease_key = ?
+               AND task_id = ?
+               AND host_id = ?
+            """,
+            (run_id, claim_token, route_epoch, now, lease_key, task_id, host),
+        )
+        if cur.rowcount != 1:
+            return False, "rebind_cas_failed"
+        return True, "rebound" if not transfer else "transferred"
+    try:
+        conn.execute(
+            """
+            INSERT INTO task_leases (
+                lease_key, task_id, run_id, claim_token, host_id, route_epoch, acquired_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (lease_key, task_id, run_id, claim_token, host, route_epoch, now),
+        )
+    except sqlite3.IntegrityError:
+        return False, "collision"
+    return True, "acquired"
+
+
+def transfer_task_lease(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    from_run_id: Optional[int],
+    to_run_id: Optional[int],
+    from_token: str,
+    to_token: str,
+    route_epoch: str,
+    host_id: Optional[str] = None,
+    lease_key: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Atomically rebind a continuing mutation-root reservation to a new run."""
+    if not from_token or not to_token or not route_epoch:
+        return False, "missing_lease_identity"
+    host = host_id or fleet_host_id()
+    rows = _lease_rows_for_task(conn, task_id)
+    if lease_key:
+        rows = [row for row in rows if row["lease_key"] == lease_key]
+    if not rows:
+        return False, "absent"
+    if len(rows) != 1:
+        return False, "ambiguous_task_lease"
+    row = rows[0]
+    if row["host_id"] != host:
+        return False, "foreign_host"
+    if row["route_epoch"] != route_epoch:
+        return False, "stale_route_epoch"
+    if row["claim_token"] != from_token:
+        return False, "stale_claim_token"
+    if (
+        from_run_id is not None
+        and row["run_id"] is not None
+        and int(row["run_id"]) != int(from_run_id)
+    ):
+        return False, "run_id_mismatch"
+    now = int(time.time())
+    cur = conn.execute(
+        """
+        UPDATE task_leases
+           SET run_id = ?, claim_token = ?, acquired_at = ?
+         WHERE lease_key = ?
+           AND task_id = ?
+           AND claim_token = ?
+           AND route_epoch = ?
+           AND host_id = ?
+           AND (run_id IS ? OR run_id = ?)
+        """,
+        (
+            to_run_id,
+            to_token,
+            now,
+            row["lease_key"],
+            task_id,
+            from_token,
+            route_epoch,
+            host,
+            from_run_id if from_run_id is not None else row["run_id"],
+            from_run_id if from_run_id is not None else row["run_id"],
+        ),
+    )
+    if cur.rowcount != 1:
+        return False, "transfer_cas_failed"
+    return True, "transferred"
+
+
+def release_task_lease(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    claim_token: Optional[str],
+    route_epoch: Optional[str],
+    host_id: Optional[str] = None,
+    run_id: Optional[int] = None,
+    allow_foreign: bool = False,
+    lease_key: Optional[str] = None,
+) -> tuple[bool, str]:
+    rows = _lease_rows_for_task(conn, task_id)
+    if lease_key:
+        rows = [row for row in rows if row["lease_key"] == lease_key]
+    if not rows:
+        return True, "absent"
+    if len(rows) != 1:
+        return False, "ambiguous_task_lease"
+    row = rows[0]
+    host = host_id or fleet_host_id()
+    if row["host_id"] != host and not allow_foreign:
+        return False, "foreign_host"
+    if not claim_token or row["claim_token"] != claim_token:
+        return False, "stale_claim_token"
+    if not route_epoch or row["route_epoch"] != route_epoch:
+        return False, "stale_route_epoch"
+    if row["run_id"] is not None and (
+        run_id is None or int(row["run_id"]) != int(run_id)
+    ):
+        return False, "run_id_mismatch"
+    cur = conn.execute(
+        """
+        DELETE FROM task_leases
+         WHERE lease_key = ?
+           AND task_id = ?
+           AND claim_token = ?
+           AND route_epoch = ?
+           AND host_id = ?
+           AND (run_id IS ? OR run_id = ?)
+        """,
+        (
+            row["lease_key"],
+            task_id,
+            claim_token,
+            route_epoch,
+            row["host_id"],
+            run_id,
+            run_id,
+        ),
+    )
+    if cur.rowcount != 1:
+        return False, "release_cas_failed"
+    return True, "released"
+
+
+def _parked_lease_token(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Token a run-less (parked) lease must present, from append-only audit.
+
+    A parked reservation is created when a run hands the mutation root over
+    without a successor run — ``request_review`` and every
+    ``_dispose_ended_run_lease(landing="review")`` path. Both park the ending
+    run's own claim token, but by then ``tasks.claim_lock`` is cleared and
+    ``_end_run`` has nulled ``task_runs.claim_lock``, so neither row can still
+    name it. The only durable, independent record left is the ``claimed``
+    event that run emitted, which ``task_events`` never rewrites.
+
+    The parking run is the task's newest *ended* run: a reservation exists
+    exactly between one run ending and the next starting, and an in-flight
+    successor (``claim_review_task`` opens its run before disposing the
+    reservation) is excluded by ``ended_at IS NOT NULL``. Returning ``None``
+    when any link is missing is deliberate — ``dispose_matching_lease`` then
+    fails closed rather than letting the lease row vouch for itself.
+    """
+    run = conn.execute(
+        """
+        SELECT id FROM task_runs
+         WHERE task_id = ? AND ended_at IS NOT NULL
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if run is None:
+        return None
+    event = conn.execute(
+        """
+        SELECT payload FROM task_events
+         WHERE task_id = ? AND run_id = ? AND kind = 'claimed'
+         ORDER BY id DESC LIMIT 1
+        """,
+        (task_id, int(run["id"])),
+    ).fetchone()
+    if event is None or not event["payload"]:
+        return None
+    try:
+        payload = json.loads(event["payload"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    lock = payload.get("lock")
+    return lock if isinstance(lock, str) and lock else None
+
+
+def _task_lease_identity(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    claim_token: Optional[str] = None,
+    route_epoch: Optional[str] = None,
+    run_id: Optional[int] = None,
+    host_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Expected lease identity from task/run state, never from the lease row."""
+    row = conn.execute(
+        "SELECT claim_lock, route_epoch, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    token = claim_token
+    epoch = route_epoch
+    rid = run_id
+    if row is not None:
+        if token is None:
+            token = row["claim_lock"]
+        if epoch is None:
+            epoch = row["route_epoch"]
+        if rid is None:
+            rid = row["current_run_id"]
+    if token is None and rid is not None:
+        run = conn.execute(
+            "SELECT claim_lock FROM task_runs WHERE id = ?",
+            (int(rid),),
+        ).fetchone()
+        if run is not None:
+            token = run["claim_lock"]
+    if token is None:
+        token = _parked_lease_token(conn, task_id)
+    return {
+        "claim_token": token,
+        "route_epoch": epoch,
+        "run_id": int(rid) if rid is not None else None,
+        "host_id": host_id if host_id is not None else fleet_host_id(),
+    }
+
+
+def dispose_matching_lease(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    reason: str,
+    successor: Optional[Mapping[str, Any]] = None,
+    claim_token: Optional[str] = None,
+    route_epoch: Optional[str] = None,
+    run_id: Optional[int] = None,
+    lease_key: Optional[str] = None,
+    host_id: Optional[str] = None,
+    allow_foreign: bool = False,
+) -> tuple[bool, str]:
+    """Release when no mutation owner remains, or CAS-transfer to a successor."""
+    rows = _lease_rows_for_task(conn, task_id)
+    if lease_key:
+        rows = [row for row in rows if row["lease_key"] == lease_key]
+    if not rows:
+        return True, "absent"
+    if len(rows) != 1:
+        return False, "ambiguous_task_lease"
+    row = rows[0]
+    expected_host = host_id if host_id is not None else fleet_host_id()
+    if row["host_id"] != expected_host and not allow_foreign:
+        return False, "foreign_host"
+    if not route_epoch:
+        return False, "missing_lease_identity"
+    if row["route_epoch"] != route_epoch:
+        return False, "stale_route_epoch"
+    live_run = row["run_id"] is not None
+    if live_run:
+        if not claim_token:
+            return False, "missing_lease_identity"
+        if row["claim_token"] != claim_token:
+            return False, "stale_claim_token"
+        if run_id is None or int(row["run_id"]) != int(run_id):
+            return False, "run_id_mismatch"
+    else:
+        # A parked reservation carries no run to prove ownership, so the
+        # expected token has to arrive from task/run/review authority (see
+        # ``_parked_lease_token``). An omitted token used to skip this check
+        # entirely and the release then reused ``row["claim_token"]`` — the
+        # lease row authorizing its own removal. Both are closed here.
+        if not claim_token:
+            return False, "missing_lease_identity"
+        if row["claim_token"] != claim_token:
+            return False, "stale_claim_token"
+        if run_id is not None:
+            return False, "run_id_mismatch"
+    if successor:
+        from_token = claim_token
+        # An explicit empty successor identity is not authority; only a
+        # missing key may inherit the already-proven source identity.
+        to_token = successor["claim_token"] if "claim_token" in successor else from_token
+        to_epoch = successor["route_epoch"] if "route_epoch" in successor else route_epoch
+        if not from_token or not to_token or not to_epoch:
+            return False, "missing_lease_identity"
+        ok, detail = transfer_task_lease(
+            conn,
+            task_id=task_id,
+            from_run_id=row["run_id"],
+            to_run_id=successor.get("run_id"),
+            from_token=from_token,
+            to_token=to_token,
+            route_epoch=to_epoch,
+            host_id=expected_host,
+            lease_key=row["lease_key"],
+        )
+        if ok:
+            _append_event(
+                conn,
+                task_id,
+                "lease_transferred",
+                {
+                    "reason": reason,
+                    "detail": detail,
+                    "from_run_id": row["run_id"],
+                    "to_run_id": successor.get("run_id"),
+                    "lease_key": row["lease_key"],
+                    "route_epoch": to_epoch,
+                },
+                run_id=successor.get("run_id") if successor.get("run_id") is not None else row["run_id"],
+            )
+        return ok, detail
+    release_token = claim_token
+    ok, detail = release_task_lease(
+        conn,
+        task_id=task_id,
+        claim_token=release_token,
+        route_epoch=route_epoch,
+        host_id=expected_host,
+        run_id=run_id if live_run else row["run_id"],
+        allow_foreign=allow_foreign,
+        lease_key=row["lease_key"],
+    )
+    if ok:
+        _append_event(
+            conn,
+            task_id,
+            "lease_released",
+            {
+                "reason": reason,
+                "detail": detail,
+                "lease_key": row["lease_key"],
+                "run_id": row["run_id"],
+                "route_epoch": route_epoch,
+            },
+            run_id=row["run_id"],
+        )
+    return ok, detail
+
+
+def _dispose_ended_run_lease(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    landing: Optional[str],
+    run_id: Optional[int] = None,
+    claim_token: Optional[str] = None,
+    route_epoch: Optional[str] = None,
+    host_id: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Release a finished run, or park the lease on a review reservation."""
+    ident = _task_lease_identity(
+        conn,
+        task_id,
+        claim_token=claim_token,
+        route_epoch=route_epoch,
+        run_id=run_id,
+        host_id=host_id,
+    )
+    successor = None
+    if landing == "review":
+        successor = {
+            "run_id": None,
+            "claim_token": ident["claim_token"],
+            "route_epoch": ident["route_epoch"],
+        }
+    return dispose_matching_lease(
+        conn,
+        task_id=task_id,
+        reason=reason,
+        successor=successor,
+        **ident,
+    )
+
+
+def _require_ended_run_lease_disposed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    landing: Optional[str],
+    run_id: Optional[int] = None,
+    claim_token: Optional[str] = None,
+    route_epoch: Optional[str] = None,
+    host_id: Optional[str] = None,
+) -> str:
+    """:func:`_dispose_ended_run_lease` that fences instead of returning a flag.
+
+    Every shared lifecycle path that ends a run also rewrites task state,
+    failure counters and run identity in the same transaction. Reading the
+    disposal result and moving on would commit that rewrite while the lease
+    still names the run we just ended — the mutation root would be held by a
+    dead run with nothing able to release it. Raising :class:`
+    _FleetLeaseFenceError` lets the surrounding ``write_txn`` (or savepoint)
+    roll the whole transition back, so callers observe unchanged state rather
+    than a half-applied recovery. The authorization rule itself stays in
+    :func:`dispose_matching_lease`; this only decides what a refusal costs.
+    """
+    released, detail = _dispose_ended_run_lease(
+        conn,
+        task_id,
+        reason=reason,
+        landing=landing,
+        run_id=run_id,
+        claim_token=claim_token,
+        route_epoch=route_epoch,
+        host_id=host_id,
+    )
+    if not released:
+        raise _FleetLeaseFenceError(detail)
+    return detail
+
+
+def restore_ready_after_lease_conflict(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+) -> None:
+    """Return a claimed task to ready without incrementing consecutive_failures.
+
+    Savepoint-scoped so a lease the caller cannot prove ownership of can never
+    be traded for a committed ``running`` -> ``ready`` flip: the whole
+    restoration is rolled back and the task keeps its claim. Callers observe
+    the unchanged task state; there is no partial restoration to report.
+    """
+    try:
+        with write_txn(conn, allow_nested=True):
+            current = get_task(conn, task_id)
+            released, detail = dispose_matching_lease(
+                conn,
+                task_id=task_id,
+                reason=reason,
+                **_task_lease_identity(
+                    conn,
+                    task_id,
+                    run_id=current.current_run_id if current else None,
+                ),
+            )
+            if not released:
+                raise _FleetLeaseFenceError(detail)
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'ready',
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                """,
+                (task_id,),
+            )
+            _end_run(
+                conn,
+                task_id,
+                outcome="released",
+                status="released",
+                error=reason,
+            )
+            _append_event(conn, task_id, "lease_conflict", {"reason": reason})
+    except _FleetLeaseFenceError:
+        return
+
+
+def review_family_allowed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reviewer: Optional[str],
+) -> tuple[bool, str]:
+    """Hard-refuse same-family review. Wait when difference cannot be proven."""
+    task = get_task(conn, task_id)
+    if task is None:
+        return False, "task_not_found"
+    contract = normalize_fleet_contract(task.fleet_contract, assignee=task.assignee)
+    if not contract or not contract.get("material_bytes"):
+        return True, "legacy_unpooled"
+    if not reviewer:
+        return True, "human_review"
+    builder_family = _canonical_family(
+        task.builder_family
+        or _explicit_family(
+            task.executing_profile or task.assignee, contract["profile_families"]
+        )
+    )
+    reviewer_family = _explicit_family(reviewer, contract["profile_families"])
+    reserved = _canonical_family(
+        task.reserved_reviewer_family or contract.get("reserved_reviewer_family")
+    )
+    if builder_family and reviewer_family and builder_family == reviewer_family:
+        return False, "same_family_review"
+    if reserved and reviewer_family and reviewer_family != reserved:
+        return False, "reserved_reviewer_family_mismatch"
+    if contract.get("material_bytes") and (
+        not builder_family or not reviewer_family or builder_family == reviewer_family
+    ):
+        return False, "reviewer_family_unproven"
+    return True, "ok"
+
+
+def _live_profile_running(conn: sqlite3.Connection) -> dict[str, int]:
+    """Current running counts from SQLite. Never uses a caller snapshot."""
+    counts: dict[str, int] = {}
+    for prow in conn.execute(
+        "SELECT assignee, COUNT(*) AS n FROM tasks "
+        "WHERE status = 'running' AND assignee IS NOT NULL "
+        "GROUP BY assignee"
+    ):
+        counts[prow["assignee"]] = int(prow["n"])
+    return counts
+
+
+def _fleet_occupancy(
+    conn: sqlite3.Connection,
+    per_profile_running: Mapping[str, int],
+) -> dict[str, int]:
+    """Pre-check / dry-run occupancy. Gate-bearing claims must use live SQL."""
+    counts = dict(per_profile_running)
+    if counts:
+        return counts
+    return _live_profile_running(conn)
+
+
+def _older_exact_waiter_rows(
+    conn: sqlite3.Connection,
+    created_before: Optional[int],
+) -> list[dict[str, Any]]:
+    if created_before is None:
+        return []
+    rows = conn.execute(
+        """
+        SELECT assignee, preferred_assignee, fleet_contract, created_at
+          FROM tasks
+         WHERE status = 'ready'
+           AND claim_lock IS NULL
+           AND created_at < ?
+           AND fleet_contract IS NOT NULL
+         ORDER BY created_at ASC
+        """,
+        (int(created_before),),
+    ).fetchall()
+    out = []
+    for row in rows:
+        contract = _parse_fleet_contract_json(row["fleet_contract"])
+        if not contract:
+            continue
+        out.append({
+            "assignee": row["preferred_assignee"] or row["assignee"],
+            "contract": contract,
+        })
+    return out
+
+
+def _accept_terminal_fleet_state(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_route_epoch: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str], Optional[str], Optional[int]]:
+    """Return (ok, claim_token, route_epoch, run_id) for matching-token release."""
+    rows = _lease_rows_for_task(conn, task_id)
+    if not rows:
+        return True, None, None, None
+    if len(rows) != 1:
+        return False, None, None, None
+    lease = rows[0]
+    row = conn.execute(
+        "SELECT claim_lock, route_epoch, current_run_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    token = row["claim_lock"] if row else None
+    epoch = row["route_epoch"] if row else None
+    current_run = row["current_run_id"] if row else None
+    if expected_route_epoch and expected_route_epoch != lease["route_epoch"]:
+        return False, token, epoch, lease["run_id"]
+    if epoch and epoch != lease["route_epoch"]:
+        return False, token, epoch, lease["run_id"]
+    if token and token != lease["claim_token"]:
+        return False, token, epoch, lease["run_id"]
+    if lease["host_id"] != fleet_host_id():
+        return False, token, epoch, lease["run_id"]
+    lease_run = lease["run_id"]
+    if expected_run_id is not None and lease_run is not None and int(lease_run) != int(expected_run_id):
+        return False, token, epoch, lease_run
+    if current_run is not None and lease_run is not None and int(current_run) != int(lease_run):
+        return False, token, epoch, lease_run
+    return True, lease["claim_token"], lease["route_epoch"], lease_run
+
+
+def _maybe_acquire_effective_lease(
+    conn: sqlite3.Connection,
+    claimed: "Task",
+    *,
+    board: Optional[str] = None,
+    workspace: Optional[Path] = None,
+) -> tuple[bool, str]:
+    if not claimed.fleet_contract and not claimed.route_epoch:
+        return True, "legacy"
+    lease_key = None
+    if workspace is not None:
+        lease_key = normalize_mutation_root(workspace)
+    else:
+        lease_key = compute_effective_mutation_root(claimed, board=board)
+    if not lease_key:
+        return True, "pending_path"
+    token = claimed.claim_lock
+    epoch = claimed.route_epoch
+    if not token or not epoch:
+        return False, "missing_lease_identity"
+    with _write_txn_join(conn):
+        ok, reason = acquire_task_lease(
+            conn,
+            lease_key=lease_key,
+            task_id=claimed.id,
+            claim_token=token,
+            route_epoch=epoch,
+            run_id=claimed.current_run_id,
+        )
+        if ok and workspace is not None:
+            conn.execute(
+                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                (str(workspace), claimed.id),
+            )
+            _append_event(
+                conn,
+                claimed.id,
+                "lease_acquired",
+                {
+                    "lease_key": lease_key,
+                    "reason": reason,
+                    "route_epoch": epoch,
+                    "host_id": fleet_host_id(),
+                },
+                run_id=claimed.current_run_id,
+            )
+    return ok, reason
+
+
+@dataclass
+class _FleetCommitResult:
+    route: FleetRouteDecision
+    task: Optional[Task] = None
+    deferred: bool = False
+    nonspawnable: bool = False
+    lease_conflict: bool = False
+    pending_path: bool = False
+    pooled: bool = False
+    claim_hook: Optional[dict[str, Any]] = None
+
+
+def _claimed_hook_payload(claimed: Task) -> dict[str, Any]:
+    return {
+        "task_id": claimed.id,
+        "board": get_current_board(),
+        "assignee": claimed.assignee,
+        "run_id": claimed.current_run_id,
+    }
+
+
+def commit_fleet_ready_claim(
+    conn: sqlite3.Connection,
+    *,
+    ready_task: Optional[Task],
+    row_assignee: Optional[str],
+    running: Mapping[str, int],
+    cap: Optional[int],
+    profile_exists_fn,
+    ttl_seconds: Optional[int],
+    board: Optional[str] = None,
+) -> _FleetCommitResult:
+    """Atomically persist route, reserve reviewer, claim, and known-root lease."""
+    task_id = ready_task.id if ready_task else None
+    if not task_id:
+        return _FleetCommitResult(
+            route=_legacy_route_decision(assignee=row_assignee, model_override=None),
+            deferred=True,
+        )
+    with write_txn(conn):
+        current = get_task(conn, task_id)
+        if current is None or current.status != "ready" or current.claim_lock is not None:
+            return _FleetCommitResult(
+                route=_legacy_route_decision(
+                    assignee=row_assignee,
+                    model_override=None,
+                    provider_override=None,
+                ),
+                deferred=True,
+            )
+        occupancy = _live_profile_running(conn)
+        route = resolve_fleet_route(
+            assignee=current.assignee or row_assignee,
+            contract=current.fleet_contract,
+            running=occupancy,
+            cap=cap,
+            older_exact_waiters=_older_exact_waiter_rows(conn, current.created_at),
+            model_override=current.model_override,
+            provider_override=current.provider_override,
+            profile_exists_fn=profile_exists_fn,
+        )
+        record_route_receipt(conn, task_id, route)
+        if route.kind == "deferred":
+            return _FleetCommitResult(route=route, deferred=True, pooled=route.pooled)
+        if route.kind == "selected" and route.selected:
+            persist_fleet_selection(conn, task_id, route)
+            selected = route.selected
+        else:
+            selected = current.assignee or row_assignee
+            if (
+                profile_exists_fn is not None
+                and not route.pooled
+                and selected
+                and not profile_exists_fn(selected)
+            ):
+                return _FleetCommitResult(route=route, nonspawnable=True)
+        current = get_task(conn, task_id) or current
+        known_root = compute_effective_mutation_root(current, board=board)
+        claimed = claim_task(
+            conn, task_id, ttl_seconds=ttl_seconds, emit_claimed_hook=False,
+        )
+        if claimed is None:
+            return _FleetCommitResult(route=route, pooled=route.pooled)
+        hook = _claimed_hook_payload(claimed)
+        if route.pooled or claimed.route_epoch:
+            if not known_root:
+                return _FleetCommitResult(
+                    route=route,
+                    task=claimed,
+                    pending_path=True,
+                    pooled=True,
+                )
+            ok, reason = acquire_task_lease(
+                conn,
+                lease_key=known_root,
+                task_id=claimed.id,
+                claim_token=claimed.claim_lock or "",
+                route_epoch=claimed.route_epoch or route.route_epoch or "",
+                run_id=claimed.current_run_id,
+            )
+            if not ok:
+                restore_ready_after_lease_conflict(conn, claimed.id, reason=reason)
+                return _FleetCommitResult(
+                    route=route,
+                    lease_conflict=True,
+                    pooled=True,
+                )
+            if claimed.workspace_path:
+                conn.execute(
+                    "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                    (claimed.workspace_path, claimed.id),
+                )
+            _append_event(
+                conn,
+                claimed.id,
+                "lease_acquired",
+                {
+                    "lease_key": known_root,
+                    "reason": reason,
+                    "route_epoch": claimed.route_epoch,
+                    "host_id": fleet_host_id(),
+                    "run_id": claimed.current_run_id,
+                },
+                run_id=claimed.current_run_id,
+            )
+            claimed = get_task(conn, claimed.id)
+            return _FleetCommitResult(
+                route=route, task=claimed, pooled=True, claim_hook=hook,
+            )
+        return _FleetCommitResult(
+            route=route, task=claimed, pooled=False, claim_hook=hook,
+        )
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -10172,13 +12721,32 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
-            # Bucket separately from skipped_unassigned: the operator
-            # cannot fix this by assigning a profile (the assignee IS the
-            # intended owner — a terminal lane). Health telemetry uses
-            # this distinction to suppress spurious "stuck" warnings on
-            # multi-lane setups where the ready queue is steadily full
-            # of human-pulled work.
+        ready_task = get_task(conn, row["id"])
+        exists_fn = profile_exists if profile_exists is not None else _profile_exists_safe
+        fleet_route = resolve_fleet_route(
+            assignee=row_assignee,
+            contract=ready_task.fleet_contract if ready_task else None,
+            running=_fleet_occupancy(conn, _per_profile_running),
+            cap=_per_profile_cap,
+            older_exact_waiters=_older_exact_waiter_rows(
+                conn, ready_task.created_at if ready_task else None
+            ),
+            model_override=ready_task.model_override if ready_task else None,
+            provider_override=ready_task.provider_override if ready_task else None,
+            profile_exists_fn=exists_fn,
+        )
+        if fleet_route.kind == "deferred":
+            if not dry_run:
+                record_route_receipt(conn, row["id"], fleet_route)
+            result.skipped_fleet_deferred.append((row["id"], fleet_route.reason))
+            continue
+        if fleet_route.kind == "selected" and fleet_route.selected:
+            row_assignee = fleet_route.selected
+        elif (
+            profile_exists is not None
+            and not fleet_route.pooled
+            and not profile_exists(row_assignee)
+        ):
             result.skipped_nonspawnable.append(row["id"])
             continue
         # Per-profile concurrency cap (#21582): even if there's global
@@ -10205,9 +12773,6 @@ def _dispatch_once_locked(
         guard_reason = check_respawn_guard(conn, row["id"])
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
-            # Emit an event so operators can see why the task was
-            # skipped when reading `hermes kanban tail` — without
-            # this the task appears stuck in ready with no diagnosis.
             if not dry_run:
                 with write_txn(conn):
                     _append_event(
@@ -10218,18 +12783,40 @@ def _dispatch_once_locked(
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             spawned += 1
-            # Increment per-profile counter even in dry_run so the cap
-            # check sees the would-be spawn on subsequent iterations.
-            # Without this, dry_run reports every task as spawnable and
-            # under-reports the capped subset (#21582).
             if _per_profile_cap is not None and row_assignee:
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        committed = commit_fleet_ready_claim(
+            conn,
+            ready_task=ready_task,
+            row_assignee=row_assignee,
+            running=_per_profile_running,
+            cap=_per_profile_cap,
+            profile_exists_fn=exists_fn,
+            ttl_seconds=ttl_seconds,
+            board=board,
+        )
+        fleet_route = committed.route
+        if committed.deferred:
+            result.skipped_fleet_deferred.append((row["id"], fleet_route.reason))
+            continue
+        if committed.nonspawnable:
+            result.skipped_nonspawnable.append(row["id"])
+            continue
+        if committed.lease_conflict:
+            result.lease_conflicts.append(row["id"])
+            result.skipped_fleet_deferred.append((row["id"], fleet_route.reason))
+            continue
+        claimed = committed.task
         if claimed is None:
             continue
+        if committed.claim_hook:
+            _fire_kanban_lifecycle_hook(
+                "kanban_task_claimed",
+                **committed.claim_hook,
+            )
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -10237,15 +12824,38 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, f"workspace: {exc}",
-                failure_limit=failure_limit,
-            )
-            if auto:
-                result.auto_blocked.append(claimed.id)
+            if committed.pooled:
+                restore_ready_after_lease_conflict(
+                    conn, claimed.id, reason=f"workspace: {exc}",
+                )
+                result.skipped_fleet_deferred.append((claimed.id, "workspace_unresolved"))
+            else:
+                auto = _record_spawn_failure(
+                    conn, claimed.id, f"workspace: {exc}",
+                    failure_limit=failure_limit,
+                )
+                if auto:
+                    result.auto_blocked.append(claimed.id)
             continue
-        # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
+        if committed.pending_path:
+            leased, lease_reason = _maybe_acquire_effective_lease(
+                conn, claimed, board=board, workspace=workspace,
+            )
+            if not leased:
+                restore_ready_after_lease_conflict(
+                    conn, claimed.id, reason=lease_reason,
+                )
+                result.lease_conflicts.append(claimed.id)
+                result.skipped_fleet_deferred.append((claimed.id, lease_reason))
+                continue
+            claimed = get_task(conn, claimed.id) or claimed
+            _fire_kanban_lifecycle_hook(
+                "kanban_task_claimed",
+                **_claimed_hook_payload(claimed),
+            )
+        elif not committed.pooled:
+            # Persist the resolved workspace path so the worker can cd there.
+            set_workspace_path(conn, claimed.id, str(workspace))
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
@@ -10328,6 +12938,18 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        allowed_review, review_reason = review_family_allowed(
+            conn, row["id"], row["assignee"],
+        )
+        if not allowed_review:
+            result.skipped_fleet_deferred.append((row["id"], review_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "review_refused",
+                        {"reason": review_reason, "reviewer": row["assignee"]},
+                    )
             continue
         if _per_profile_cap is not None:
             current = _per_profile_running.get(row["assignee"], 0)
@@ -10857,14 +13479,7 @@ def _default_spawn(
         for sk in task.skills:
             if sk:
                 cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-        # Pin the provider too when the override names one, so the worker
-        # resolves the model against the intended backend instead of the
-        # profile's configured provider (mixing model X with provider Y is
-        # the classic mis-set that stalls a board).
-        if task.provider_override:
-            cmd.extend(["--provider", task.provider_override])
+    cmd.extend(fleet_persisted_launch_args(task))
     # Per-task thinking depth. Independent of the model override — a task can
     # run the profile's own model at a different depth — so this is its own
     # branch, not a nested one.

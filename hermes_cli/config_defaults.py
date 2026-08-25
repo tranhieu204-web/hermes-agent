@@ -2662,6 +2662,17 @@ DEFAULT_CONFIG = {
         # so stale rows don't accumulate and get scanned on every notifier
         # tick forever. Set 0 to disable the sweep.
         "done_sub_retention_days": 30,
+        # Default-off capability-peer routing. Empty/disabled keeps legacy
+        # single-assignee dispatch unchanged. Tasks without an explicit
+        # fleet_contract never consult this block for routing.
+        "fleet_scheduler": {
+            "enabled": False,
+            "pools": {},
+            "profile_families": {},
+            "profile_models": {},
+            "profile_providers": {},
+            "eligible_reviewer_families": [],
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

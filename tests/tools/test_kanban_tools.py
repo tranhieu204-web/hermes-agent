@@ -62,10 +62,19 @@ def worker_env(monkeypatch, tmp_path):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="worker-test", assignee="test-worker")
-        kb.claim_task(conn, tid)
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        claim_lock = claimed.claim_lock
+        run_id = claimed.current_run_id
     finally:
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    # Dispatcher-spawned workers pin the claim token and run id. The
+    # heartbeat tool must use that identity, not a host:pid fallback.
+    assert claim_lock
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claim_lock)
+    if run_id is not None:
+        monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -301,9 +310,9 @@ def test_heartbeat_extends_claim_expires(worker_env):
     heartbeat tool diligently and still get reclaimed by
     release_stale_claims at DEFAULT_CLAIM_TTL_SECONDS.
 
-    Regression test for the bug where _handle_heartbeat called
-    heartbeat_worker but never heartbeat_claim, so claim_expires sat
-    static while last_heartbeat_at advanced.
+    The worker fixture now carries dispatcher claim identity so this
+    path proves a matching owner actually extends task and run expiry
+    and records the worker heartbeat.
     """
     import time as _time
     from hermes_cli import kanban_db as kb
@@ -313,17 +322,32 @@ def test_heartbeat_extends_claim_expires(worker_env):
     # unambiguous (avoids time.sleep flakiness).
     conn = kb.connect()
     try:
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
         conn.execute(
             "UPDATE tasks SET claim_expires = ? WHERE id = ?",
             (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
         )
         conn.commit()
         before = conn.execute(
             "SELECT claim_expires FROM tasks WHERE id = ?", (worker_env,)
         ).fetchone()["claim_expires"]
+        before_run = conn.execute(
+            "SELECT claim_expires FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()["claim_expires"]
+        hb_before = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
     finally:
         conn.close()
     assert before == 1
+    assert before_run == 1
 
     out = kt._handle_heartbeat({"note": "still alive"})
     assert json.loads(out).get("ok") is True
@@ -333,6 +357,12 @@ def test_heartbeat_extends_claim_expires(worker_env):
         after = conn.execute(
             "SELECT claim_expires FROM tasks WHERE id = ?", (worker_env,)
         ).fetchone()["claim_expires"]
+        after_run = conn.execute(
+            "SELECT claim_expires FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()["claim_expires"]
+        hb_after = [
+            e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
     finally:
         conn.close()
 
@@ -344,10 +374,421 @@ def test_heartbeat_extends_claim_expires(worker_env):
         f"claim_expires did not advance ({before} -> {after}); workers "
         f"would be reclaimed at TTL despite heartbeating"
     )
+    assert after_run > before_run, (
+        f"run claim_expires did not advance ({before_run} -> {after_run})"
+    )
     assert after >= now + (kb.DEFAULT_CLAIM_TTL_SECONDS // 2), (
         f"claim_expires={after} is suspiciously close to now={now}; "
         f"expected at least now + {kb.DEFAULT_CLAIM_TTL_SECONDS // 2}"
     )
+    assert after_run >= now + (kb.DEFAULT_CLAIM_TTL_SECONDS // 2)
+    assert len(hb_after) == len(hb_before) + 1
+
+
+def test_heartbeat_fails_closed_when_claim_ownership_unproven(worker_env, monkeypatch):
+    """A heartbeat must not report success when claim ownership fails.
+
+    Matching dispatcher identity is required. A wrong claim lock used to
+    ignore heartbeat_claim() == False, still bump last_heartbeat_at, and
+    return ok without extending claim_expires.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "not-the-owner")
+
+    conn = kb.connect()
+    try:
+        before = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id "
+            "FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_id = before["current_run_id"]
+        assert run_id is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
+        )
+        conn.commit()
+        run_before = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_before = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+        task_hb_before = conn.execute(
+            "SELECT last_heartbeat_at FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["last_heartbeat_at"]
+    finally:
+        conn.close()
+
+    out = kt._handle_heartbeat({"note": "stolen heartbeat"})
+    d = json.loads(out)
+    assert "error" in d
+    assert d.get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        after = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_after = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_after = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+    finally:
+        conn.close()
+
+    assert after["claim_expires"] == 1
+    assert run_after["claim_expires"] == 1
+    assert after["last_heartbeat_at"] == task_hb_before
+    assert run_after["last_heartbeat_at"] == run_before["last_heartbeat_at"]
+    assert hb_after == hb_before
+
+
+def test_heartbeat_fails_closed_when_current_run_row_missing(worker_env, monkeypatch):
+    """A successful heartbeat needs the claimed current run row.
+
+    After a real claim, deleting the current_run_id row while keeping
+    task claim identity used to return ok, extend task expiry, and
+    record a heartbeat even though no run expiry could be extended.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    called = []
+    real_hw = kb.heartbeat_worker
+
+    def wrapped_hw(*args, **kwargs):
+        called.append((args, kwargs))
+        return real_hw(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "heartbeat_worker", wrapped_hw)
+
+    conn = kb.connect()
+    try:
+        before = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id, "
+            "claim_lock, status FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_id = before["current_run_id"]
+        assert run_id is not None
+        assert before["claim_lock"]
+        assert before["status"] == "running"
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute("DELETE FROM task_runs WHERE id = ?", (run_id,))
+        conn.commit()
+        task_after_delete = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id, "
+            "claim_lock, status FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_row = conn.execute(
+            "SELECT id FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_before = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+    finally:
+        conn.close()
+
+    assert task_after_delete["current_run_id"] == run_id
+    assert task_after_delete["claim_lock"] == before["claim_lock"]
+    assert task_after_delete["status"] == "running"
+    assert task_after_delete["claim_expires"] == 1
+    assert run_row is None
+
+    out = kt._handle_heartbeat({"note": "missing run row"})
+    d = json.loads(out)
+    assert "error" in d
+    assert d.get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        after = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id, "
+            "claim_lock, status FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_after = conn.execute(
+            "SELECT id FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_after = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+    finally:
+        conn.close()
+
+    assert after["claim_expires"] == 1
+    assert after["last_heartbeat_at"] == task_after_delete["last_heartbeat_at"]
+    assert after["current_run_id"] == run_id
+    assert after["claim_lock"] == before["claim_lock"]
+    assert after["status"] == "running"
+    assert run_after is None
+    assert hb_after == hb_before
+    assert called == []
+
+
+def _snapshot_auto_heartbeat_state(kb, tid):
+    conn = kb.connect()
+    try:
+        task = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id "
+            "FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        run_id = task["current_run_id"]
+        assert run_id is not None
+        run = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_ids = [
+            e.id for e in kb.list_events(conn, tid) if e.kind == "heartbeat"
+        ]
+        return {
+            "run_id": run_id,
+            "task_expires": task["claim_expires"],
+            "run_expires": run["claim_expires"],
+            "task_hb": task["last_heartbeat_at"],
+            "run_hb": run["last_heartbeat_at"],
+            "hb_ids": hb_ids,
+        }
+    finally:
+        conn.close()
+
+
+def test_auto_heartbeat_fails_closed_on_wrong_claim_token(worker_env, monkeypatch):
+    """Wrong claim token must not let the automatic bridge write a worker heartbeat.
+
+    Current production still calls heartbeat_worker() and returns True after
+    heartbeat_claim() is False. The documented no-success signal is False.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kt._auto_heartbeat_last_attempt = 0.0
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "not-the-owner")
+
+    called = []
+    real_hw = kb.heartbeat_worker
+
+    def wrapped_hw(*args, **kwargs):
+        called.append((args, kwargs))
+        return real_hw(*args, **kwargs)
+
+    monkeypatch.setattr(kb, "heartbeat_worker", wrapped_hw)
+
+    conn = kb.connect()
+    try:
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = _snapshot_auto_heartbeat_state(kb, worker_env)
+    assert before["task_expires"] == 1
+    assert before["run_expires"] == 1
+
+    result = kt.heartbeat_current_worker_from_env()
+
+    after = _snapshot_auto_heartbeat_state(kb, worker_env)
+    assert result is False
+    assert called == []
+    assert after["task_expires"] == 1
+    assert after["run_expires"] == 1
+    assert after["task_hb"] == before["task_hb"]
+    assert after["run_hb"] == before["run_hb"]
+    assert after["hb_ids"] == before["hb_ids"]
+
+
+def test_auto_heartbeat_fails_closed_on_stale_run_id(worker_env, monkeypatch):
+    """Valid claim token + stale env run id must not succeed or mutate.
+
+    The automatic bridge used to call heartbeat_claim() without binding
+    the expected run, extend the task and actual current-run expiries,
+    then ignore heartbeat_worker() == False and still return True.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kt._auto_heartbeat_last_attempt = 0.0
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1000")
+
+    conn = kb.connect()
+    try:
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+        assert int(run_id) != 1000
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = _snapshot_auto_heartbeat_state(kb, worker_env)
+    assert before["run_id"] == run_id
+    assert before["task_expires"] == 1
+    assert before["run_expires"] == 1
+
+    result = kt.heartbeat_current_worker_from_env()
+    after = _snapshot_auto_heartbeat_state(kb, worker_env)
+
+    assert result is False
+    assert after["run_id"] == before["run_id"]
+    assert after["task_expires"] == 1
+    assert after["run_expires"] == 1
+    assert after["task_hb"] == before["task_hb"]
+    assert after["run_hb"] == before["run_hb"]
+    assert after["hb_ids"] == before["hb_ids"]
+
+
+def test_heartbeat_fails_closed_on_stale_run_id(worker_env, monkeypatch):
+    """Explicit heartbeat must not extend expiry when env run identity is stale."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1000")
+
+    conn = kb.connect()
+    try:
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+        assert int(run_id) != 1000
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
+        )
+        conn.commit()
+        task_hb_before = conn.execute(
+            "SELECT last_heartbeat_at FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["last_heartbeat_at"]
+        run_hb_before = conn.execute(
+            "SELECT last_heartbeat_at FROM task_runs WHERE id = ?", (run_id,)
+        ).fetchone()["last_heartbeat_at"]
+        hb_before = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+    finally:
+        conn.close()
+
+    out = kt._handle_heartbeat({"note": "stale run"})
+    d = json.loads(out)
+    assert "error" in d
+    assert d.get("ok") is not True
+
+    conn = kb.connect()
+    try:
+        after = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at, current_run_id "
+            "FROM tasks WHERE id = ?",
+            (worker_env,),
+        ).fetchone()
+        run_after = conn.execute(
+            "SELECT claim_expires, last_heartbeat_at FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        hb_after = [
+            e.id for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"
+        ]
+    finally:
+        conn.close()
+
+    assert after["current_run_id"] == run_id
+    assert after["claim_expires"] == 1
+    assert run_after["claim_expires"] == 1
+    assert after["last_heartbeat_at"] == task_hb_before
+    assert run_after["last_heartbeat_at"] == run_hb_before
+    assert hb_after == hb_before
+
+
+def test_auto_heartbeat_extends_claim_when_owner_matches(worker_env):
+    """A matching dispatcher identity still extends claim expiry and records liveness."""
+    import time as _time
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kt._auto_heartbeat_last_attempt = 0.0
+
+    conn = kb.connect()
+    try:
+        run_id = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (worker_env,)
+        ).fetchone()["current_run_id"]
+        assert run_id is not None
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (1, worker_env),
+        )
+        conn.execute(
+            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+            (1, run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    before = _snapshot_auto_heartbeat_state(kb, worker_env)
+    result = kt.heartbeat_current_worker_from_env()
+    after = _snapshot_auto_heartbeat_state(kb, worker_env)
+
+    now = int(_time.time())
+    assert result is True
+    assert after["task_expires"] > before["task_expires"]
+    assert after["run_expires"] > before["run_expires"]
+    assert after["task_expires"] >= now + (kb.DEFAULT_CLAIM_TTL_SECONDS // 2)
+    assert after["run_expires"] >= now + (kb.DEFAULT_CLAIM_TTL_SECONDS // 2)
+    assert after["task_hb"] != before["task_hb"]
+    assert after["run_hb"] != before["run_hb"]
+    assert len(after["hb_ids"]) == len(before["hb_ids"]) + 1
+
+    limited = kt.heartbeat_current_worker_from_env()
+    limited_after = _snapshot_auto_heartbeat_state(kb, worker_env)
+    assert limited is False
+    assert limited_after["hb_ids"] == after["hb_ids"]
+    assert limited_after["task_expires"] == after["task_expires"]
+    assert limited_after["run_expires"] == after["run_expires"]
 
 
 def test_comment_happy_path(worker_env):
