@@ -46,6 +46,21 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
     expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
   })
 
+  it('synthesizes stable unique ids for missing and empty toolCallIds', () => {
+    const missing = { ...toolCallPart('placeholder'), toolCallId: undefined } as unknown as ChatMessagePart
+    const empty = { ...toolCallPart('placeholder'), toolCallId: '' } as ChatMessagePart
+    const message = assistantWith([missing, empty])
+
+    const result = withUniqueToolCallIdsWithinMessage(message)
+
+    const ids = result.parts
+      .filter((part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call')
+      .map(part => part.toolCallId)
+
+    expect(ids).toEqual(['m1-tool-0', 'm1-tool-1'])
+    expect(new Set(ids).size).toBe(2)
+  })
+
   it('does not touch parts without a toolCallId', () => {
     const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
     const message = assistantWith([textPart, toolCallPart('call_a')])

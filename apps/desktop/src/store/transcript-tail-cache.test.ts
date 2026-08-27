@@ -98,10 +98,12 @@ describe('transcript tail cache', () => {
     // bytes are re-read every launch — without repair-on-read, an affected
     // install crash-loops forever even after upgrading.
     const tool = (toolCallId: string) => ({ type: 'tool-call', toolCallId, toolName: 'terminal', args: {}, argsText: '' })
+
     const poisoned = {
       messages: [{ id: 'assistant-p', role: 'assistant', parts: [tool('call-b'), tool('call-b')] }],
       savedAt: Date.now()
     }
+
     window.localStorage.setItem('hermes.transcript-tail.v1:sess-poisoned', JSON.stringify(poisoned))
 
     const loaded = loadTranscriptTail('sess-poisoned')
@@ -115,5 +117,23 @@ describe('transcript tail cache', () => {
     expect(ids).toHaveLength(2)
     expect(new Set(ids).size).toBe(2)
     expect(ids[0]).toBe('call-b')
+  })
+
+  it('normalizes duplicate toolCallIds before writing a new tail', () => {
+    const tool = (toolCallId: string) =>
+      ({ type: 'tool-call', toolCallId, toolName: 'terminal', args: {}, argsText: '' }) as never
+
+    const message = { id: 'assistant-new', role: 'assistant', parts: [tool('call-c'), tool('call-c')] } as ChatMessage
+
+    saveTranscriptTail('sess-new', [message])
+
+    const raw = window.localStorage.getItem('hermes.transcript-tail.v1:sess-new')
+    const parsed = JSON.parse(raw!) as { messages: ChatMessage[] }
+
+    const ids = parsed.messages[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId?: string }).toolCallId)
+
+    expect(new Set(ids).size).toBe(2)
   })
 })

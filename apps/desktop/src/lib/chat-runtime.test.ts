@@ -267,7 +267,7 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
   const assistant = (id: string, parts: ChatMessagePart[]): ChatMessage =>
     ({ id, role: 'assistant', parts }) as unknown as ChatMessage
 
-  it('drops the copy the predecessor already carries, keeps the new call', () => {
+  it('merges the copy the predecessor already carries, keeps the new call', () => {
     const merged = coalesceToolOnlyAssistants(
       [
         assistant('committed-49-assistant', [{ type: 'text', text: 'working' } as ChatMessagePart, tool('call-a'), tool('call-b')]),
@@ -281,6 +281,24 @@ describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
     const ids = merged[0].parts.filter(part => part.type === 'tool-call').map(part => (part as { toolCallId: string }).toolCallId)
 
     expect(ids).toEqual(['call-a', 'call-b', 'call-c'])
+  })
+
+  it('keeps a fresher result and latest completion when merging a repeated call', () => {
+    const earlier = { ...tool('call-b'), completedAt: 10 }
+    const completed = { ...tool('call-b'), result: 'done', isError: false, completedAt: 20 }
+
+    const merged = coalesceToolOnlyAssistants(
+      [assistant('a1', [{ type: 'text', text: 'working' } as ChatMessagePart, earlier]), assistant('a2', [completed])],
+      createToolMergeCache()
+    )
+
+    const call = merged[0].parts.find(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolCallId === 'call-b'
+    )
+
+    expect(call).toMatchObject({ result: 'done', isError: false, completedAt: 20 })
+    expect(merged[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(1)
   })
 
   it('folds a clean follow-up unchanged', () => {

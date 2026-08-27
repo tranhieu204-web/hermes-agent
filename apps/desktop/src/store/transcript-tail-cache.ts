@@ -85,7 +85,10 @@ export function saveTranscriptTail(storedSessionId: string, messages: ChatMessag
     return
   }
 
-  const entry: CacheEntry = { messages: messages.slice(-TAIL_MESSAGES), savedAt: Date.now() }
+  // Normalize before persistence as well as on read: current producer bugs must
+  // not keep writing a tail that relies on the recovery path every launch.
+  const tail = messages.slice(-TAIL_MESSAGES).map(withUniqueToolCallIdsWithinMessage)
+  const entry: CacheEntry = { messages: tail, savedAt: Date.now() }
 
   let serialized: string
 
@@ -98,7 +101,7 @@ export function saveTranscriptTail(storedSessionId: string, messages: ChatMessag
   if (serialized.length > MAX_ENTRY_BYTES) {
     // Retry with a shorter tail before giving up; a session dominated by a
     // few huge tool results still caches its recent turns.
-    const shorter: CacheEntry = { messages: messages.slice(-8), savedAt: entry.savedAt }
+    const shorter: CacheEntry = { messages: tail.slice(-8), savedAt: entry.savedAt }
 
     try {
       serialized = JSON.stringify(shorter)

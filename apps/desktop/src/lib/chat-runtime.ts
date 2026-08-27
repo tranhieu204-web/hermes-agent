@@ -516,35 +516,56 @@ function isToolOnlyAssistant(message: ChatMessage): boolean {
 
 /**
  * Concatenate a tool-only follow-up message's parts onto its predecessor's,
- * dropping any incoming `tool-call` part whose `toolCallId` the predecessor
+ * merging any incoming `tool-call` part whose `toolCallId` the predecessor
  * already carries. A repeated id here is the SAME call re-attached (structural
  * carry-over re-adding a cached row's tool calls, or a live-turn projection
  * that also exists as a committed row — #87857): folding both copies into one
  * message manufactures the duplicate key that crashes assistant-ui's
- * `useResources`, and renaming it would render the same call twice. Genuinely
- * new calls in the same follow-up row are preserved.
+ * `useResources`. Unlike the final runtime/cache boundary, which renames two
+ * independently meaningful colliding parts to preserve both, this fold merges
+ * two projections of the same call so it renders once. Defined fields from the
+ * follow-up win, preserving a fresher result/completion. Genuinely new calls in
+ * the same follow-up row are preserved.
  */
 export function concatToolPartsUnique(
   prevParts: readonly ChatMessagePart[],
   nextParts: readonly ChatMessagePart[]
 ): ChatMessagePart[] {
-  const seen = new Set<string>()
+  const indexById = new Map<string, number>()
+  const out = [...prevParts]
 
-  for (const part of prevParts) {
+  for (const [index, part] of prevParts.entries()) {
     if (part.type === 'tool-call' && part.toolCallId) {
-      seen.add(part.toolCallId)
+      indexById.set(part.toolCallId, index)
     }
   }
 
-  const out = [...prevParts]
-
   for (const part of nextParts) {
     if (part.type === 'tool-call' && part.toolCallId) {
-      if (seen.has(part.toolCallId)) {
+      const existingIndex = indexById.get(part.toolCallId)
+
+      if (existingIndex !== undefined) {
+        const existing = out[existingIndex]
+        const merged = { ...existing } as Record<string, unknown>
+
+        for (const [key, value] of Object.entries(part)) {
+          if (value !== undefined) {
+            merged[key] = value
+          }
+        }
+
+        const completedAt = Math.max(existing.completedAt ?? -Infinity, part.completedAt ?? -Infinity)
+
+        if (Number.isFinite(completedAt)) {
+          merged.completedAt = completedAt
+        }
+
+        out[existingIndex] = merged as unknown as ChatMessagePart
+
         continue
       }
 
-      seen.add(part.toolCallId)
+      indexById.set(part.toolCallId, out.length)
     }
 
     out.push(part)

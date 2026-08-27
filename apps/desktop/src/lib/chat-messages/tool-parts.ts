@@ -600,26 +600,32 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
  * repository's identity cache is preserved for the common no-duplicate case.
  */
 export function withUniqueToolCallIdsWithinMessage(message: ChatMessage): ChatMessage {
-  let seen: null | Set<string> = null
+  const seen = new Set<string>()
   let changed = false
 
   const parts = message.parts.map((part, index) => {
-    if (part.type !== 'tool-call' || !part.toolCallId) {
+    if (part.type !== 'tool-call') {
       return part
     }
 
-    if (seen === null) {
-      seen = new Set<string>()
-    }
+    const originalId = part.toolCallId
+    const baseId = originalId || `${message.id}-tool-${index}`
 
-    if (!seen.has(part.toolCallId)) {
-      seen.add(part.toolCallId)
+    if (originalId && !seen.has(baseId)) {
+      seen.add(baseId)
 
       return part
     }
 
     changed = true
-    const uniqueId = `${part.toolCallId}-dup-${index}`
+    let uniqueId = baseId
+    let suffix = 1
+
+    while (seen.has(uniqueId)) {
+      uniqueId = `${baseId}-dup-${suffix}`
+      suffix += 1
+    }
+
     seen.add(uniqueId)
 
     return { ...part, toolCallId: uniqueId } as ChatMessagePart
