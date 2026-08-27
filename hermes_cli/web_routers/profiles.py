@@ -547,7 +547,7 @@ def get_profiles_sessions_sidebar(
 
 
 @sessions_router.get("/api/profiles/sessions/search")
-async def search_profiles_sessions(q: str = "", limit: int = 20, profile: str = "all"):
+def search_profiles_sessions(q: str = "", limit: int = 20, profile: str = "all"):
     """Search one authoritative profile DB or the explicit all-profile set.
 
     Ownership is stamped from the enumerated DB, never from a nullable row
@@ -586,7 +586,11 @@ async def search_profiles_sessions(q: str = "", limit: int = 20, profile: str = 
         if not (Path(home) / "state.db").exists():
             continue
         try:
-            payload = await search_sessions(q=q, limit=safe_limit, profile=name)
+            # This sync FastAPI handler runs in AnyIO's worker pool. The
+            # existing search endpoint is async-shaped but performs blocking
+            # SQLite reads, so drive it from this worker thread rather than
+            # blocking uvicorn's event loop during an all-profile fan-out.
+            payload = asyncio.run(search_sessions(q=q, limit=safe_limit, profile=name))
             for result in payload.get("results") or []:
                 tagged = dict(result)
                 tagged["profile"] = name

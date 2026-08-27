@@ -476,10 +476,12 @@ export function useGatewayBoot({
           callbacksRef.current.refreshHermesConfig().catch(() => undefined),
           callbacksRef.current.refreshSessions().catch(() => undefined)
         ])
+        startupVerdictPending = false
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
         if (!cancelled) {
+          startupVerdictPending = false
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
           notifyError(err, translateNow('boot.errors.desktopBootFailed'))
