@@ -66,6 +66,7 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
+import { resolveBackendWithOptionalRootPin } from './backend-root'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -326,6 +327,7 @@ import {
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
+import { installationOwnsProtocolRegistration } from './protocol-registration'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -2667,6 +2669,13 @@ function findPythonForRoot(root) {
   return findSystemPython()
 }
 
+function pinnedInterpreterCandidates(root) {
+  return ['.venv', 'venv'].map(venvName => {
+    const venvRoot = path.join(root, venvName)
+    return { python: getVenvPython(venvRoot), venvRoot }
+  })
+}
+
 function findSystemPython() {
   if (!IS_WINDOWS) {
     // POSIX systems: PATH lookup is safe.
@@ -4907,7 +4916,8 @@ function writeDefaultProjectDir(dir) {
 }
 
 function createPythonBackend(root, label, backendArgs, options: any = {}) {
-  const python = findPythonForRoot(root)
+  const pinned = Boolean(options.pinned)
+  const python = pinned ? options.python : findPythonForRoot(root)
 
   if (!python) {
     return null
@@ -4918,9 +4928,10 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
   // `venv`, and mixing the two crashes the backend on its first native
   // import (see venvRootForPython). Fall back to root/venv only for a
   // system python, where the historical layout is the best guess.
-  const venvRoot = venvRootForPython(python, root) ?? path.join(root, 'venv')
-  const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
+  const venvRoot = pinned ? options.venvRoot : (venvRootForPython(python, root) ?? path.join(root, 'venv'))
+  const venvPython = venvRoot ? getVenvPython(venvRoot) : null
+  const command = !pinned && IS_WINDOWS && venvPython && fileExists(venvPython) ? venvPython : python
+  const pythonPathEntries = venvRoot ? [root, ...getVenvSitePackagesEntries(venvRoot)] : [root]
 
   return {
     kind: 'python',
@@ -4929,7 +4940,7 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     args: ['-m', 'hermes_cli.main', ...backendArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
+      pythonPathEntries,
       venvRoot
     }),
     root,
@@ -4963,17 +4974,26 @@ function createActiveBackend(backendArgs) {
 }
 
 function resolveHermesBackend(backendArgs) {
-  // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
-  //    checkout. Honour it as-is (no bootstrap; the user is driving).
-  const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+  return resolveBackendWithOptionalRootPin({
+    rootOverride: process.env.HERMES_DESKTOP_HERMES_ROOT,
+    commandOverride: process.env.HERMES_DESKTOP_HERMES,
+    pythonOverride: process.env.HERMES_DESKTOP_PYTHON,
+    resolvePath: value => path.resolve(value),
+    isSourceRoot: isHermesSourceRoot,
+    fileExists,
+    interpreterCandidates: pinnedInterpreterCandidates,
+    venvRootForPython,
+    createPinnedBackend: ({ root, python, venvRoot }) =>
+      createPythonBackend(root, `Hermes source at ${root}`, backendArgs, {
+        pinned: true,
+        python,
+        venvRoot
+      }),
+    resolveAutomatic: () => resolveHermesBackendAutomatically(backendArgs)
+  })
+}
 
-  if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
-
-    if (backend) {
-      return backend
-    }
-  }
+function resolveHermesBackendAutomatically(backendArgs) {
 
   // 2. Development source -- when running `npm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
@@ -17983,6 +18003,8 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
+  if (!installationOwnsProtocolRegistration(process.env.HERMES_DESKTOP_PROTOCOL_MANAGED)) return
+
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can

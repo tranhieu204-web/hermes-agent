@@ -211,6 +211,8 @@ class ClientLifecycleMixin:
         return drained
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        from hermes_cli.subscription_policy import guard_client_capability
+        guard_client_capability(self, client=getattr(self, "client", None))
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
@@ -239,7 +241,11 @@ class ClientLifecycleMixin:
         with self._openai_client_lock():
             client = getattr(self, "client", None)
             if client is not None and not self._is_openai_client_closed(client):
+                from hermes_cli.subscription_policy import guard_client_capability
+                guard_client_capability(self, client=client)
                 return client
+            from hermes_cli.subscription_policy import guard_client_capability
+            guard_client_capability(self, client=client)
             try:
                 new_client = self._create_openai_client(self._client_kwargs, reason=reason, shared=True)
             except Exception as exc:
@@ -361,6 +367,8 @@ class ClientLifecycleMixin:
             logger.debug("%s client abort failed (%s, shared=False) %s error=%s", label, reason, context, exc)
 
     def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
+        from hermes_cli.subscription_policy import guard_client_capability
+        guard_client_capability(self, client=getattr(self, "client", None))
         from unittest.mock import Mock
         primary_client = self._ensure_primary_openai_client(reason=reason)
         if self.provider == "moa" or isinstance(primary_client, Mock):
@@ -491,6 +499,9 @@ class ClientLifecycleMixin:
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
+        from hermes_cli.subscription_policy import guard_client_capability, invalidate_route_permit
+        invalidate_route_permit(self)
+        guard_client_capability(self)
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
         try:
@@ -855,6 +866,9 @@ class ClientLifecycleMixin:
             self._client_kwargs["default_headers"] = merged
 
     def _swap_credential(self, entry) -> None:
+        from hermes_cli.subscription_policy import guard_client_capability, invalidate_route_permit
+        invalidate_route_permit(self)
+        guard_client_capability(self)
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
         self._credential_pool_entry_id = getattr(entry, "id", None)

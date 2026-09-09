@@ -12,6 +12,8 @@ import dataclasses
 import logging
 import os
 import shlex
+import uuid
+from datetime import datetime
 from typing import Optional, Union
 
 from agent.i18n import t
@@ -218,6 +220,40 @@ class GatewaySessionCommandsMixin:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header
         return EphemeralReply(f"{body}{_tip_line}")
+
+    async def _handle_adopt_generation_command(self, event: MessageEvent) -> str:
+        """Explicitly move this route to a child pinned to the current Sakaan generation."""
+        from agent.required_context import RequiredContextError, adopt_current_generation
+
+        args = shlex.split(event.get_command_args())
+        if any(arg != "--copy-history" for arg in args):
+            return "Usage: /adopt-generation [--copy-history]"
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        old_entry = self.session_store._entries.get(session_key)
+        agent = self._cached_agent_for(session_key, lockless_fallback=True)
+        if old_entry is None or agent is None:
+            return "Send a message in this session first, then run /adopt-generation."
+        old_session_id = old_entry.session_id
+        now = datetime.now()
+        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        try:
+            snapshot = await asyncio.to_thread(
+                adopt_current_generation, agent, new_session_id=new_session_id,
+                copy_history="--copy-history" in args,
+            )
+        except RequiredContextError as exc:
+            return f"Generation adoption refused: {exc}"
+        except Exception as exc:
+            logger.exception("generation adoption failed")
+            return f"Generation adoption failed: {exc}"
+        if self.session_store.switch_session(session_key, new_session_id) is None:
+            return "Generation adoption created a child but the gateway route could not switch; use /resume."
+        self._evict_cached_agent(session_key)
+        return (
+            f"Adopted Sakaan generation in child session {new_session_id}. "
+            f"Parent {old_session_id} remains immutable. Generation: {snapshot.generation}"
+        )
 
     async def _reset_titled_header(self, header: str, session_id: str, title_arg: str) -> str:
         """``/new <title>``: titled header on success, else the header plus a rejection note."""

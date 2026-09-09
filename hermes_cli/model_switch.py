@@ -1461,16 +1461,40 @@ def switch_model(
     step returns a failure :class:`ModelSwitchResult` to stop the chain, or ``None`` to continue.
     ``user_providers`` / ``custom_providers`` are the config.yaml ``providers:`` dict and
     ``custom_providers:`` list."""
+    from hermes_cli.subscription_policy import subscription_only_enabled, validate_route_intent
+    policy_enabled = subscription_only_enabled()
+    if policy_enabled and not explicit_provider.strip():
+        # Implicit routing can consult aliases, provider catalogs, configured
+        # providers, and credential-backed discovery before its final provider
+        # is known.  Subscription-only switches therefore require the literal
+        # native provider up front.
+        validate_route_intent("auto", model=raw_input.strip())
+    decision = validate_route_intent(explicit_provider or current_provider, model=raw_input.strip())
     st = _Switch(
         raw_input=raw_input, current_provider=current_provider, current_model=current_model,
         current_base_url=current_base_url, current_api_key=current_api_key, is_global=is_global,
         explicit_provider=explicit_provider, user_providers=user_providers, custom_providers=custom_providers,
         new_model=raw_input.strip(), target_provider=current_provider)
-    route = _route_explicit_provider if explicit_provider else _route_from_model_input
-    for step in (route, _resolve_switch_credentials, _validate_switch):
+    if policy_enabled:
+        # The admitted route is already complete and deterministic.  Do not
+        # enter the alias/catalog/configured-provider routing ladder.
+        st.target_provider = decision.provider
+        st.new_model = decision.model
+        st.provider_changed = st.target_provider != st.current_provider
+        st.base_url = decision.endpoint
+        st.api_mode = decision.api_mode
+        steps = (_resolve_switch_credentials, _validate_switch)
+    else:
+        route = _route_explicit_provider if explicit_provider else _route_from_model_input
+        steps = (route, _resolve_switch_credentials, _validate_switch)
+    for step in steps:
         fail = step(st)
         if fail is not None:
             return fail
+        if policy_enabled and step is _resolve_switch_credentials:
+            validate_route_intent(
+                st.target_provider, model=st.new_model, base_url=st.base_url, api_mode=st.api_mode,
+            )
     return _build_switch_result(st)
 
 

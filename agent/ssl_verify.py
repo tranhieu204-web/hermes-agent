@@ -36,7 +36,18 @@ def _context_for_ca_bundle(ca_path: str) -> ssl.SSLContext:
 def resolve_httpx_verify(*, ca_bundle: Optional[str] = None, ssl_verify: Any = None, base_url: str = "") -> bool | ssl.SSLContext:
     """Resolve httpx ``verify``: ``ssl_verify: false`` > explicit ``ca_bundle`` >
     CA-bundle env vars > ``True`` (certifi default). ``base_url`` only feeds the warning."""
-    if ssl_verify is False or (isinstance(ssl_verify, str) and ssl_verify.strip().lower() in _INSECURE_STRINGS):
+    insecure = ssl_verify is False or (
+        isinstance(ssl_verify, str) and ssl_verify.strip().lower() in _INSECURE_STRINGS
+    ) or (
+        isinstance(ssl_verify, ssl.SSLContext)
+        and (ssl_verify.verify_mode != ssl.CERT_REQUIRED or not ssl_verify.check_hostname)
+    )
+    if insecure:
+        from hermes_cli.subscription_policy import SubscriptionOnlyError, subscription_only_enabled
+        if subscription_only_enabled():
+            raise SubscriptionOnlyError(
+                "SUBSCRIPTION_ONLY_ROUTE: TLS verification cannot be disabled"
+            )
         logger.warning(
             "TLS certificate verification DISABLED (ssl_verify: false) for %s — "
             "this is intended for local development only and is unsafe on any "

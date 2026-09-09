@@ -826,6 +826,13 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
+    from hermes_cli.subscription_policy import validate_route_intent
+    model_cfg = _get_model_config()
+    configured_model = str(model_cfg.get("default") or model_cfg.get("model") or "")
+    validate_route_intent(
+        requested_provider, model=target_model or configured_model,
+        api_key=explicit_api_key, base_url=explicit_base_url,
+    )
     _raise_if_provider_disabled(requested_provider)
     return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
 

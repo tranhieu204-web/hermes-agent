@@ -2287,13 +2287,26 @@ def init_agent(
     _init_turn_state(agent, run_budget_seconds)
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
-    _build_client(agent, api_key, base_url, fallback_model)
-    _init_fallback_chain(agent, fallback_model)
-    _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
     )
+
+    # Admission precedes every credential resolver and client constructor.  A
+    # resumed lineage restores its exact persisted Sakaan snapshot; a new
+    # lineage captures current.txt once.
+    from agent.required_context import initialize_required_context_lineage
+    initialize_required_context_lineage(agent)
+    from hermes_cli.subscription_policy import guard_client_capability, validate_route_intent
+    validate_route_intent(
+        agent.provider, model=agent.model, api_key=api_key, base_url=base_url,
+        api_mode=agent.api_mode,
+    )
+    guard_client_capability(agent)
+
+    _build_client(agent, api_key, base_url, fallback_model)
+    _init_fallback_chain(agent, fallback_model)
+    _load_tools(agent, enabled_toolsets, disabled_toolsets)
 
     # Load config once for memory, skills, and compression sections
     try:

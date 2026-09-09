@@ -2104,6 +2104,11 @@ def switch_model(
     compressor). Mirrors ``_try_activate_fallback()`` but also updates ``_primary_runtime`` so
     the change persists across turns. A failed swap/rebuild rolls back to the pre-switch
     snapshot and re-raises (callers catch)."""
+    from hermes_cli.subscription_policy import invalidate_route_permit, validate_route_intent
+    invalidate_route_permit(agent)
+    validate_route_intent(
+        new_provider, model=new_model, api_key=api_key, base_url=base_url, api_mode=api_mode,
+    )
     old_model = agent.model
     old_provider = agent.provider
     # ── Reload credential pool for the new provider (issue #52727) ── Without this,

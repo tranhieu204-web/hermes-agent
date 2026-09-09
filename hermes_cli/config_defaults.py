@@ -20,6 +20,8 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    "subscription_only": False,
+    "required_context": {"enabled": False, "pointer": "", "files": []},
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},

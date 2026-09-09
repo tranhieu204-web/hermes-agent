@@ -356,6 +356,12 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Read ~/.codex/auth.json (Codex CLI file) tokens if valid and not expired; never writes."""
+    try:
+        from hermes_cli.subscription_policy import subscription_only_enabled
+        if subscription_only_enabled():
+            return None
+    except Exception:
+        return None
     from hermes_cli.auth import _codex_access_token_is_expiring
     codex_home = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
     auth_path = Path(codex_home).expanduser() / "auth.json"
@@ -390,6 +396,10 @@ def resolve_codex_runtime_credentials(
     backup — gets a bare HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    from hermes_cli.subscription_policy import validate_route_intent
+    decision = validate_route_intent("openai-codex", model="configured-codex-model")
+    if decision.enabled:
+        decision.require_live_permit()
     from hermes_cli.auth import (
         _auth_store_lock, _codex_access_token_is_expiring, _probe_codex_quota_restored,
         _read_codex_tokens)

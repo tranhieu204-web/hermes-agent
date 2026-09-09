@@ -701,8 +701,13 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
+        from hermes_cli.subscription_policy import assert_request_permit
+        assert_request_permit(agent, agent.client)
         return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    from hermes_cli.subscription_policy import assert_request_permit
+    assert_request_permit(agent, request_client)
+    return request_client.chat.completions.create(**api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2138,6 +2143,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from hermes_cli.subscription_policy import subscription_only_enabled
+    if subscription_only_enabled():
+        raise RuntimeError("SUBSCRIPTION_ONLY_ROUTE: fallback is forbidden")
     _arm_rate_limit_cooldown(agent, reason)
     if agent._fallback_index >= len(agent._fallback_chain):
         return _fallback_chain_exhausted(agent, reason)

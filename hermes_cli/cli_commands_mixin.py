@@ -1358,6 +1358,54 @@ class CLICommandsMixin:
         elif not self._show_recent_sessions(reason="sessions"):
             _cp("  (._.) No previous sessions yet.")
 
+    def _handle_adopt_generation_command(self, cmd_original: str) -> None:
+        """Explicitly fork this conversation onto the current canonical Sakaan generation."""
+        from cli import _sync_process_session_id
+        from agent.required_context import (
+            RequiredContextError, adopt_current_generation, sanitize_adoption_history,
+        )
+
+        args = shlex.split(_command_arg(cmd_original))
+        if any(arg != "--copy-history" for arg in args):
+            return _cp("  Usage: /adopt-generation [--copy-history]")
+        if not self.agent or not self._session_db:
+            return _cp("  Start a persisted session before adopting a Sakaan generation.")
+        copy_history = "--copy-history" in args
+        old_session_id = self.session_id
+        old_history = list(self.conversation_history or [])
+        with suppress(Exception):
+            self.agent._flush_messages_to_session_db(
+                old_history, conversation_history=old_history,
+            )
+        now = datetime.now()
+        new_session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        copied_history = sanitize_adoption_history(old_history) if copy_history else []
+        try:
+            snapshot = adopt_current_generation(
+                self.agent, new_session_id=new_session_id, copy_history=copy_history,
+                history=copied_history,
+            )
+        except RequiredContextError as exc:
+            return _cp(f"  Generation adoption refused: {exc}")
+        except Exception as exc:
+            return _cp(f"  Generation adoption failed: {exc}")
+
+        with suppress(Exception):
+            self._session_db.end_session(old_session_id, "generation_adopted")
+        self.session_id, self.session_start, self._pending_title = new_session_id, now, None
+        self._resumed = True
+        self.conversation_history = copied_history
+        self._resume_display_history = list(self.conversation_history)
+        self.agent.session_start = now
+        if hasattr(self.agent, "_last_flushed_db_idx"):
+            self.agent._last_flushed_db_idx = len(self.conversation_history)
+        _sync_process_session_id(new_session_id)
+        _cp(
+            f"  Adopted Sakaan generation into child session {new_session_id}.",
+            f"  Parent session remains immutable: {old_session_id}",
+            f"  Generation: {snapshot.generation}",
+        )
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
         full history so a different approach can be explored without losing the original."""

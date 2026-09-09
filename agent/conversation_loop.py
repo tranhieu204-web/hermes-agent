@@ -661,6 +661,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
+        from agent.required_context import append_required_context, snapshot_for_agent, validate_required_context_capacity
+        stored_prompt = append_required_context(
+            stored_prompt, snapshot_for_agent(agent),
+        )
+        validate_required_context_capacity(agent, stored_prompt)
         if _bot_chat_prompt_stale(agent, stored_prompt):
             logger.info(
                 "Bot Chat capability epoch changed for session %s; rebuilding system prompt to "

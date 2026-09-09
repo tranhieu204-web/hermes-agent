@@ -21,6 +21,9 @@ def _timeout_fallback_prompt(agent, system_message: str) -> str:
     Resolved lazily by the timeout wrapper: an eager rebuild would raise before compress_context runs when
     ``_cached_system_prompt`` is unset and the builder fails."""
     if cached := getattr(agent, "_cached_system_prompt", None):
+        from agent.required_context import append_required_context, snapshot_for_agent, validate_required_context_capacity
+        cached = append_required_context(cached, snapshot_for_agent(agent))
+        validate_required_context_capacity(agent, cached)
         return cached
     try:
         return agent._build_system_prompt(system_message)
