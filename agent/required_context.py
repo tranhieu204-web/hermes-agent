@@ -256,23 +256,38 @@ def _model_config(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
-def initialize_required_context_lineage(
-    agent: Any, *, config: Optional[Mapping[str, Any]] = None,
-    before_provider: Any = None,
-) -> None:
-    cfg = _config(config)
-    if not required_context_enabled(cfg):
-        agent._required_context_snapshot = None
-        if before_provider is not None:
-            before_provider()
-        return
-    row = agent._session_db.get_session(agent.session_id) if getattr(agent, "_session_db", None) else None
-    if row is not None:
+def _without_prompt_digest(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """The same pinned snapshot as v1 metadata: a full-prompt digest only vouches for one exact prompt."""
+    stripped = {key: value for key, value in metadata.items() if key != "system_prompt_sha256"}
+    stripped["version"] = 1
+    return stripped
+
+
+def _restore_existing_lineage(
+    agent: Any, session_db: Any, row: Mapping[str, Any], cfg: Mapping[str, Any],
+) -> RequiredContextSnapshot:
+    for _attempt in range(2):
         metadata = _model_config(row).get(_METADATA_KEY)
         if metadata is None:
             raise _fail("existing session has no pinned snapshot; start a new lineage")
         snapshot = restore_required_context_lineage(metadata, config=cfg)
         prompt = row.get("system_prompt") or ""
+        if not prompt:
+            # No persisted prompt (a first turn that failed before persisting, or /model and runtime-lock
+            # writes nulling it): the next build re-emits the pinned block. A full-prompt digest cannot
+            # vouch for a prompt that no longer exists and would reject the rebuilt one, so it is dropped
+            # (v1 metadata) — only while the row still has no prompt and the lineage is unchanged.
+            if "system_prompt_sha256" not in metadata:
+                return snapshot
+            clear = getattr(session_db, "replace_session_model_config_key_if_prompt_absent", None)
+            if not callable(clear):
+                raise _fail("stale full prompt digest cannot be cleared; start a new lineage")
+            if clear(agent.session_id, _METADATA_KEY, metadata, _without_prompt_digest(metadata)):
+                return snapshot
+            row = session_db.get_session(agent.session_id)
+            if row is None:
+                raise _fail("existing session disappeared during restore; start a new lineage")
+            continue
         if prompt.count(REQUIRED_CONTEXT_BEGIN) != 1 or prompt.count(REQUIRED_CONTEXT_END) != 1:
             raise _fail("persisted prompt integrity is invalid; start a new lineage")
         start = prompt.index(REQUIRED_CONTEXT_BEGIN)
@@ -287,6 +302,46 @@ def initialize_required_context_lineage(
             )
         ):
             raise _fail("persisted full prompt integrity is invalid; start a new lineage")
+        return snapshot
+    raise _fail("persisted lineage changed during restore; start a new lineage")
+
+
+def initialize_required_context_lineage(
+    agent: Any, *, config: Optional[Mapping[str, Any]] = None,
+    before_provider: Any = None,
+) -> None:
+    cfg = _config(config)
+    if not required_context_enabled(cfg):
+        agent._required_context_snapshot = None
+        if before_provider is not None:
+            before_provider()
+        return
+    session_db = getattr(agent, "_session_db", None)
+    row = session_db.get_session(agent.session_id) if session_db else None
+    snapshot = None
+    if (
+        row is not None and _model_config(row).get(_METADATA_KEY) is None
+        and not row.get("message_count") and not row.get("system_prompt")
+        and callable(getattr(session_db, "pin_pristine_session_model_config_key", None))
+    ):
+        # Desktop prompt.submit pre-creates the row before the agent exists, so the agent's own
+        # create cannot carry the lineage. The store re-checks pristineness in its transaction;
+        # losing that check (a racing pin, a message, a prompt) falls through to the restore path.
+        candidate = load_required_context_snapshot(cfg)
+        if candidate is None:
+            raise _fail("enabled snapshot is unavailable")
+        metadata = snapshot_to_metadata(candidate)
+        if session_db.pin_pristine_session_model_config_key(agent.session_id, _METADATA_KEY, metadata):
+            agent._session_init_model_config[_METADATA_KEY] = metadata
+            snapshot = candidate
+        else:
+            row = session_db.get_session(agent.session_id)
+    if snapshot is not None:
+        pass
+    elif row is not None:
+        snapshot = _restore_existing_lineage(agent, session_db, row, cfg)
+        # Rows this agent creates later (compression children) inherit from here; v1, since their prompt differs.
+        agent._session_init_model_config[_METADATA_KEY] = snapshot_to_metadata(snapshot)
     else:
         snapshot = load_required_context_snapshot(cfg)
         if snapshot is None:
@@ -295,6 +350,42 @@ def initialize_required_context_lineage(
     agent._required_context_snapshot = snapshot
     if before_provider is not None:
         before_provider()
+
+
+def persist_agent_lineage(agent: Any) -> None:
+    """Durably merge the lineage an agent pinned in memory into its session row, after the row write.
+
+    An agent initialized before its row existed (desktop pre-submit RPCs build it ahead of
+    ``_ensure_session_db_row``) holds the lineage only in ``_session_init_model_config``; the row's
+    COALESCEd ``model_config`` never picks it up. The store sets the key only when absent; a row that
+    already holds a different lineage raises, so the caller aborts before any provider call."""
+    init_config = getattr(agent, "_session_init_model_config", None)
+    metadata = init_config.get(_METADATA_KEY) if isinstance(init_config, Mapping) else None
+    if metadata is None:
+        return
+    merge = getattr(getattr(agent, "_session_db", None), "set_session_model_config_key_if_absent", None)
+    if not callable(merge):
+        return
+    stored = merge(agent.session_id, _METADATA_KEY, metadata)
+    if not isinstance(stored, Mapping) or not isinstance(metadata, Mapping) or any(
+        stored.get(field) != metadata.get(field) for field in ("generation", "prompt_sha256")
+    ):
+        raise _fail("session row holds a different pinned lineage; start a new lineage")
+
+
+def branch_lineage_metadata(
+    session_db: Any, parent_session_id: str, *, config: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Lineage a branch row must carry, written with the row: the parent's pinned lineage as v1 (the branch
+    rebuilds its own prompt). None when the parent has none and the guard is off; raises when it is on."""
+    get_session = getattr(session_db, "get_session", None)
+    row = get_session(parent_session_id) if parent_session_id and callable(get_session) else None
+    metadata = _model_config(row).get(_METADATA_KEY) if row is not None else None
+    if metadata is None:
+        if required_context_enabled(config):
+            raise _fail("branch parent session has no pinned snapshot; start a new session instead")
+        return None
+    return _without_prompt_digest(metadata) if isinstance(metadata, Mapping) else metadata
 
 
 def adopt_current_generation(
@@ -431,11 +522,15 @@ def validate_required_context_capacity(agent: Any, prompt: str) -> None:
         )
 
 
+LINEAGE_METADATA_KEY = _METADATA_KEY
+
+
 __all__ = [
-    "REQUIRED_CONTEXT_BEGIN", "REQUIRED_CONTEXT_END", "RequiredContextCapacityError",
+    "LINEAGE_METADATA_KEY", "REQUIRED_CONTEXT_BEGIN", "REQUIRED_CONTEXT_END", "RequiredContextCapacityError",
     "RequiredContextError", "RequiredContextFile", "RequiredContextSnapshot",
-    "adopt_current_generation", "append_required_context", "initialize_required_context_lineage",
-    "load_required_context_snapshot", "required_context_enabled",
+    "adopt_current_generation", "append_required_context", "branch_lineage_metadata",
+    "initialize_required_context_lineage", "load_required_context_snapshot", "persist_agent_lineage",
+    "required_context_enabled",
     "restore_required_context_lineage", "snapshot_for_agent", "snapshot_to_metadata",
     "sanitize_adoption_history",
     "validate_required_context_capacity",

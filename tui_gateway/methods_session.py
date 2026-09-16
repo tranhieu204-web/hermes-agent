@@ -227,7 +227,12 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land."""
-    db.create_session(new_key, source=source, model=_resolve_model(), model_config={"_branched_from": parent_key},
+    # The branch copies messages, so it can never pin a fresh snapshot: it inherits the parent's lineage in this write.
+    from agent.required_context import LINEAGE_METADATA_KEY, branch_lineage_metadata
+    model_config = {"_branched_from": parent_key}
+    if (lineage := branch_lineage_metadata(db, parent_key)) is not None:
+        model_config[LINEAGE_METADATA_KEY] = lineage
+    db.create_session(new_key, source=source, model=_resolve_model(), model_config=model_config,
                       parent_session_id=parent_key, cwd=cwd, profile_name=profile_name)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
@@ -258,6 +263,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
     the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    from agent.required_context import RequiredContextError
     try:
         with _session_db(record) as db:
             if db is None:
@@ -269,6 +275,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
+    except RequiredContextError:
+        raise  # a lineage-less parent under the guard: the lazy fallback would pin a fresh snapshot onto copied history
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
@@ -374,7 +382,13 @@ def _(rid, params: dict) -> dict:
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
-        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        from agent.required_context import RequiredContextError
+        try:
+            _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        except RequiredContextError as exc:
+            with _sessions_lock:
+                _sessions.pop(sid, None)
+            return _err(rid, 5008, f"branch failed: {exc}")
     elif history:
         _seed_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
