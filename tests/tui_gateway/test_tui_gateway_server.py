@@ -16466,13 +16466,18 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
 
         assert "result" in response, response
         assert seen.get("title_source") == "derived"
-        assert [message["content"] for message in seen["msgs"]] == [
-            "first question",
-            "first answer",
-            "second question",
-            "second answer",
+        # The tool turn is carried with its result (the child model needs the evidence), not filtered out.
+        assert [(message["role"], message["content"]) for message in seen["msgs"]] == [
+            ("user", "first question"),
+            ("assistant", "first answer"),
+            ("assistant", ""),
+            ("tool", "tool output"),
+            ("user", "second question"),
+            ("assistant", "second answer"),
         ]
-        assert [message["text"] for message in response["result"]["messages"]] == [
+        assert seen["msgs"][2]["tool_calls"] == [{"id": "call-1"}] and seen["msgs"][3]["tool_call_id"] == "call-1"
+        assert [message["role"] for message in response["result"]["messages"]].count("tool") == 1
+        assert [message["text"] for message in response["result"]["messages"] if message["role"] != "tool"] == [
             "first question",
             "first answer",
             "second question",

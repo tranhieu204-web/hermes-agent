@@ -626,6 +626,16 @@ class SessionMessagesMixin:
             return inserted
         return self._execute_write(_do)
 
+    def has_compaction_history(self, session_id: str) -> bool:
+        """Whether *session_id*'s resume lineage (what :meth:`get_resume_conversations` reads) holds compaction
+        state: a summarized-away row (``compacted = 1``, :meth:`archive_and_compact`) or a summary carrier
+        (``_compressed_summary``, in place or in a rotated child). Its model projection then differs from its
+        display projection; a branch copies the model one."""
+        lineage = self._resume_lineage_ids(session_id)
+        return self._read_one(
+            f"SELECT 1 FROM messages WHERE session_id IN ({_placeholders(lineage)}) "
+            "AND (compacted = 1 OR _compressed_summary = 1) LIMIT 1", tuple(lineage)) is not None
+
     def _message_column_names(self, conn) -> List[str]:
         """Column names of the messages table, cached per-connection era."""
         if not getattr(self, "_message_columns_cache", None):

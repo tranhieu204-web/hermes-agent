@@ -133,6 +133,9 @@ class SessionCreateParams(ProfileParams):
 class SessionCreateResult(Result):
     session_id: str
     stored_session_id: str
+    # The child's transcript on the wire (hidden rows excluded): for a seeded branch matched to its parent, the
+    # stored rows — the parent's full transcript with tool calls/results, or for a compacted parent its model
+    # projection (head copies, summary, tail; archived turns not copied); otherwise the seed.
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo
@@ -340,7 +343,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 
 class SessionBranchParams(SessionParams):
     name: str | None = None
-    count: int | None = None  # keep only the first N rows of the source history
+    # Branch point: the source history through its Nth desktop branch message (a user/assistant chat bubble with
+    # text, as toBranchMessages numbers them) plus that bubble's tool results; omitted keeps the whole history.
+    count: int | None = None
 
 
 class SessionBranchResult(Result):
@@ -348,6 +353,9 @@ class SessionBranchResult(Result):
     stored_session_id: str
     title: str
     parent: str
+    # Rows copied into the child (all live; the child's model history): the parent's full transcript with tool
+    # calls/results through the cut, or for a compacted parent its model projection at the cut (head copies,
+    # summary, tail; archived turns not copied).
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo

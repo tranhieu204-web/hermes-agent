@@ -30,7 +30,6 @@ from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from hermes_state_ids import new_session_id as mint_session_id
-from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -204,10 +203,6 @@ _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("prune", "gc", "clean"), "_worktree_prune"),
     **dict.fromkeys(("list", "ls"), "_worktree_list"),
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
-
-# Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
-_BRANCH_COPY_KEYS = ("content", "tool_calls", "tool_call_id", "reasoning", "reasoning_details",
-                     "codex_reasoning_items", "codex_message_items", "timestamp")
 
 _HATCH_PROGRESS = {"compose": "  ┊ composing spritesheet…", "save": "  ┊ saving…"}
 
@@ -1443,14 +1438,17 @@ class CLICommandsMixin:
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
         _end_current_session(self, "branched")
+        # The branch continues with the rows it stores: tool turns re-paired (an unanswered trailing call is
+        # dropped, agent/branch_transcript.py), so the child's model history and its transcript agree. The live
+        # history is the model projection: a compacted parent's branch holds its head copies, summary and tail only.
+        from agent.branch_transcript import branch_row, pair_branch_tool_turns
+        if (paired := pair_branch_tool_turns(self.conversation_history)) != self.conversation_history:
+            self.conversation_history = paired
         # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
         # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
         with suppress(Exception):
-            self._session_db.append_messages_batch(new_session_id, [
-                {"role": msg.get("role", "user"), "tool_name": msg.get("tool_name") or msg.get("name"),
-                 "api_content": extract_api_content_sidecar(msg),
-                 **{k: msg.get(k) for k in _BRANCH_COPY_KEYS}}
-                for msg in self.conversation_history], chunk_rows=500)
+            self._session_db.append_messages_batch(
+                new_session_id, [branch_row(msg) for msg in self.conversation_history], chunk_rows=500)
         with suppress(Exception):
             self._session_db.set_session_title(new_session_id, branch_title)
         # Switch to the new session

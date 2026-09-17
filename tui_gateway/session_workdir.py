@@ -301,13 +301,6 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     logger.debug(log_msg, exc_info=True)
 
 
-# Seed row fields copied from the parent transcript. display_kind/metadata: timeline markers ride as role=user;
-# dropping the tag re-plants them as bare user turns after a restart and corrupts the truncate ordinal address space.
-_WORKDIR_SEED_FIELDS = (
-    "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items", "display_kind", "display_metadata", "timestamp")
-
-
 def _persist_branch_seed(session: dict) -> None:
     """Persist a seeded transcript once its row exists. Seeded messages (a branch's copied parent, a client's
     opening turns) live only in ``session["history"]`` (ridden into the agent as ``conversation_history``, which
@@ -329,9 +322,9 @@ def _persist_branch_seed(session: dict) -> None:
             # partial seed with _branch_seed_persisted unset.
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
-                chunk_rows=500)
+            # Seed rows are branch rows (agent/branch_transcript.py): a branch seed carries tool turns and attachments.
+            from agent.branch_transcript import branch_row
+            db.append_messages_batch(key, [branch_row(msg) for msg in seed], chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
