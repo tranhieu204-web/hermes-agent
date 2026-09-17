@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+import re
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -223,12 +224,12 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False, title_source: str = "user",
+                    compensate: bool = False, title_source: str = "user",
                     user_id: str | None = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
-    deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
+    deletes a committed row whose transcript or title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
     # The branch copies messages, so it can never pin a fresh snapshot: it inherits the parent's lineage in this write.
@@ -246,9 +247,12 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         # path can retry cleanly on first submit.
         # Copy the whole parent history in bounded-chunk transactions — a branch seed can be hundreds of
         # rows, and per-row transactions were the write-amplification pattern removed in #23254.
-        db.append_messages_batch(
-            new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
-                       **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
+        from agent.branch_transcript import branch_row
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        rows = [branch_row(msg) for msg in history]
+        db.append_messages_batch(new_key, rows, chunk_rows=500)
+        for msg in history:
+            msg[_DB_PERSISTED_MARKER] = True  # born durable in the child: an identity-losing handoff must not re-append
         if title_source == "user":
             db.set_session_title(new_key, title)
         else:
@@ -263,27 +267,249 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         raise
 
 
+_SEED_IMAGE_LINE_RE = re.compile(r"^(?:@image:|\[screenshot\]).*$", re.MULTILINE)
+
+
+def _seed_compare_text(text) -> str:
+    """Bubble text for alignment: the renderer lifts ``@image:`` lines out and reflows whitespace."""
+    return "".join(_SEED_IMAGE_LINE_RE.sub("", str(text or "")).split())
+
+
+# Timeline rows the desktop renders as system bubbles (hydration.ts toChatMessages displayRole).
+_BRANCH_TIMELINE_KINDS = frozenset({
+    "model_switch", "auto_continue", "personality_switch", "async_delegation_complete", "process_complete"})
+
+
+def _codex_message_text(items) -> str:
+    """Reply text of a ``codex_message_items`` sidecar, as the renderer reads it (hydration.ts codexMessageItemText)."""
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except (TypeError, ValueError):
+            return ""
+    return "".join(
+        part["text"] for item in (items if isinstance(items, list) else ())
+        if isinstance(item, dict) and item.get("type") == "message" and item.get("role") == "assistant"
+        and item.get("phase") not in ("commentary", "analysis")
+        for part in (item.get("content") if isinstance(item.get("content"), list) else ())
+        if isinstance(part, dict) and part.get("type") in ("output_text", "text") and isinstance(part.get("text"), str))
+
+
+def _branch_display_text(row: dict):
+    """A stored row's bubble text as the desktop sees it in the REST transcript: ``None`` when REST marks it
+    ``hidden`` (``display_kind`` or a summary-only compaction carrier, hermes_cli/web_routers/sessions.py
+    ``_project_for_display``), the carrier's display projection, the skill invocation of an expanded user turn,
+    else the raw content — no ``[System:`` sniff and no legacy auto-continue typing, which only the gateway's
+    ``_history_to_messages`` applies."""
+    from agent.context_compressor import is_compaction_summary_message
+    if is_compaction_summary_message(row):
+        projected = project_compaction_message_for_display(row)
+        if projected is None:
+            return None
+        text = _coerce_message_text(projected.get("content"))
+    elif row.get("display_kind") == "hidden":
+        return None
+    else:
+        text = _coerce_message_text(row.get("content"))
+    return (_skill_scaffold_projection(text) or text) if row.get("role") == "user" else text
+
+
+def _branch_bubbles(rows: list) -> list:
+    """The desktop's chat bubbles over transcript ``rows`` — the one rule set ``session.branch`` ``count`` and the
+    seeded ``session.create`` matcher share. Mirrors ``toChatMessages`` (apps/desktop hydration.ts) over the REST
+    transcript the desktop counts (``getAllSessionMessages`` -> ``_project_for_display``), as fed by
+    ``toBranchMessages`` (use-session-actions/utils.ts): tool-only assistant rows and unmatched tool rows wait
+    for the next assistant bubble (or join the open one when a non-assistant row closes it); an assistant row
+    merges into the open assistant bubble when either carries tool calls; a reasoning-only assistant row opens
+    a bubble; EVERY non-assistant row closes the open bubble — including a REST-hidden one (a summary-only
+    compaction carrier, ``display_kind="hidden"``), which renders nothing (hydration.ts: no parts -> flush +
+    ``activeAssistantIndex = null``). A hidden assistant row keeps its reasoning and tool-call parts, not its text.
+
+    Each bubble is ``{"role", "text", "rows", "counts"}``: ``text`` is whitespace-free (``_seed_compare_text``),
+    ``rows`` the non-tool row indexes merged into it, ``counts`` whether ``toBranchMessages`` keeps it — a
+    user/assistant bubble with text (a caption-less ``@image:`` turn has none; timeline rows render as system)."""
+    bubbles, pending, calls_seen = [], [], set()
+    active = None  # index of the open assistant bubble
+
+    def close():
+        nonlocal active, pending
+        if pending:
+            if active is None:
+                bubbles.append({"role": "assistant", "text": "", "rows": [], "calls": True})
+                active = len(bubbles) - 1
+            bubbles[active]["rows"] += pending
+            bubbles[active]["calls"] = True
+            pending = []
+        active = None
+
+    for index, row in enumerate(rows):
+        role = row.get("role")
+        if role == "tool":
+            call_id, name = row.get("tool_call_id"), row.get("tool_name") or row.get("name") or "tool"
+            if (call_id or ("name", name)) not in calls_seen:
+                pending.append(index)  # applyStoredToolResult found no call: a stored tool part of its own
+            continue
+        text = _branch_display_text(row)
+        if role != "assistant":
+            close()
+            timeline = row.get("display_kind") in _BRANCH_TIMELINE_KINDS
+            bubbles.append({"role": "system" if timeline else role, "rows": [index],
+                            "text": _seed_compare_text(text) if role == "user" and not timeline else ""})
+            continue
+        # REST keeps a carrier's raw reasoning/tool calls beside its display text (``_project_for_display`` copies).
+        calls = [call for call in row.get("tool_calls") or () if isinstance(call, dict)]
+        for call in calls:
+            calls_seen.update(key for key in (call.get("id"), ("name", (call.get("function") or {}).get("name")))
+                              if key and key != ("name", None))
+        if text is not None:
+            text = text or _codex_message_text(row.get("codex_message_items"))
+        text = text or ""
+        # The REST transcript the desktop counts over ships reasoning_details as raw JSON text: a reasoning part.
+        reasoning = row.get("reasoning") or row.get("reasoning_content") or row.get("reasoning_details")
+        if not (text or reasoning or calls):
+            continue
+        if calls and not (text or reasoning):
+            pending.append(index)  # isToolOnlyAssistant
+            continue
+        merged_rows, has_calls = [], bool(calls)
+        if pending:
+            if active is None:
+                merged_rows, has_calls = pending, True
+            else:
+                bubbles[active]["rows"] += pending
+                bubbles[active]["calls"] = True
+            pending = []
+        if active is not None and (has_calls or bubbles[active]["calls"]):
+            bubbles[active]["rows"] += [*merged_rows, index]
+            bubbles[active]["text"] += _seed_compare_text(text)
+            bubbles[active]["calls"] = True
+            continue
+        bubbles.append({"role": "assistant", "text": _seed_compare_text(text), "rows": [*merged_rows, index],
+                        "calls": has_calls})
+        active = len(bubbles) - 1
+    close()
+    for bubble in bubbles:
+        bubble["counts"] = bubble["role"] in ("user", "assistant") and bool(bubble["text"])
+    return bubbles
+
+
+def _branch_cut_after_bubble(rows: list, bubbles: list, count: int):
+    """Row index just past the ``count``-th counted bubble and the tool results that follow it; None when the
+    transcript has fewer bubbles."""
+    counted = [bubble for bubble in bubbles if bubble["counts"]]
+    if count < 1 or count > len(counted):
+        return None
+    cut = max(counted[count - 1]["rows"]) + 1
+    while cut < len(rows) and rows[cut].get("role") == "tool":
+        cut += 1
+    return cut
+
+
+def _parent_has_compaction(db, parent_key: str, model_rows: list) -> bool:
+    """Whether the parent's history was compacted: a summary carrier in its model projection, or compaction state
+    anywhere in its resume lineage (``SessionDB.has_compaction_history``: summarized-away rows or carriers)."""
+    from agent.context_compressor import is_compaction_summary_message
+    if any(isinstance(row, dict) and is_compaction_summary_message(row) for row in model_rows or ()):
+        return True
+    has_compaction_history = getattr(db, "has_compaction_history", None)
+    return bool(callable(has_compaction_history) and has_compaction_history(parent_key))
+
+
+def _model_projection_prefix(model_rows: list, display_rows: list, cut) -> list:
+    """A compacted parent's model projection (``model_rows``, in order) through display row index ``cut``
+    (exclusive, from :func:`_branch_cut_after_bubble`; ``None``: all of it).
+
+    A model row's display position is the index of the display row with its ``_row_id`` — a head copy the display
+    merged with its archived original sits at the original's position; id-less rows past the last stored one (an
+    unflushed live tail, appended to both lists) pair with the display's id-less rows from the end. The prefix runs
+    through the LAST model row positioned before ``cut`` plus the tool results that follow it, so it stays a prefix of
+    the parent's provider-valid history: a pruned head copy (result stub or truncated call arguments, not merged,
+    displayed at its own id) is kept with its pair, and a rotated compaction's summary (displayed after its tail)
+    with its tail."""
+    if cut is None:
+        return list(model_rows)
+    positions = {row["_row_id"]: index for index, row in enumerate(display_rows) if isinstance(row.get("_row_id"), int)}
+    stored = max((index for index, row in enumerate(model_rows) if isinstance(row.get("_row_id"), int)), default=-1)
+    unflushed = dict(zip(range(len(model_rows) - 1, stored, -1), (
+        index for index in range(len(display_rows) - 1, -1, -1) if not isinstance(display_rows[index].get("_row_id"), int))))
+    end = 0
+    for index, row in enumerate(model_rows):
+        position = positions.get(row.get("_row_id"), unflushed.get(index))
+        if position is not None and position < cut:
+            end = index + 1
+    while end < len(model_rows) and model_rows[end].get("role") == "tool":
+        end += 1
+    return model_rows[:end]
+
+
+def _seeded_branch_parent_history(db, parent_key: str, seed: list):
+    """The parent's rows for the prefix a seeded desktop branch copied, or None when they cannot be matched.
+
+    The renderer seeds a branch from its chat bubbles (``toBranchMessages``): ``@image:`` lines lifted into
+    attachments, tool rows gone, tool-linked assistant rows merged. Align the seed bubble-for-bubble with
+    :func:`_branch_bubbles` of the parent's display projection (archived turns included; a seed bubble may only
+    differ by what the renderer rewrites) and cut after the last one: the display rows of an uncompacted parent,
+    a compacted parent's model projection at that cut (:func:`_model_projection_prefix`). Any mismatch — or any
+    failure — keeps the seed: the caller must still persist the child (#93959)."""
+    try:
+        get_resume_conversations = getattr(db, "get_resume_conversations", None)
+        if not seed or not callable(get_resume_conversations) or any(
+                message.get("role") not in ("user", "assistant") or message.get("display_kind") for message in seed):
+            return None
+        model_rows, parent_rows = get_resume_conversations(parent_key)
+        parent_rows = [row for row in parent_rows or () if isinstance(row, dict)]
+        bubbles = _branch_bubbles(parent_rows)
+        counted = [bubble for bubble in bubbles if bubble["counts"]]
+        if len(seed) > len(counted):
+            return None
+        for message, bubble in zip(seed, counted):
+            wanted = _seed_compare_text(message.get("content"))
+            if message["role"] != bubble["role"] or not wanted or not (
+                    wanted in bubble["text"] or (message["role"] == "assistant" and bubble["text"] in wanted)):
+                return None
+        from agent.branch_transcript import branch_rows
+        cut = _branch_cut_after_bubble(parent_rows, bubbles, len(seed))
+        if _parent_has_compaction(db, parent_key, model_rows):
+            whole = len(seed) == len(counted)
+            return branch_rows(_model_projection_prefix(model_rows, parent_rows, None if whole else cut)) or None
+        return branch_rows(parent_rows[:cut]) or None
+    except Exception:
+        logger.debug("seeded branch parent match failed for %s; keeping the seed", parent_key, exc_info=True)
+        return None
+
+
 def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
+    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback.
+    Returns the rows the child stored, else None."""
     from agent.required_context import RequiredContextError
     try:
         with _session_db(record) as db:
             if db is None:
-                return
+                return None
+            model_history = None
+            if (parent_history := _seeded_branch_parent_history(db, parent_session_id, history)) is not None:
+                history, model_history = parent_history, list(parent_history)
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
                             compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+            # Only a stored child adopts the parent's rows: after a compensated failure the lazy first-prompt
+            # fallback re-seeds from record["history"], which must then still be the seed it can copy whole.
+            if model_history is not None:
+                with record["history_lock"]:
+                    record["history"] = model_history  # the agent's rows
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
+            return history
     except RequiredContextError:
         raise  # a lineage-less parent under the guard: the lazy fallback would pin a fresh snapshot onto copied history
     except Exception:
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
+    return None
 
 
 def _seed_row(record: dict) -> None:
@@ -390,10 +616,11 @@ def _(rid, params: dict) -> dict:
     # The same holds for a seeded session WITHOUT a parent (a client opening a chat with its first turns
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
+    stored_history = None
     if parent_session_id and history:
         from agent.required_context import RequiredContextError
         try:
-            _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+            stored_history = _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
         except RequiredContextError as exc:
             with _sessions_lock:
                 _sessions.pop(sid, None)
@@ -405,7 +632,9 @@ def _(rid, params: dict) -> dict:
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
-    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
+    # The transcript the child holds: a stored seeded branch's rows (the parent's tool turns; a compacted parent's
+    # model projection), else the in-memory seed. Hidden rows are not on the wire; count what is (as resume does).
+    messages = _history_to_messages(_sessions[sid]["history"] if stored_history is None else stored_history)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
         # Reflect the override now so the client doesn't clobber its sticky pick.
@@ -1987,11 +2216,27 @@ def _(rid, params: dict) -> dict:
 
 
 # ── session.branch ───────────────────────────────────────────────────
-def _visible_branch_history(messages) -> list:
-    """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
-    return [dict(message) for message in messages or []
-            if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
-            and _coerce_message_text(message.get("content")).strip()]
+def _is_visible_branch_row(message) -> bool:
+    """A user/assistant row with visible text: what the desktop counts as a branchable message."""
+    return (isinstance(message, dict) and message.get("role") in {"user", "assistant"}
+            and bool(_coerce_message_text(message.get("content")).strip()))
+
+
+def _branch_copy_history(messages) -> list:
+    """The branch copy of ``messages`` (tool turns, attachments, reasoning — agent/branch_transcript.py); empty when
+    no row has visible text, so there is still "nothing to branch"."""
+    from agent.branch_transcript import branch_rows
+    rows = branch_rows(messages or [])
+    return rows if any(map(_is_visible_branch_row, rows)) else []
+
+
+def _branch_history_prefix(history: list, count: int) -> list:
+    """``history`` through its ``count``-th desktop branch message (a counted :func:`_branch_bubbles` bubble — what
+    ``toBranchMessages`` numbers) with that bubble's tool results, tool turns re-paired; all of ``history`` when it
+    has fewer."""
+    from agent.branch_transcript import pair_branch_tool_turns
+    cut = _branch_cut_after_bubble(history, _branch_bubbles(history), count)
+    return history if cut is None else pair_branch_tool_turns(history[:cut])
 
 
 def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):
@@ -2020,30 +2265,32 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
             _release_db(branch_db)
 
 
-_BRANCH_COPY_FIELDS = (
-    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items", "codex_message_items",
-    # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
-    # the truncate ordinal address space.
-    "display_kind", "display_metadata",
-    # Branch copies are history, not new activity: keep the parent's timestamps.
-    "timestamp")
-
-
-def _branch_source_history(db, session: dict, old_key: str) -> list:
-    """Rows a branch copies: the persisted DISPLAY projection reconciled with live memory (live history is
-    the MODEL projection — post-compaction summary + tail — the child would lose every archived turn)."""
+def _branch_source_history(db, session: dict, old_key: str, count=None) -> list:
+    """Rows a branch copies through the ``count``-th desktop branch message (all when ``count`` is None), row-for-row
+    with tool calls/results and attachment references. An uncompacted parent: the persisted DISPLAY projection
+    reconciled with live memory (:func:`_branch_history_prefix`). A compacted parent: its MODEL projection — head
+    copies, summary, tail, as the parent agent sees it — reconciled with the live history and cut where the display
+    bubble ends (:func:`_model_projection_prefix`); its archived turns are not copied."""
     with session["history_lock"]:
+        live_history = [dict(msg) for msg in session.get("history", []) if isinstance(msg, dict)]
         in_memory_history = [
-            dict(msg) for msg in list(session.get("display_history_prefix") or []) + list(session.get("history", []))
-            if isinstance(msg, dict)]
+            dict(msg) for msg in session.get("display_history_prefix") or [] if isinstance(msg, dict)] + live_history
     history = None
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
-            _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            model_history, display_history = get_resume_conversations(old_key)
+            if _parent_has_compaction(db, old_key, model_history):
+                # The not-yet-flushed live tail extends both projections. (Anchoring the display on live memory
+                # misfires here: a rotated compaction displays its summary last, so the whole tail would repeat.)
+                model = _reconcile_display_with_live(model_history, live_history)
+                display = display_history + model[len(model_history):]
+                cut = _branch_cut_after_bubble(display, _branch_bubbles(display), count) if count else None
+                return _branch_copy_history(_model_projection_prefix(model, display, cut))
+            history = _branch_copy_history(_reconcile_display_with_live(display_history, in_memory_history))
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    history = history or _branch_copy_history(in_memory_history)
+    return _branch_history_prefix(history, count) if history and count else history
 
 
 @_session_method("session.branch", live=True)
@@ -2053,19 +2300,20 @@ def _(rid, params: dict, session: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
-        if not history:
+        count = count if isinstance(count := params.get("count"), int) and count > 0 else None
+        # A compacted parent's model projection holds nothing before the chosen message when it was summarized away
+        # with no head kept: there is nothing to branch then either.
+        if not (history := _branch_source_history(db, session, old_key, count)):
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
-            history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
+            # compensate: a failed copy/title must not leave a half-built child behind the 5008 — nothing adopts it,
+            # and a retry mints another.
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS,
-                            title_source="user" if params.get("name") else "derived",
+                            compensate=True, title_source="user" if params.get("name") else "derived",
                             user_id=_session_auth_user_id(session))
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
