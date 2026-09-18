@@ -8,6 +8,7 @@ import logging
 import json
 import math
 import threading
+from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
 from gateway.config import Platform
@@ -433,11 +434,40 @@ class SessionRecoveryMixin:
             "model_config": {"_reset_from": parent_session_id} if parent_session_id else None,
         }
 
+    def _route_lineage_config(self, origin):
+        """The effective config governing THIS routing key's required-context decision. A multiplexed
+        gateway serves several profiles from one process, so the launch profile's setting is not the
+        session's; ``None`` home falls back to the active profile."""
+        from agent.required_context import config_for_profile_home
+        home = None
+        with suppress(Exception):
+            from hermes_cli.profiles import get_profile_dir
+            if name := self._resolve_profile_for_key(origin):
+                home = get_profile_dir(name)
+        return config_for_profile_home(home)
+
     def _create_session_row(self, session_key, db_create_kwargs, origin, display_name, *, log) -> None:
         """INSERT a session row and record its routing peer; ``log(exc)`` on failure. A failed
         create is a routing hazard (visible warning), but the row is self-healed with full identity
         by the next per-turn peer refresh."""
         try:
+            # This row's required-context lineage must land in the INSERT, not be left to the agent's
+            # pristine pin. Between this create and the first turn that builds an agent, several writers
+            # append message rows to the session with no agent in between — /reload-mcp's notice
+            # (gateway/run_turn.py), skipped-group-chatter records (telegram/yuanbao adapters), delegation
+            # deliveries (gateway/wake.py), restart replay (gateway/shutdown_flush.py), mirror rows. Any one
+            # of them takes the row out of the pristine window (``message_count`` is a stored column and
+            # ``pin_pristine_session_model_config_key`` re-probes the messages table in its own
+            # transaction), and the row can then never be pinned and fails closed on every later turn.
+            #
+            # Pinning the CURRENT generation here is honest: a routing row is created empty, and even the
+            # reset/recovery case (``_reset_from``) mints a fresh session id with no history copied into
+            # it — there is no earlier lineage to inherit or falsify.
+            from agent.required_context import LINEAGE_METADATA_KEY, new_lineage_metadata
+            if (lineage := new_lineage_metadata(self._route_lineage_config(origin))) is not None:
+                model_config = dict(db_create_kwargs.get("model_config") or {})
+                model_config[LINEAGE_METADATA_KEY] = lineage
+                db_create_kwargs = {**db_create_kwargs, "model_config": model_config}
             self._db_for_key(session_key).create_session(**db_create_kwargs)
             self._record_gateway_session_peer(
                 db_create_kwargs["session_id"], session_key, origin, display_name=display_name)

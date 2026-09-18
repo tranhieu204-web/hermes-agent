@@ -74,6 +74,27 @@ def required_context_enabled(config: Optional[Mapping[str, Any]] = None) -> bool
     return isinstance(section, Mapping) and section.get("enabled") is True
 
 
+def config_for_profile_home(profile_home: Any = None) -> Mapping[str, Any]:
+    """The effective config of the profile rooted at ``profile_home`` (None: the launch profile).
+
+    Every decision made ON A SESSION'S BEHALF must read the SESSION's profile: ``required_context``
+    is per-profile config, and the thread that serves a secondary profile (a desktop RPC handler, a
+    multiplexed gateway command) runs with the LAUNCH ``HERMES_HOME`` bound — so a bare
+    ``load_config_readonly()`` there answers for the launcher, not for the session. The override is
+    the context-local one (``hermes_constants``), never ``os.environ``, so it cannot leak across
+    threads; config loading is cached on the file signature, so this stays a cheap read.
+    """
+    if not profile_home:
+        return _config(None)
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        return _config(None)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _reject_reparse(path: Path) -> None:
     try:
         info = os.lstat(path)
@@ -148,19 +169,8 @@ def _build_snapshot(generation: Path, files: tuple[RequiredContextFile, ...]) ->
     )
 
 
-def load_required_context_snapshot(
-    config: Optional[Mapping[str, Any]] = None,
-) -> Optional[RequiredContextSnapshot]:
-    cfg = _config(config)
-    if not required_context_enabled(cfg):
-        return None
-    pointer, names = _section(cfg)
-    _reject_reparse_chain(_CANONICAL_SAKAAN_ROOT, pointer)
-    pointer_text = _decode(_read_stable_bytes(pointer), str(pointer))
-    lines = [line.strip() for line in pointer_text.splitlines() if line.strip()]
-    if len(lines) != 1:
-        raise _fail("pointer must contain exactly one non-empty absolute path")
-    generation = Path(lines[0])
+def _resolve_canonical_generation(generation: Path) -> Path:
+    """The one trust gate every generation path goes through, wherever the path came from."""
     if not generation.is_absolute():
         raise _fail("pointer generation must be absolute")
     expected_parent = os.path.normcase(os.path.abspath(_CANONICAL_GENERATIONS_ROOT))
@@ -175,9 +185,12 @@ def load_required_context_snapshot(
         raise _fail("pointer generation escapes canonical Sakaan trust root") from exc
     if resolved_generation.parent != resolved_root / "generations":
         raise _fail("pointer generation must be a direct canonical generation")
-    generation = resolved_generation
-    if not generation.is_dir():
+    if not resolved_generation.is_dir():
         raise _fail("generation is not a directory")
+    return resolved_generation
+
+
+def _snapshot_from_generation(generation: Path, names: tuple[str, ...]) -> RequiredContextSnapshot:
     loaded = []
     for name in names:
         relative = Path(name)
@@ -196,6 +209,66 @@ def load_required_context_snapshot(
         text = _decode(raw, name)
         loaded.append(RequiredContextFile(name, hashlib.sha256(raw).hexdigest(), raw, text))
     return _build_snapshot(generation, tuple(loaded))
+
+
+def load_required_context_snapshot(
+    config: Optional[Mapping[str, Any]] = None,
+) -> Optional[RequiredContextSnapshot]:
+    cfg = _config(config)
+    if not required_context_enabled(cfg):
+        return None
+    pointer, names = _section(cfg)
+    _reject_reparse_chain(_CANONICAL_SAKAAN_ROOT, pointer)
+    pointer_text = _decode(_read_stable_bytes(pointer), str(pointer))
+    lines = [line.strip() for line in pointer_text.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise _fail("pointer must contain exactly one non-empty absolute path")
+    return _snapshot_from_generation(_resolve_canonical_generation(Path(lines[0])), names)
+
+
+def load_generation_snapshot(
+    generation: Any, *, config: Optional[Mapping[str, Any]] = None,
+) -> RequiredContextSnapshot:
+    """The snapshot of a NAMED canonical generation instead of the one ``current.txt`` names today.
+
+    For the lineage backfill only (``scripts/backfill_required_context_lineage.py``): a row whose
+    persisted system prompt already carries generation G's block has to be pinned to **G**, not to
+    today's pointer — the conversation really saw G. Every trust check the pointer path applies still
+    applies here (direct child of the canonical generations root, no reparse points anywhere in the
+    chain, the canonical five files in canonical order); only the *source of the path* differs, and
+    the caller must still prove the rebuilt ``prompt_block`` equals the persisted one byte for byte.
+    Deliberately not gated on ``required_context.enabled``: the backfill is what makes enabling safe.
+    """
+    _pointer, names = _section(_config(config))
+    return _snapshot_from_generation(_resolve_canonical_generation(Path(str(generation))), names)
+
+
+def declared_block_generation(block: str) -> Optional[str]:
+    """The generation path a persisted required-context block declares, or None if it declares none.
+
+    Reads the exact three-line header ``_build_snapshot`` writes; anything else is unrecognized rather
+    than guessed at, so a hand-edited or truncated block can never be mistaken for a real lineage."""
+    lines = block.splitlines()
+    if len(lines) < 3 or lines[0] != REQUIRED_CONTEXT_BEGIN or lines[1] != "# Required Sakaan Context":
+        return None
+    if not lines[2].startswith("generation: "):
+        return None
+    return lines[2][len("generation: "):].strip() or None
+
+
+def extract_required_context_block(prompt: str) -> Optional[str]:
+    """The one required-context block in ``prompt``, ``None`` when there is none, raising when the
+    markers are duplicated or unbalanced (the same integrity rule the restore path applies)."""
+    begins, ends = prompt.count(REQUIRED_CONTEXT_BEGIN), prompt.count(REQUIRED_CONTEXT_END)
+    if not begins and not ends:
+        return None
+    if begins != 1 or ends != 1:
+        raise _fail("duplicate or malformed required-context block")
+    start = prompt.index(REQUIRED_CONTEXT_BEGIN)
+    end = prompt.index(REQUIRED_CONTEXT_END, start) + len(REQUIRED_CONTEXT_END)
+    if end <= start:
+        raise _fail("duplicate or malformed required-context block")
+    return prompt[start:end]
 
 
 def snapshot_to_metadata(
@@ -373,19 +446,46 @@ def persist_agent_lineage(agent: Any) -> None:
         raise _fail("session row holds a different pinned lineage; start a new lineage")
 
 
-def branch_lineage_metadata(
-    session_db: Any, parent_session_id: str, *, config: Optional[Mapping[str, Any]] = None,
+def lineage_metadata_from_row(
+    parent_row: Any, *, config: Optional[Mapping[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Lineage a branch row must carry, written with the row: the parent's pinned lineage as v1 (the branch
-    rebuilds its own prompt). None when the parent has none and the guard is off; raises when it is on."""
-    get_session = getattr(session_db, "get_session", None)
-    row = get_session(parent_session_id) if parent_session_id and callable(get_session) else None
-    metadata = _model_config(row).get(_METADATA_KEY) if row is not None else None
+    """:func:`branch_lineage_metadata` over a parent row the caller already read — the form an async
+    store (``AsyncSessionDB``) needs, since its ``get_session`` cannot be awaited from a sync helper."""
+    metadata = _model_config(parent_row).get(_METADATA_KEY) if parent_row is not None else None
     if metadata is None:
         if required_context_enabled(config):
             raise _fail("branch parent session has no pinned snapshot; start a new session instead")
         return None
     return _without_prompt_digest(metadata) if isinstance(metadata, Mapping) else metadata
+
+
+def branch_lineage_metadata(
+    session_db: Any, parent_session_id: str, *, config: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Lineage a branch row must carry, written with the row: the parent's pinned lineage as v1 (the branch
+    rebuilds its own prompt). None when the parent has none and the guard is off; raises when it is on.
+
+    ``config`` is the SESSION's effective profile config (:func:`config_for_profile_home`); leaving it
+    None resolves the LAUNCH profile, which is only the same thing for a single-profile process."""
+    get_session = getattr(session_db, "get_session", None)
+    row = get_session(parent_session_id) if parent_session_id and callable(get_session) else None
+    return lineage_metadata_from_row(row, config=config)
+
+
+def new_lineage_metadata(config: Optional[Mapping[str, Any]] = None) -> Optional[dict[str, Any]]:
+    """Lineage a row born WITH history but WITHOUT a parent lineage to inherit must carry: the current
+    generation as v1 (the row's prompt is built later, so no full-prompt digest can vouch for it).
+
+    Only for content that starts its own lineage here — a client-authored seed, a foreign import. A row
+    whose history was COPIED from a parent must inherit instead (:func:`branch_lineage_metadata`);
+    pinning the current generation onto copied history is a lineage lie. None when the guard is off."""
+    cfg = _config(config)
+    if not required_context_enabled(cfg):
+        return None
+    snapshot = load_required_context_snapshot(cfg)
+    if snapshot is None:
+        raise _fail("enabled snapshot is unavailable")
+    return snapshot_to_metadata(snapshot)
 
 
 def adopt_current_generation(
@@ -529,7 +629,10 @@ __all__ = [
     "LINEAGE_METADATA_KEY", "REQUIRED_CONTEXT_BEGIN", "REQUIRED_CONTEXT_END", "RequiredContextCapacityError",
     "RequiredContextError", "RequiredContextFile", "RequiredContextSnapshot",
     "adopt_current_generation", "append_required_context", "branch_lineage_metadata",
-    "initialize_required_context_lineage", "load_required_context_snapshot", "persist_agent_lineage",
+    "config_for_profile_home", "declared_block_generation", "extract_required_context_block",
+    "lineage_metadata_from_row", "new_lineage_metadata",
+    "initialize_required_context_lineage", "load_generation_snapshot",
+    "load_required_context_snapshot", "persist_agent_lineage",
     "required_context_enabled",
     "restore_required_context_lineage", "snapshot_for_agent", "snapshot_to_metadata",
     "sanitize_adoption_history",

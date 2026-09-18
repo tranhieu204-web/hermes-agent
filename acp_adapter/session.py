@@ -148,6 +148,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=threading.Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    # Session this one's history was COPIED from (``fork_session`` only). Its row must inherit that
+    # parent's required-context lineage: a fork is born with the parent's turns, so pinning the current
+    # generation onto them would be a lineage lie. None for an ordinary session, which starts its own.
+    parent_session_id: Optional[str] = None
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
@@ -201,11 +205,45 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
+        # BEFORE the agent exists: an agent built against a missing row pins the CURRENT generation
+        # (``initialize_required_context_lineage``'s no-row branch) and writes it on its first turn — onto
+        # the parent's copied history. With the row already carrying the parent's lineage, that same agent
+        # restores it instead. No-op (and byte-identical to before) while the guard is off.
+        self._precreate_fork_row(new_id, original, cwd)
         agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    parent_session_id=session_id)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
+
+    def _precreate_fork_row(self, new_id: str, original: SessionState, cwd: str) -> None:
+        """Create a fork's row up front carrying the parent's pinned lineage, while the guard is on.
+
+        Raises ``RequiredContextError`` when the parent has no pinned snapshot — the fork cannot inherit
+        one and must not invent one, so the fork fails instead of producing a mispinned child.
+
+        No ``config=``/``config_for_profile_home`` here, unlike the multiplexed gateway's branch paths: an
+        ACP server is single-profile by construction — ``_get_db`` resolves ONE ``get_hermes_home()``
+        state.db for the whole process (see its docstring) and ``_make_agent`` loads that same home's
+        config, so the launch profile IS the session's profile and a bare read cannot answer for another."""
+        from agent.required_context import LINEAGE_METADATA_KEY, branch_lineage_metadata, required_context_enabled
+        if not required_context_enabled():
+            return
+        db = self._get_db()
+        if db is None:
+            return
+        lineage = branch_lineage_metadata(db, original.session_id)
+        if lineage is None:
+            return
+        db.create_session(session_id=new_id, source="acp", model=str(original.model) if original.model else None,
+                          parent_session_id=original.session_id,
+                          # ``_branched_from`` is the durable branch marker every other fork site writes
+                          # (api_server, CLI /branch, desktop): without it ``_LISTABLE_CHILD_SQL`` drops the
+                          # fork from list_sessions_rich(include_children=False) and ``_ephemeral_child_sql``
+                          # re-reads it as a subagent run, so it looks DELETED after a restart.
+                          model_config={"cwd": cwd, "_branched_from": original.session_id,
+                                        LINEAGE_METADATA_KEY: lineage})
 
     def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
@@ -276,10 +314,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: List[Dict[str, Any]], *, persist: bool = True,
+                       parent_session_id: Optional[str] = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(),
+                             parent_session_id=parent_session_id)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -311,6 +351,18 @@ class SessionManager:
                 logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
+    @staticmethod
+    def _persist_lineage(db, state: SessionState):
+        """Required-context lineage for a non-pristine ACP row's INSERT; None while the guard is off.
+
+        A fork INHERITS its parent's (raising when the parent has none, rather than inventing one); any
+        other row starts its own lineage at the current generation. Single-profile, so no ``config=`` —
+        see ``_precreate_fork_row``."""
+        from agent.required_context import branch_lineage_metadata, new_lineage_metadata
+        if state.parent_session_id:
+            return branch_lineage_metadata(db, state.parent_session_id)
+        return new_lineage_metadata()
+
     def _persist(self, state: SessionState) -> None:
         """Create/update the session record, then sync the live message set."""
         db = self._get_db()
@@ -324,17 +376,39 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        # The durable branch marker, on BOTH the create and the update path (the update replaces
+        # model_config wholesale, so omitting it here would delete it on the fork's first save) — and
+        # regardless of the required-context guard, which this has nothing to do with. Without it
+        # ``_LISTABLE_CHILD_SQL`` drops the fork from list_sessions_rich(include_children=False) and
+        # ``_ephemeral_child_sql`` re-reads it as a subagent run: the fork looks deleted after a restart.
+        # Re-written from ``state`` rather than preserved from the row, so a fork row minted before this
+        # existed gains the marker on its next save; ``_restore`` refills ``state`` from the row.
+        if state.parent_session_id:
+            session_meta["_branched_from"] = state.parent_session_id
 
+        from agent.required_context import LINEAGE_METADATA_KEY
         try:
             if db.get_session(state.session_id) is None:
                 if not state.history:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
+                # This row is born WITH history, so it is never pristine and the agent's pristine pin can
+                # never fire on it: its lineage has to be in the INSERT. A fork inherits its parent's (its
+                # turns are the parent's); anything else — a session whose own first turns got here before
+                # the agent's lazy create — starts its own lineage at the current generation.
+                if (lineage := self._persist_lineage(db, state)) is not None:
+                    session_meta[LINEAGE_METADATA_KEY] = lineage
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
+                                  parent_session_id=state.parent_session_id,
                                   model_config=session_meta, cwd=state.cwd or None)
             else:
                 try:
-                    db.update_session_meta(state.session_id, json.dumps(session_meta), model_str)
+                    # update_session_meta REPLACES model_config wholesale, and session_meta holds only
+                    # cwd/provider/base_url/api_mode — so every save used to delete the pinned lineage, and
+                    # the next turn on that session failed closed with "no pinned snapshot". Re-read the key
+                    # inside the write transaction (same contract the desktop gateway's runtime persist uses).
+                    db.update_session_meta_preserving_keys(
+                        state.session_id, session_meta, model_str, preserve_keys=(LINEAGE_METADATA_KEY,))
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
                 # The create branch above is not the live path: an agent that owns
@@ -447,8 +521,14 @@ class SessionManager:
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
+        # A restored fork keeps its parent: the next ``save_session`` rebuilds model_config from
+        # ``session_meta``, and without this the ``_branched_from`` marker would be dropped there and the
+        # fork would disappear from the listings again. Taken from the MARKER, never from the
+        # ``parent_session_id`` column: that column is also set on compression continuations and
+        # subagent runs, and stamping ``_branched_from`` onto one of those would make
+        # ``_LISTABLE_CHILD_SQL`` show it as a separate conversation beside its own parent.
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False, parent_session_id=meta.get("_branched_from"))
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

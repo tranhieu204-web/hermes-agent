@@ -106,7 +106,16 @@ class TestNoPrviateDBAccess:
         )
 
     def test_persist_calls_update_session_meta(self):
-        """AST check: _persist must call db.update_session_meta()."""
+        """AST check: _persist must update metadata through the store's public API.
+
+        ``update_session_meta_preserving_keys`` counts: it is the same public entry point, and it is the
+        one _persist has to use now. Plain ``update_session_meta`` REPLACES the model_config column
+        wholesale, and _persist only ever holds cwd/provider/base_url/api_mode — so on a session carrying
+        a pinned ``_required_context_lineage`` every save deleted it, and the session's next turn failed
+        closed with "existing session has no pinned snapshot". What this test actually guards against is
+        ``db._conn.execute()``, and both names satisfy that.
+        """
+        accepted = {"update_session_meta", "update_session_meta_preserving_keys"}
         with open("acp_adapter/session.py", encoding="utf-8") as f:
             tree = ast.parse(f.read())
 
@@ -117,13 +126,13 @@ class TestNoPrviateDBAccess:
                     if isinstance(child, ast.Call):
                         func = child.func
                         if isinstance(func, ast.Attribute):
-                            if func.attr == "update_session_meta":
+                            if func.attr in accepted:
                                 found = True
                                 break
                 break
 
         assert found, (
-            "_persist() must call db.update_session_meta() "
+            "_persist() must call db.update_session_meta_preserving_keys() (or update_session_meta) "
             "instead of db._conn.execute() directly"
         )
 

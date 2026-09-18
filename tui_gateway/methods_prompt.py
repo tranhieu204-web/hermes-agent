@@ -448,6 +448,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    from agent.required_context import RequiredContextError
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
@@ -461,6 +462,14 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
             _persist_branch_seed(session)
             _persist_submit_user_row(session, text, display_kind)
             return None
+    except RequiredContextError as exc:
+        # Not a storage fault: the seeded row refused to be born without its pinned Sakaan lineage. Say so,
+        # instead of glossing it as a disk/permission problem the user would go and "fix" for nothing.
+        logger.warning("prompt.submit: required-context lineage refused the session row: %s", exc)
+        error = _err(
+            rid, 5073,
+            f"This message was not saved: the conversation could not be pinned to a Sakaan instruction "
+            f"snapshot. Cause: {exc}. Start a new chat, or branch again from the original.")
     except Exception as exc:
         failure = describe_storage_failure(exc)
         if failure.code == "disk_full":

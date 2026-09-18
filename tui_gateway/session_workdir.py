@@ -244,6 +244,44 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     return row_model, model_config
 
 
+def _seeded_row_lineage(session: dict, db, key: str):
+    """The required-context lineage a SEEDED row must be born with, or None.
+
+    A seeded session's row is created empty and its transcript appended immediately after
+    (``_persist_branch_seed``), so by the time an agent initializes on it the row has messages and no
+    lineage — which fails closed forever. The row must therefore carry its lineage in the INSERT:
+
+    * with a parent (a branch whose eager ``_seed_branch_row`` fell back to here): the history was COPIED,
+      so it INHERITS the parent's lineage — pinning the current generation onto copied history is a lie;
+    * without a parent (a client opening a chat with its opening turns already written): that content
+      starts its own lineage, so the current generation is pinned here.
+
+    An UNSEEDED row stays pristine and is pinned by ``initialize_required_context_lineage`` instead, which
+    re-checks pristineness inside the store's own transaction — do not pre-empt it here. ``config`` is the
+    SESSION's profile config: this runs on the RPC thread, under the LAUNCH profile's ``HERMES_HOME``.
+
+    Computed ONLY for a row that does not exist yet. ``_ensure_session_db_row`` is called on every
+    ``prompt.submit`` and every dispatch, and ``session["seeded"]`` is stamped once at create and never
+    cleared — so anything resolved here unconditionally would be re-resolved on every live turn: two
+    fresh reads of the whole Sakaan generation per turn for a parentless seed (any transient pointer
+    repoint or file-change race then breaks a working chat), and, worse, a re-read of the PARENT row for
+    a branch, which raises "branch parent session has no pinned snapshot" once that parent is deleted —
+    turning every later message in a correctly pinned child into a hard error. An existing row already
+    carries whatever lineage it was born with; there is nothing to decide.
+    """
+    if not session.get("seeded"):
+        return None
+    get_session = getattr(db, "get_session", None)
+    if callable(get_session) and get_session(key) is not None:
+        return None
+    from agent.required_context import branch_lineage_metadata, config_for_profile_home, new_lineage_metadata
+    cfg = config_for_profile_home(session.get("profile_home"))
+    parent_session_id = session.get("parent_session_id")
+    if not parent_session_id:
+        return new_lineage_metadata(cfg)
+    return branch_lineage_metadata(db, parent_session_id, config=cfg)
+
+
 def _ensure_session_db_row(session: dict) -> bool:
     """Idempotently persist the session's DB row on first real activity (prompt.submit), so abandoned drafts never
     leave an empty "Untitled" session. INSERT OR IGNORE: re-calls and the AIAgent's lazy create are no-ops. Returns
@@ -271,6 +309,12 @@ def _ensure_session_db_row(session: dict) -> bool:
             # deliberately absent) — that keeps the pinned best-effort contract and stays True. See #98924.
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
+        # A seeded row's transcript lands immediately after this INSERT, so its lineage must ride the INSERT
+        # too — a row with messages and no lineage fails closed on every later turn. Raises (fail closed)
+        # rather than minting a mispinned row; the caller surfaces it as a storage error.
+        if (lineage := _seeded_row_lineage(session, db, key)) is not None:
+            from agent.required_context import LINEAGE_METADATA_KEY
+            model_config[LINEAGE_METADATA_KEY] = lineage
         try:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,

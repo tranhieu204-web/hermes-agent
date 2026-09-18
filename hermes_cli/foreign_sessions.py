@@ -247,7 +247,14 @@ def import_foreign_session(source: str, path, db=None) -> str:
     try:
         session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
-        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
+        # The turns below land immediately, so this row is never pristine and the agent-side pristine pin can
+        # never fire on it — a resume of the import would fail closed forever. The lineage rides the INSERT.
+        # It PINS the current generation rather than inheriting: these turns come from Claude Code / Codex and
+        # were never produced under any Sakaan generation, so there is no earlier lineage to falsify.
+        from agent.required_context import LINEAGE_METADATA_KEY, new_lineage_metadata
+        model_config = {LINEAGE_METADATA_KEY: lineage} if (lineage := new_lineage_metadata()) is not None else None
+        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin),
+                          model_config=model_config)
         for turn in turns:
             db.append_message(session_id, turn["role"], turn["content"])
         with contextlib.suppress(Exception):  # title is cosmetic; the import itself succeeded

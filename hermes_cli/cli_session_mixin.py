@@ -557,13 +557,25 @@ class CLISessionMixin:
             if self._session_db:
                 with contextlib.suppress(Exception):
                     self.agent._session_db_created = False
+                    model_config = {
+                        "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
+                    }
+                    # /new rotates the session id on the SAME agent: ``initialize_required_context_lineage``
+                    # does not run again, so the agent keeps the snapshot it already holds and the prompt it
+                    # rebuilds below still carries THAT generation's block. The row must therefore record the
+                    # same lineage the agent is actually using — not a freshly read pointer, which could be a
+                    # newer generation than the block in the prompt. Setting ``_session_db_created = True``
+                    # below suppresses ``_ensure_db_session``, and with it ``persist_agent_lineage``, so this
+                    # INSERT is the only chance the row ever gets to carry it.
+                    from agent.required_context import LINEAGE_METADATA_KEY
+                    if (lineage := (getattr(self.agent, "_session_init_model_config", None) or {}).get(
+                            LINEAGE_METADATA_KEY)) is not None:
+                        model_config[LINEAGE_METADATA_KEY] = lineage
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                         model=self.model,
-                        model_config={
-                            "max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
-                        })
+                        model_config=model_config)
                     self.agent._session_db_created = True
                 if title:
                     title = _apply_new_session_title(self, title)
