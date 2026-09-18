@@ -749,6 +749,53 @@ class SessionSessionsMixin:
             return value
         return self._execute_write(_do) if session_id and key else None
 
+    def pin_session_model_config_key_if_prompt_unchanged(
+        self, session_id: str, key: str, value: Any, *, expected_prompt: Optional[str] = None,
+        clear_prompt: bool = False,
+    ) -> str:
+        """Set model_config[key] only while the key is absent AND the row's RESOLVED system prompt is
+        still exactly the one the caller planned against, in ONE write transaction.
+
+        For the lineage backfill (``scripts/backfill_required_context_lineage.py``). ``expected_prompt``
+        is what the plan was computed from — ``None``/``""`` meaning "the row had no prompt at all". A
+        turn that persisted a prompt between the plan and this write is REPORTED, never written over:
+        pinning a lineage onto a prompt that does not carry its block would brick the row on its next
+        turn. ``clear_prompt`` nulls the (already verified) prompt in the same transaction, exactly as
+        ``update_session_model``/``/model`` does, so the next build re-emits it around the pinned block.
+
+        Returns ``pinned`` | ``row_missing`` | ``already_pinned`` | ``prompt_changed`` |
+        ``model_config_unparseable``; only ``pinned`` means this call wrote.
+        """
+        if not session_id or not key:
+            return "row_missing"
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT s.model_config, COALESCE(sp.prompt, s.system_prompt) FROM sessions s "
+                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash WHERE s.id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return "row_missing"
+            if (row[1] or "") != (expected_prompt or ""):
+                return "prompt_changed"
+            config = _parse_model_config(row[0])
+            if key in config:
+                return "already_pinned"
+            if not config and row[0] not in (None, "", "{}"):
+                return "model_config_unparseable"
+            config[key] = value
+            if clear_prompt:
+                conn.execute(
+                    "UPDATE sessions SET model_config = ?, system_prompt = NULL, system_prompt_hash = NULL "
+                    "WHERE id = ?", (json.dumps(config), session_id))
+                self._delete_unreferenced_system_prompts(conn)
+            else:
+                conn.execute(
+                    "UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
+            return "pinned"
+        return str(self._execute_write(_do))
+
     def update_session_meta_preserving_keys(
         self, session_id: str, model_config: Dict[str, Any], model: Optional[str] = None,
         preserve_keys: Tuple[str, ...] = (),

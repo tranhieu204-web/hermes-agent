@@ -1475,6 +1475,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return profile if profile in served else _PROFILE_REJECTED
 
     @staticmethod
+    def _request_profile_home():
+        """The profile home this request is scoped to, or ``None`` for the process's own home.
+
+        For decisions made ON A SESSION'S BEHALF (``config_for_profile_home``): a multiplexed server
+        answers several profiles from one process, so "the launch profile's config" is not the session's."""
+        profile = _api_request_profile.get()
+        if not profile:
+            return None
+        with suppress(Exception):
+            from hermes_cli.profiles import get_profile_dir
+            return get_profile_dir(profile)
+        return None
+
+    @staticmethod
     def _profile_scope(profile: Optional[str]):
         """Enter the multiplex profile runtime scope, or a no-op when unset. No prefix AND
         multiplexing active enters the DEFAULT profile's scope (an unscoped run would raise
@@ -2993,10 +3007,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
         # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
         # longer holds, and an unmarked child would vanish from default session listings.
+        # The fork copies the source's messages (and its persisted system prompt) below, so it can never
+        # pin a fresh snapshot: its required-context lineage is INHERITED in this same INSERT. A row born
+        # with history and no lineage fails closed on its first turn. v1 metadata matches the copied
+        # prompt, whose block is the parent's, so the restore check passes on the fork's first turn.
+        from agent.required_context import LINEAGE_METADATA_KEY, branch_lineage_metadata, config_for_profile_home
+        fork_model_config = {"_branched_from": source_id}
+
+        def _fork_lineage():
+            # The REQUEST's profile, resolved explicitly rather than relied on ambiently. The prefix
+            # middleware already runs this handler inside ``_profile_runtime_scope`` and ``to_thread``
+            # copies the context, so a bare read happens to resolve the same home today — but that is a
+            # property of the caller, not of this call, and the sibling branch site
+            # (``slash_commands_session.py``) threads it explicitly for exactly this reason.
+            return branch_lineage_metadata(
+                db, source_id, config=config_for_profile_home(self._request_profile_home()))
+
+        try:
+            lineage = await asyncio.to_thread(_fork_lineage)
+        except Exception as exc:
+            return _error_response(f"Cannot fork session: {exc}", 409, code="lineage_unavailable")
+        if lineage is not None:
+            fork_model_config[LINEAGE_METADATA_KEY] = lineage
         await asyncio.to_thread(
             db.create_session, fork_id, "api_server", model=source.get("model"),
             system_prompt=source.get("system_prompt"), parent_session_id=source_id,
-            model_config={"_branched_from": source_id})
+            model_config=fork_model_config)
         await asyncio.to_thread(db.end_session, source_id, "branched")
         messages = await asyncio.to_thread(db.get_messages, source_id)
         await asyncio.to_thread(db.replace_messages, fork_id, messages)

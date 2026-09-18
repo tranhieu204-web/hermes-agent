@@ -295,7 +295,14 @@ class GatewayTurnMixin:
             if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
                 return
             config["gateway_runtime"] = runtime
-            db.update_session_meta(session_id, json.dumps(config), model=model)
+            # ``config`` came from the read above, which is already stale by this write: a lineage pinned in
+            # between (the agent's own first-turn ``persist_agent_lineage``) would be written away, and the
+            # session's NEXT turn would then fail closed with "existing session has no pinned snapshot". Let
+            # the store re-read the key inside the write transaction instead — the R15 runtime-save race, in
+            # its Bot-Mode/messaging-gateway form.
+            from agent.required_context import LINEAGE_METADATA_KEY
+            db.update_session_meta_preserving_keys(
+                session_id, config, model=model, preserve_keys=(LINEAGE_METADATA_KEY,))
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 

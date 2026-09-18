@@ -222,16 +222,19 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    compensate: bool = False, title_source: str = "user") -> None:
+                    compensate: bool = False, title_source: str = "user", config=None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript or title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land."""
     # The branch copies messages, so it can never pin a fresh snapshot: it inherits the parent's lineage in this write.
+    # ``config`` is the SESSION's profile config: this runs on the RPC thread, where HERMES_HOME is still the
+    # LAUNCH profile's, so resolving the guard through load_config_readonly() would judge a secondary profile's
+    # branch by the launcher's setting (either way round: a silent no-pin, or a refusal the profile never asked for).
     from agent.required_context import LINEAGE_METADATA_KEY, branch_lineage_metadata
     model_config = {"_branched_from": parent_key}
-    if (lineage := branch_lineage_metadata(db, parent_key)) is not None:
+    if (lineage := branch_lineage_metadata(db, parent_key, config=config)) is not None:
         model_config[LINEAGE_METADATA_KEY] = lineage
     db.create_session(new_key, source=source, model=_resolve_model(), model_config=model_config,
                       parent_session_id=parent_key, cwd=cwd, profile_name=profile_name)
@@ -477,10 +480,17 @@ def _seeded_branch_parent_history(db, parent_key: str, seed: list):
 def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: list, source: str, profile_home):
     """Persist a seeded desktop branch child NOW (the one session.create exception to lazy rows): the
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
-    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback.
+    the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback,
+    EXCEPT under the required-context guard, where that fallback is not allowed to exist (see below).
     Returns the rows the child stored, else None."""
-    from agent.required_context import RequiredContextError
+    from agent.required_context import RequiredContextError, config_for_profile_home, required_context_enabled
+    cfg = None
     try:
+        # Resolved before any row work, so the fail-closed branch below cannot be skipped by a config read
+        # that fails only afterwards — but INSIDE the try: evaluated outside it, a failure other than
+        # RequiredContextError escaped session.create entirely, where base fell back, and it did so with the
+        # guard OFF too. A config that cannot be read at all raises RequiredContextError and still propagates.
+        cfg = config_for_profile_home(profile_home)
         with _session_db(record) as db:
             if db is None:
                 return None
@@ -490,7 +500,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            compensate=True, title_source="derived")
+                            compensate=True, title_source="derived", config=cfg)
             # Only a stored child adopts the parent's rows: after a compensated failure the lazy first-prompt
             # fallback re-seeds from record["history"], which must then still be the seed it can copy whole.
             if model_history is not None:
@@ -502,7 +512,22 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             return history
     except RequiredContextError:
         raise  # a lineage-less parent under the guard: the lazy fallback would pin a fresh snapshot onto copied history
-    except Exception:
+    except Exception as exc:
+        # Same reason, one step wider (F1 residual): the lazy fallback creates the child's row from the SEED, and
+        # its first-prompt path pins the CURRENT generation onto history copied from the parent — a lineage lie
+        # whatever made this write fail (a lock, a disk error, a compensated half-write). Under the guard the
+        # child inherits the parent's lineage here or it does not exist; there is no third outcome.
+        #
+        # ``cfg is None`` means the config read itself failed with something other than RequiredContextError,
+        # before any row work: nothing was written, and the lazy first-prompt path re-reads the same config
+        # and inherits the parent's lineage there (``_seeded_row_lineage``), failing closed itself if it still
+        # cannot. So that case falls back exactly as base did instead of escaping session.create.
+        if cfg is not None and required_context_enabled(cfg):
+            logger.warning("seeded-branch persistence failed for %s; refusing the lazy fallback under the "
+                           "required-context guard", key, exc_info=True)
+            raise RequiredContextError(
+                "WORKFLOW_SOURCE_UNAVAILABLE: branch child could not inherit its parent's pinned snapshot "
+                f"({exc}); retry the branch") from exc
         logger.warning("seeded-branch persistence failed for %s; falling back to lazy row creation", key,
                        exc_info=True)
     return None
@@ -515,10 +540,18 @@ def _seed_row(record: dict) -> None:
     the fallback, and it re-copies the WHOLE seed, so a partial copy is rolled back here (the compensation
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
     key = record.get("session_key")
+    from agent.required_context import RequiredContextError
     try:
         if _ensure_session_db_row(record) is False:
             return
         _persist_branch_seed(record)
+    except RequiredContextError:
+        # The row could not be born with its lineage, and the lazy fallback would give a row that already
+        # holds the seed no lineage at all — fail closed loudly instead (session.create maps it to 5008).
+        with contextlib.suppress(Exception), _session_db(record) as db:
+            if db is not None:
+                db.delete_session(key)
+        raise
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
@@ -608,16 +641,18 @@ def _(rid, params: dict) -> dict:
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     stored_history = None
-    if parent_session_id and history:
-        from agent.required_context import RequiredContextError
-        try:
+    from agent.required_context import RequiredContextError
+    try:
+        if parent_session_id and history:
             stored_history = _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
-        except RequiredContextError as exc:
-            with _sessions_lock:
-                _sessions.pop(sid, None)
-            return _err(rid, 5008, f"branch failed: {exc}")
-    elif history:
-        _seed_row(_sessions[sid])
+        elif history:
+            # A parentless seed fails closed the same way: ``_seed_row`` has already rolled its row back, and
+            # leaving the in-memory session live would hand the first prompt a lineage-less seeded row.
+            _seed_row(_sessions[sid])
+    except RequiredContextError as exc:
+        with _sessions_lock:
+            _sessions.pop(sid, None)
+        return _err(rid, 5008, f"{'branch' if parent_session_id else 'session'} failed: {exc}")
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap

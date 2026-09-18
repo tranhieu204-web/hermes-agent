@@ -1621,6 +1621,11 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             db.update_session_meta_preserving_keys(
                 session_key, model_config, model or None, preserve_keys=(LINEAGE_METADATA_KEY,))
         elif hasattr(db, "update_session_meta"):
+            # Whole-column replace on a store too old for preserve_keys: carry the lineage the row we read
+            # is holding, or this persist deletes it and the session's next turn fails closed.
+            from agent.required_context import LINEAGE_METADATA_KEY
+            if (pinned := _parse_model_config(row.get("model_config")).get(LINEAGE_METADATA_KEY)) is not None:
+                model_config = {**model_config, LINEAGE_METADATA_KEY: pinned}
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
             db.update_session_model(session_key, model)

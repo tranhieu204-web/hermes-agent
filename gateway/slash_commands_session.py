@@ -1044,6 +1044,21 @@ class GatewaySessionCommandsMixin:
         _branch_origin_json = None
         with contextlib.suppress(Exception):
             _branch_origin_json = _json.dumps((current_entry.origin or source).to_dict())
+        # The child copies the parent's transcript below, so it can never pin a fresh snapshot: its
+        # required-context lineage is INHERITED here, in the same INSERT (a row born with history and no
+        # lineage fails closed on its next turn). ``config`` is the SOURCE's profile, not the launch
+        # gateway's — a multiplexed gateway serves several profiles from one process.
+        from agent.required_context import (
+            LINEAGE_METADATA_KEY, RequiredContextError, config_for_profile_home, lineage_metadata_from_row)
+        branch_model_config = {"_branched_from": parent_session_id}
+        try:
+            lineage = lineage_metadata_from_row(
+                await self._session_db.get_session(parent_session_id),
+                config=config_for_profile_home(self._resolve_profile_home_for_source(source)))
+        except RequiredContextError as exc:
+            return t("gateway.branch.create_failed", error=exc)
+        if lineage is not None:
+            branch_model_config[LINEAGE_METADATA_KEY] = lineage
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
@@ -1052,7 +1067,7 @@ class GatewaySessionCommandsMixin:
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
-                model_config={"_branched_from": parent_session_id},
+                model_config=branch_model_config,
                 parent_session_id=parent_session_id, user_id=source.user_id,
                 session_key=session_key, chat_id=source.chat_id, chat_type=source.chat_type,
                 thread_id=source.thread_id, origin_json=_branch_origin_json,

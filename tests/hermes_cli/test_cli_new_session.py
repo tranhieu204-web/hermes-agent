@@ -297,3 +297,32 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+
+
+def test_new_session_row_records_the_agents_pinned_lineage(tmp_path):
+    """``/new`` rotates the session id on the SAME agent, so the required-context guard never
+    re-initializes: the agent keeps the snapshot already baked into its prompt. It then sets
+    ``_session_db_created = True``, which suppresses ``_ensure_db_session`` and with it
+    ``persist_agent_lineage`` for that row forever — so this INSERT is the row's only chance to
+    record a lineage, and it must record the one the agent is actually using.
+
+    Without it the new row has messages and no lineage, and resuming it fails closed with
+    ``WORKFLOW_SOURCE_UNAVAILABLE: existing session has no pinned snapshot``.
+    """
+    import json
+
+    from agent.required_context import LINEAGE_METADATA_KEY
+
+    held = {"version": 1, "generation": r"C:\gen\one", "prompt_sha256": "a" * 64, "files": []}
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.agent._session_init_model_config = {"max_iterations": 40, LINEAGE_METADATA_KEY: held}
+    cli.agent._session_db_created = True
+
+    cli.process_command("/new")
+
+    row = cli._session_db.get_session(cli.session_id)
+    assert row is not None
+    model_config = json.loads(row["model_config"])
+    assert model_config[LINEAGE_METADATA_KEY] == held
+    # The row is what a later resume reads, and the agent is still suppressed from writing it.
+    assert cli.agent._session_db_created is True
