@@ -128,6 +128,12 @@ MODEL_CONFIG_UNPARSEABLE = "model_config_unparseable"
 LEGACY_HEADER_UNRECOGNIZED = "legacy_or_unrecognized_block_header"
 LEGACY_BLOCK_MISMATCH = "block_is_not_what_that_generation_rebuilds_to"
 
+# WHICH of the three shapes a class-4 row's stale prompt is; carried inside the class-4 reason so a
+# routine clear is never reported in the same words as one dropping another generation's block.
+STALE_PROMPT_NO_BLOCK = "stale prompt carries no block"
+STALE_PROMPT_FOREIGN_BLOCK = "dropping a block from another generation"
+STALE_PROMPT_MARKERS_MALFORMED = "dropping a prompt with duplicate or unbalanced block markers"
+
 # Write-time failures.
 WRITE_REFUSED = "store_refused_the_write"
 WRITE_PROMPT_CHANGED = "row_took_a_turn_between_the_plan_and_the_write"
@@ -419,6 +425,28 @@ def _unverified_block_generation(block: str) -> str:
     return "none"
 
 
+def _stale_prompt_detail(prompt: str) -> str:
+    """WHICH of the three class-4 shapes this stale prompt is — FOR REPORTING ONLY.
+
+    ``_pinned_health`` has already decided the row, and the pinned metadata is self-verifying and
+    disk-independent, so the prompt is genuinely the stale side in all three. But class 2b names the
+    generation it drops, while class 4 folds a routine blockless prompt (the live and G1 rollback
+    shape) together with one carrying ANOTHER generation's block — a real lineage divergence a human
+    should look at — and with duplicated or unbalanced markers. Nothing here changes what is written.
+    """
+    from agent.required_context import (
+        RequiredContextError, declared_block_generation, extract_required_context_block,
+    )
+    try:
+        block = extract_required_context_block(prompt)
+    except RequiredContextError:
+        return STALE_PROMPT_MARKERS_MALFORMED
+    if block is None:
+        return STALE_PROMPT_NO_BLOCK
+    declared = declared_block_generation(block) or _unverified_block_generation(block)
+    return f"{STALE_PROMPT_FOREIGN_BLOCK}; declared generation: {declared}"
+
+
 def _plan_row(session_id: str, row: dict, current, cfg: dict, cache: dict, *, allow_clear: bool) -> Plan:
     """Classify one already-read session row into exactly one named class or blocking reason."""
     from agent.required_context import (
@@ -446,8 +474,8 @@ def _plan_row(session_id: str, row: dict, current, cfg: dict, cache: dict, *, al
             return plan(health)
         # Class 4. The lineage restores; it is the PROMPT that is stale. Clear it and leave the
         # metadata untouched, so the next build re-emits the block this row is already pinned to.
-        return plan(CLASS_PINNED_STALE_PROMPT, repair=True, expected_prompt=prompt,
-                    expected_metadata=existing)
+        return plan(f"{CLASS_PINNED_STALE_PROMPT} ({_stale_prompt_detail(prompt)})", repair=True,
+                    expected_prompt=prompt, expected_metadata=existing)
 
     if not prompt:
         # Class 1. Nothing can disagree with the metadata, and the next turn builds the prompt around
@@ -512,8 +540,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"current generation: {snapshot.generation}")
         print(f"prompt_sha256: {snapshot.prompt_sha256}")
         print(f"mode: {'APPLY (writes)' if args.apply else 'DRY RUN (no writes)'}")
-        print("class 2b/3 stale-prompt clearing: "
+        # The line an operator reads to decide whether this is the run they authorized, so it names
+        # EVERY class the flag destroys a prompt on — class 4 included, which is an already-pinned row.
+        print("class 2b/3/4 stale-prompt clearing: "
               f"{'ENABLED' if args.clear_stale_prompt else 'off (refuses)'}")
+        if args.clear_stale_prompt:
+            print("  DESTROYS the persisted prompt of: a class-2b row (a block this code cannot "
+                  "reproduce), a class-3 row (a prompt with no block), and a class-4 row that is "
+                  "ALREADY PINNED (its lineage is kept byte-identical; only the prompt is dropped)")
 
         if args.apply:
             # Both preconditions of writing, not options beside it.

@@ -751,7 +751,8 @@ def test_s4_class3_is_refused_without_the_separate_flag(db, cfg, tmp_path, monke
     assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True) == EXIT_REFUSED
     out = capsys.readouterr().out
     assert "class3_stale_prompt_without_block_needs_--clear-stale-prompt" in out
-    assert "class 2b/3 stale-prompt clearing: off (refuses)" in out
+    assert "class 2b/3/4 stale-prompt clearing: off (refuses)" in out
+    assert "DESTROYS" not in out  # the destructive detail line belongs only to a run with the flag
     assert _lineage(db, "bare-prompt") is None
     assert db.get_session("bare-prompt")["system_prompt"] == "You are Hermes."  # untouched
 
@@ -977,6 +978,68 @@ def test_sa_pinned_row_that_lost_its_block_is_repaired_with_the_flag(db, cfg, tm
     agent = _agent(db, "bricked")
     initialize_required_context_lineage(agent, config=cfg)
     assert agent._required_context_snapshot.prompt_block == snapshot.prompt_block
+
+
+def test_sa_the_banner_names_class_4_and_what_the_flag_destroys(db, cfg, tmp_path, monkeypatch, capsys):
+    """F-1. The mode banner is what an operator reads to decide whether this is the run they
+    authorized, so it must name EVERY class the flag clears a prompt on — class 4 is an already-pinned
+    row, and a header saying only "class 2b/3" would under-report the act about to happen."""
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    out = capsys.readouterr().out
+    assert "class 2b/3/4 stale-prompt clearing: ENABLED" in out
+    assert "ALREADY PINNED" in out and "lineage is kept byte-identical" in out
+
+
+def test_sa_a_class4_clear_names_the_foreign_generation_it_drops(db, cfg, tmp_path, monkeypatch, capsys):
+    """F-2, the shape a human should actually look at: the row is pinned to generation-one but its
+    prompt carries generation-two's block. Still class 4 (the pinned metadata is self-verifying, so the
+    prompt is the stale side), but the operator must be able to tell it from a routine blockless clear —
+    after the repair the only record that this conversation saw generation-two is the backup."""
+    prompt, other = _block_for(tmp_path, cfg, "generation-two")  # pointer left on generation-one
+    pinned = load_required_context_snapshot(cfg)
+    assert pinned.generation != other.generation
+    _pinned_with_prompt(db, pinned, prompt)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    out = capsys.readouterr().out
+    assert "class4_pinned_row_stale_prompt_cleared_lineage_kept " \
+           "(dropping a block from another generation; " \
+           f"declared generation: {other.generation})" in out
+    assert "stale prompt carries no block" not in out
+    assert not db.get_session("bricked")["system_prompt"]
+    assert _lineage(db, "bricked")["generation"] == pinned.generation  # not moved, only repaired
+
+
+def test_sa_a_class4_clear_names_a_malformed_marker_prompt_as_such(db, cfg, tmp_path, monkeypatch, capsys):
+    """The third shape class 4 folds in: duplicated markers. ``extract_required_context_block`` raises
+    on it exactly as the restore path does, so the row is bricked and repairable — but it is not the
+    routine blockless case and is not reported as one."""
+    from agent.required_context import append_required_context
+
+    snapshot = load_required_context_snapshot(cfg)
+    # ``append_required_context`` is idempotent, so the second copy is pasted on by hand — which is
+    # exactly how a prompt acquires duplicate markers in the first place.
+    doubled = f"{append_required_context('You are Hermes.', snapshot)}\n\n{snapshot.prompt_block}"
+    _pinned_with_prompt(db, snapshot, doubled)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    out = capsys.readouterr().out
+    assert "class4_pinned_row_stale_prompt_cleared_lineage_kept " \
+           "(dropping a prompt with duplicate or unbalanced block markers)" in out
+    assert not db.get_session("bricked")["system_prompt"]
+
+
+def test_sa_the_routine_blockless_class4_clear_says_so(db, cfg, tmp_path, monkeypatch, capsys):
+    """...and the live/G1-rollback shape keeps its own words, so the three are distinguishable."""
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    assert "class4_pinned_row_stale_prompt_cleared_lineage_kept (stale prompt carries no block)" \
+        in capsys.readouterr().out
 
 
 def test_sa_repair_keeps_the_pinned_generation_instead_of_moving_it_to_today(
