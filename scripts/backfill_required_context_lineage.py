@@ -33,6 +33,17 @@ this tool treats each differently:
   truthful fix is the class-3 one — clear the prompt so the next build re-emits it around a block
   this code owns — so it needs the same ``--clear-stale-prompt`` authorization and is refused
   without it. The output names the declared generation being dropped.
+* **Class 4 — already pinned, but the persisted prompt does not carry THAT lineage's block.** The row
+  is not stranded, it is bricked: ``_restore_existing_lineage`` rebuilds the pinned block and compares
+  it against the prompt, so every turn fails closed. Two routes reach it — a turn landing in the
+  ``--apply``→flag-flip window, and the G1 flag rollback, which clears every block-carrying prompt and
+  leaves each of those rows pinned-and-blockless for the next enable. The repair is the class-3 one
+  applied to a row that already has its lineage: clear the stale prompt and leave the metadata EXACTLY
+  as it stands — not re-pinned, not moved to today's generation — so the next build re-emits the block
+  the row is already pinned to. Same act as class 3, so the same ``--clear-stale-prompt``
+  authorization; without it the row is reported and refused, as before. A row whose pinned metadata
+  cannot be restored AT ALL is a different thing and is never repaired this way: see
+  ``PINNED_METADATA_INVALID`` below.
 * **Class 3 — a persisted prompt with NO block.** Cannot be pinned truthfully without first clearing
   the stale prompt so the next build re-emits it around the block (what ``/model`` already does via
   ``update_system_prompt(sid, None)``). That is a second, wider act, so it lives behind
@@ -56,7 +67,8 @@ Safety contract
   prompt does not carry, which then fails closed on every later turn.
 * Idempotent, and a re-run re-VERIFIES what it already pinned: an existing lineage is restored and
   checked against the row's prompt exactly as the runtime would. A pinned-but-unrestorable row is
-  reported as needing attention and exits non-zero — it is never waved through as ``already_pinned``.
+  reported as needing attention and exits non-zero — it is never waved through as ``already_pinned`` —
+  and under ``--clear-stale-prompt`` it is repaired in place (class 4) instead of only being reported.
 * Any refusal, any per-row failure, and any skip that is not simply "already pinned and healthy"
   exits non-zero.
 
@@ -67,7 +79,7 @@ Usage
     python scripts/backfill_required_context_lineage.py --db ~/.hermes/state.db \
         --backup ~/.hermes/backups/state.db.pre-lineage --apply
     ... --session-id 20260908_141233_ab12ef      # limit scope; repeatable
-    ... --clear-stale-prompt                     # classes 2b and 3 only; separately authorized
+    ... --clear-stale-prompt                     # classes 2b, 3 and 4 only; separately authorized
 """
 
 from __future__ import annotations
@@ -94,6 +106,8 @@ CLASS_NO_PROMPT = "class1_no_persisted_prompt"
 CLASS_OWN_BLOCK = "class2_prompt_block_pins_its_own_generation"
 CLASS_LEGACY_BLOCK = "class2b_legacy_block_dropped_then_pinned"
 CLASS_STALE_PROMPT = "class3_stale_prompt_cleared_then_pinned"
+# Class 4 repairs rather than pins: the lineage is already there and is left byte-identical.
+CLASS_PINNED_STALE_PROMPT = "class4_pinned_row_stale_prompt_cleared_lineage_kept"
 
 # Benign skip — the only reason that does NOT make the run exit non-zero.
 ALREADY_PINNED = "already_pinned"
@@ -102,6 +116,9 @@ ALREADY_PINNED = "already_pinned"
 CLASS_LEGACY_BLOCK_REFUSED = "class2b_block_this_code_cannot_reproduce_needs_--clear-stale-prompt"
 CLASS_STALE_PROMPT_REFUSED = "class3_stale_prompt_without_block_needs_--clear-stale-prompt"
 PINNED_BUT_UNRESTORABLE = "pinned_lineage_does_not_match_the_persisted_prompt"
+# ...repairable under --clear-stale-prompt (class 4). PINNED_METADATA_INVALID is NOT: clearing the
+# prompt would not help it, because the restore path rejects the metadata itself before it ever looks
+# at a prompt. Such a row is always reported and refused, with or without the flag.
 PINNED_METADATA_INVALID = "pinned_lineage_metadata_is_invalid"
 BLOCK_GENERATION_UNAVAILABLE = "class2_declared_generation_could_not_be_loaded"
 PROMPT_BLOCK_MALFORMED = "prompt_has_duplicate_or_unbalanced_block_markers"
@@ -115,6 +132,7 @@ LEGACY_BLOCK_MISMATCH = "block_is_not_what_that_generation_rebuilds_to"
 WRITE_REFUSED = "store_refused_the_write"
 WRITE_PROMPT_CHANGED = "row_took_a_turn_between_the_plan_and_the_write"
 WRITE_RACED = "another_writer_pinned_a_lineage_first"
+WRITE_LINEAGE_CHANGED = "the_pinned_lineage_changed_between_the_plan_and_the_write"
 
 
 class Refused(RuntimeError):
@@ -131,11 +149,19 @@ class Plan:
     metadata: Optional[dict] = None
     expected_prompt: Optional[str] = None
     clear_prompt: bool = False
+    # Class 4: clear the stale prompt and keep the lineage the row already holds, byte for byte.
+    repair: bool = False
+    expected_metadata: Optional[dict] = None
+
+    @property
+    def writes(self) -> bool:
+        """This plan intends a write — either a pin or a class-4 repair."""
+        return self.pin or self.repair
 
     @property
     def blocking(self) -> bool:
         """A skip that needs attention (i.e. anything but a healthy already-pinned row)."""
-        return not self.pin and self.reason != ALREADY_PINNED
+        return not self.writes and self.reason != ALREADY_PINNED
 
 
 def _enabled_config() -> dict:
@@ -411,7 +437,17 @@ def _plan_row(session_id: str, row: dict, current, cfg: dict, cache: dict, *, al
     # so a row whose own column is NULL but whose hash points at a stored prompt is handled here too.
     prompt = row.get("system_prompt") or ""
     if (existing := config.get(LINEAGE_METADATA_KEY)) is not None:
-        return plan(_pinned_health(existing, prompt, cfg))
+        health = _pinned_health(existing, prompt, cfg)
+        if health != PINNED_BUT_UNRESTORABLE or not allow_clear:
+            # Healthy, or a row this run may not touch: reported exactly as before. That deliberately
+            # includes PINNED_METADATA_INVALID even under the flag — clearing a prompt cannot repair
+            # metadata the restore path rejects on its own, and doing it anyway would destroy the
+            # prompt that is the only remaining evidence of what such a row actually carried.
+            return plan(health)
+        # Class 4. The lineage restores; it is the PROMPT that is stale. Clear it and leave the
+        # metadata untouched, so the next build re-emits the block this row is already pinned to.
+        return plan(CLASS_PINNED_STALE_PROMPT, repair=True, expected_prompt=prompt,
+                    expected_metadata=existing)
 
     if not prompt:
         # Class 1. Nothing can disagree with the metadata, and the next turn builds the prompt around
@@ -457,9 +493,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="limit to this session id (repeatable)")
     parser.add_argument("--clear-stale-prompt", action="store_true", dest="clear_stale_prompt",
                         help="ALSO clear a stale system prompt so the next build re-emits it (what /model "
-                             "already does): a class-3 row's blockless prompt, and a class-2b row's block "
-                             "this code cannot reproduce. Separately authorized; never implied by --apply. "
-                             "Without it class-2b and class-3 rows are refused.")
+                             "already does): a class-3 row's blockless prompt, a class-2b row's block "
+                             "this code cannot reproduce, and a class-4 row that is already pinned but "
+                             "whose prompt no longer carries its own pinned block (repaired in place, "
+                             "its lineage left byte-identical). Separately authorized; never implied by "
+                             "--apply. Without it class-2b, class-3 and class-4 rows are refused.")
     args = parser.parse_args(argv)
 
     from agent.required_context import LINEAGE_METADATA_KEY, RequiredContextError
@@ -493,7 +531,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     cache: dict[str, Any] = {}
     plans: list[Plan] = []
-    written, failed = [], []
+    written, repaired, failed = [], [], []
 
     with SessionDB(db_path=db_path) as db:
         for session_id in ids:
@@ -508,11 +546,27 @@ def main(argv: Optional[list[str]] = None) -> int:
                             reason=f"row could not be classified ({exc})")
             plans.append(plan)
             label = f"{session_id}  messages={plan.messages}  {plan.reason}"
-            if not plan.pin:
+            if not plan.writes:
                 print(f"  {'SKIP ' if plan.reason == ALREADY_PINNED else 'BLOCK'} {label}")
                 continue
             if not args.apply:
                 print(f"  PLAN  {label}")
+                continue
+            if plan.repair:
+                # Class 4: only the prompt is written. The lineage is re-checked in the same
+                # transaction and left exactly as it stands, so the row is repaired, never re-pinned.
+                status = db.clear_session_prompt_if_lineage_unchanged(
+                    session_id, LINEAGE_METADATA_KEY, plan.expected_metadata,
+                    expected_prompt=plan.expected_prompt or "")
+                if status == "cleared":
+                    repaired.append(session_id)
+                    print(f"  CLEAR {label}")
+                    continue
+                reason = {
+                    "prompt_changed": WRITE_PROMPT_CHANGED, "lineage_changed": WRITE_LINEAGE_CHANGED,
+                }.get(status, f"{WRITE_REFUSED} ({status})")
+                failed.append((session_id, reason))
+                print(f"  FAIL  {label} -> {reason}")
                 continue
             status = db.pin_session_model_config_key_if_prompt_unchanged(
                 session_id, LINEAGE_METADATA_KEY, plan.metadata,
@@ -529,9 +583,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     blocking = [(plan.session_id, plan.reason) for plan in plans if plan.blocking]
     planned = [plan for plan in plans if plan.pin]
+    repairs = [plan for plan in plans if plan.repair]
     print(
         f"\n{len(plans)} sessions examined | {len(planned)} to pin | {len(written)} pinned | "
-        f"{len(plans) - len(planned)} skipped ({len(blocking)} needing attention) | {len(failed)} failed")
+        f"{len(repairs)} to repair | {len(repaired)} repaired | "
+        f"{len(plans) - len(planned) - len(repairs)} skipped ({len(blocking)} needing attention) | "
+        f"{len(failed)} failed")
     for session_id, reason in blocking + failed:
         print(f"  needs attention: {session_id}: {reason}", file=sys.stderr)
     if failed:

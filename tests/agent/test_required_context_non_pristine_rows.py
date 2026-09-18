@@ -912,6 +912,196 @@ def test_s4_the_expected_row_count_is_the_callers_pre_copy_reading(db, cfg, tmp_
     assert backfill._session_count(path) == expected + 1
 
 
+# ── S-a class 4: a row that IS pinned but whose prompt lost that lineage's block ──────────────────
+# Reachable two ways, and it happened live on 2026-09-18: a turn landing in the --apply→flag-flip
+# window, and the G1 flag rollback, which clears every block-carrying prompt and so leaves EVERY row
+# it touched pinned-and-blockless for the next enable. Before the repair path the tool reported such a
+# row and exited 2 but could not fix it, even though clearing its stale prompt is the correct remedy.
+_STALE_PROMPT = "You are Hermes.\n\nModel: claude-opus-5\nProvider: anthropic"
+
+
+def _pinned_with_prompt(db, snapshot, prompt, session_id="bricked"):
+    """A realistic pinned row: interned prompt, real ``model_config`` JSON, v1 lineage, two turns."""
+    db.create_session(session_id, source="desktop", model="claude-opus-5",
+                      model_config={"model": "claude-opus-5", "provider": "anthropic",
+                                    "reasoning_config": {"effort": "high"},
+                                    LINEAGE_METADATA_KEY: required_context.snapshot_to_metadata(snapshot)})
+    db.append_message(session_id, role="user", content="a turn from before the rollback")
+    db.append_message(session_id, role="assistant", content="a reply from before the rollback")
+    db.update_system_prompt(session_id, prompt)
+    row = db.get_session(session_id)
+    assert row["message_count"] == 2 and row["system_prompt"] == prompt
+    # The live shape: sessions.system_prompt is write-NULL-only, the prompt is interned.
+    assert db._read_one("SELECT system_prompt FROM sessions WHERE id = ?", (session_id,))[0] is None
+    return session_id
+
+
+def _model_config_json(db, session_id):
+    return db.get_session(session_id)["model_config"]
+
+
+def test_sa_pinned_row_that_lost_its_block_is_refused_without_the_flag(db, cfg, tmp_path, monkeypatch, capsys):
+    """Unchanged behaviour without the separate authorization: reported, exit 2, nothing written."""
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+    before = _model_config_json(db, "bricked")
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True) == EXIT_REFUSED
+    assert "pinned_lineage_does_not_match_the_persisted_prompt" in capsys.readouterr().out
+    assert db.get_session("bricked")["system_prompt"] == _STALE_PROMPT
+    assert _model_config_json(db, "bricked") == before
+
+
+def test_sa_pinned_row_that_lost_its_block_is_repaired_with_the_flag(db, cfg, tmp_path, monkeypatch, capsys):
+    """The gap S-a names. With the flag the stale prompt is cleared, the lineage is left byte-identical,
+    and the row then restores and takes a normal turn around the block it was already pinned to."""
+    from agent.required_context import restore_required_context_lineage
+
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+    before = _model_config_json(db, "bricked")
+    # It really is bricked first — this is the state the repair exists for.
+    with pytest.raises(RequiredContextError, match="persisted prompt integrity is invalid"):
+        initialize_required_context_lineage(_agent(db, "bricked"), config=cfg)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    out = capsys.readouterr().out
+    assert "class4_pinned_row_stale_prompt_cleared_lineage_kept" in out and "CLEAR" in out
+    assert not db.get_session("bricked")["system_prompt"]
+    # Byte-identical: the repair writes the prompt columns only and never rewrites model_config.
+    assert _model_config_json(db, "bricked") == before
+
+    # ...and the row now passes both the restore and the block-integrity check the runtime applies.
+    assert restore_required_context_lineage(
+        _lineage(db, "bricked"), config=cfg).prompt_block == snapshot.prompt_block
+    agent = _agent(db, "bricked")
+    initialize_required_context_lineage(agent, config=cfg)
+    assert agent._required_context_snapshot.prompt_block == snapshot.prompt_block
+
+
+def test_sa_repair_keeps_the_pinned_generation_instead_of_moving_it_to_today(
+    db, cfg, tmp_path, monkeypatch, capsys,
+):
+    """A repair is not a re-pin: the row keeps the generation its conversation actually saw, even
+    though the pointer now names a different one."""
+    _generation(tmp_path, "generation-two")
+    other = load_required_context_snapshot(cfg)  # the pointer is on generation-two right now
+    _generation(tmp_path)  # ...and back to generation-one, which this row must NOT be moved to
+    current = load_required_context_snapshot(cfg)
+    assert other.generation != current.generation
+    _pinned_with_prompt(db, other, _STALE_PROMPT)
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    lineage = _lineage(db, "bricked")
+    assert lineage["generation"] == other.generation and lineage["prompt_sha256"] == other.prompt_sha256
+    agent = _agent(db, "bricked")
+    initialize_required_context_lineage(agent, config=cfg)
+    assert agent._required_context_snapshot.prompt_block == other.prompt_block
+
+
+def test_sa_a_healthy_pinned_row_is_untouched_even_with_the_flag(db, cfg, tmp_path, monkeypatch, capsys):
+    """The flag must not widen what happens to a row whose prompt DOES carry its own pinned block."""
+    from agent.required_context import append_required_context
+
+    snapshot = load_required_context_snapshot(cfg)
+    prompt = append_required_context("You are Hermes.", snapshot)
+    _pinned_with_prompt(db, snapshot, prompt, session_id="healthy")
+    before = _model_config_json(db, "healthy")
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    out = capsys.readouterr().out
+    assert "already_pinned" in out and "0 to repair" in out
+    assert db.get_session("healthy")["system_prompt"] == prompt  # its prompt is not a stale one
+    assert _model_config_json(db, "healthy") == before
+
+
+def test_sa_invalid_pinned_metadata_is_never_repaired_by_clearing_a_prompt(
+    db, cfg, tmp_path, monkeypatch, capsys,
+):
+    """The decision this repair rests on: metadata the restore path rejects on its own is NOT class 4.
+    Clearing the prompt could not fix it — ``_restore_existing_lineage`` fails on the metadata before it
+    ever looks at a prompt — and would destroy the only surviving record of what the row carried. So it
+    stays reported and refused, with the flag exactly as without it."""
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT, session_id="corrupt")
+    corrupted = _row_config(db, "corrupt")
+    corrupted[LINEAGE_METADATA_KEY]["files"][0]["sha256"] = "0" * 64  # a digest that cannot verify
+    db.update_session_meta("corrupt", json.dumps(corrupted))
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) \
+        == EXIT_REFUSED
+    out = capsys.readouterr().out
+    assert "pinned_lineage_metadata_is_invalid" in out and "0 to repair" in out
+    assert db.get_session("corrupt")["system_prompt"] == _STALE_PROMPT  # untouched
+    assert _lineage(db, "corrupt") == corrupted[LINEAGE_METADATA_KEY]
+
+
+def test_sa_repair_is_idempotent_on_a_rerun(db, cfg, tmp_path, monkeypatch, capsys):
+    """A repaired row has no prompt at all on the second pass, which is the healthy no-prompt shape."""
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"]) == 0
+    after_first = _model_config_json(db, "bricked")
+    capsys.readouterr()
+
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True, extra=["--clear-stale-prompt"],
+                         backup=tmp_path / "backup2" / "state.db.bak") == 0
+    out = capsys.readouterr().out
+    assert "already_pinned" in out and "0 to pin" in out and "0 to repair" in out
+    assert _model_config_json(db, "bricked") == after_first
+
+
+def test_sa_repair_refuses_a_row_that_took_a_turn_between_the_plan_and_the_write(
+    db, cfg, tmp_path, monkeypatch, capsys,
+):
+    """The same plan→write race the class-1/2/3 writes already guard: the prompt is re-read inside the
+    write transaction, so a turn landing in between is reported instead of having its prompt dropped."""
+    import scripts.backfill_required_context_lineage as backfill
+
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+    real_plan = backfill._plan_row
+
+    def _plan_then_a_turn_lands(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        db.update_system_prompt("bricked", "You are Hermes.\n\nA later turn wrote this.")
+        return plan
+
+    monkeypatch.setattr(backfill, "_plan_row", _plan_then_a_turn_lands)
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True,
+                         extra=["--clear-stale-prompt"]) == backfill.EXIT_ROW_FAILED
+    assert "row_took_a_turn_between_the_plan_and_the_write" in capsys.readouterr().out
+    assert db.get_session("bricked")["system_prompt"] == "You are Hermes.\n\nA later turn wrote this."
+
+
+def test_sa_repair_refuses_a_row_whose_lineage_changed_between_the_plan_and_the_write(
+    db, cfg, tmp_path, monkeypatch, capsys,
+):
+    """The half only the repair has: it plans against a lineage it must NOT rewrite, so the write also
+    re-reads that lineage and refuses rather than clearing a prompt another writer has since re-pinned."""
+    import scripts.backfill_required_context_lineage as backfill
+
+    _generation(tmp_path, "generation-two")
+    other = load_required_context_snapshot(cfg)
+    _generation(tmp_path)
+    snapshot = load_required_context_snapshot(cfg)
+    _pinned_with_prompt(db, snapshot, _STALE_PROMPT)
+    real_plan = backfill._plan_row
+
+    def _plan_then_a_repin_lands(*args, **kwargs):
+        plan = real_plan(*args, **kwargs)
+        db.patch_session_model_config(
+            "bricked", {LINEAGE_METADATA_KEY: required_context.snapshot_to_metadata(other)})
+        return plan
+
+    monkeypatch.setattr(backfill, "_plan_row", _plan_then_a_repin_lands)
+    assert _run_backfill(db, cfg, tmp_path, monkeypatch, apply=True,
+                         extra=["--clear-stale-prompt"]) == backfill.EXIT_ROW_FAILED
+    assert "the_pinned_lineage_changed_between_the_plan_and_the_write" in capsys.readouterr().out
+    assert db.get_session("bricked")["system_prompt"] == _STALE_PROMPT  # not cleared under the new pin
+    assert _lineage(db, "bricked")["generation"] == other.generation
+
+
 # ── helpers shared with the guard's own contract ──────────────────────────────────────────────────
 def test_new_lineage_metadata_is_v1_and_off_when_disabled(cfg, off_cfg):
     assert new_lineage_metadata(off_cfg) is None

@@ -819,6 +819,52 @@ class SessionSessionsMixin:
             return "pinned"
         return str(self._execute_write(_do))
 
+    def clear_session_prompt_if_lineage_unchanged(
+        self, session_id: str, key: str, expected: Any, *, expected_prompt: str,
+    ) -> str:
+        """Null the row's stored system prompt while model_config[key] is still EXACTLY ``expected``
+        AND the row's RESOLVED prompt is still exactly ``expected_prompt``, in ONE write transaction.
+
+        The repair half of the lineage backfill (``scripts/backfill_required_context_lineage.py``), for a
+        row that IS pinned but whose persisted prompt no longer carries that lineage's block — the state
+        the ``--apply``→flag-flip window and the G1 flag rollback both leave behind. Clearing the prompt
+        is the whole repair: the restore path's no-prompt branch then rebuilds around the pinned block.
+        ``model_config`` is deliberately NOT rewritten, so the pinned lineage stays byte-identical — this
+        never re-pins a row, never moves its generation, and never resurrects a key another writer dropped.
+
+        Both preconditions are re-read HERE rather than trusted from the plan: a row that took a turn, or
+        whose lineage another writer replaced, in between is REPORTED, never written over.
+
+        Returns ``cleared`` | ``row_missing`` | ``nothing_to_clear`` | ``prompt_changed`` |
+        ``lineage_changed``; only ``cleared`` means this call wrote.
+        """
+        if not session_id or not key:
+            return "row_missing"
+        if not expected_prompt:
+            # A repair only ever clears a prompt that is actually there; "" would make this a no-op
+            # write whose success would wrongly read as "the stale prompt is gone".
+            return "nothing_to_clear"
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT s.model_config, COALESCE(sp.prompt, s.system_prompt) FROM sessions s "
+                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash WHERE s.id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return "row_missing"
+            if (row[1] or "") != expected_prompt:
+                return "prompt_changed"
+            config = _parse_model_config(row[0])
+            if key not in config or config[key] != expected:
+                return "lineage_changed"
+            conn.execute(
+                "UPDATE sessions SET system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
+                (session_id,))
+            self._delete_unreferenced_system_prompts(conn)
+            return "cleared"
+        return str(self._execute_write(_do))
+
     def update_session_meta_preserving_keys(
         self, session_id: str, model_config: Dict[str, Any], model: Optional[str] = None,
         preserve_keys: Tuple[str, ...] = (),
