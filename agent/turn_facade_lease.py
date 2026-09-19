@@ -218,9 +218,9 @@ class TurnLeaseAdmission:
     conversation_history: Optional[List[Dict[str, Any]]] = None
 
 
-def _durable_session_exists(db, session_id: str) -> bool:
+def _durable_session_exists(db, session_id: str, agent=None) -> bool:
     try:
-        return db.get_session(session_id) is not None
+        row = db.get_session(session_id)
     except Exception:
         # A locked / non-WAL read is not proof the row is absent; treating probe failure as "fresh"
         # ran fail-open at the exact contention point. Acquire, or fail closed.
@@ -233,6 +233,13 @@ def _durable_session_exists(db, session_id: str) -> bool:
             exc_info=True,
         )
         return True
+    if agent is not None:
+        # These bytes are the only row read a steady-state turn makes, so the required-context persist
+        # latch re-checks its pin from them rather than paying a read of its own. A row deleted and
+        # recreated lineage-less under the same id would otherwise keep that latch armed.
+        from agent.required_context import invalidate_persisted_lineage_latch
+        invalidate_persisted_lineage_latch(agent, row)
+    return row is not None
 
 
 def admit_durable_turn_lease(
@@ -253,7 +260,7 @@ def admit_durable_turn_lease(
     # MagicMock-style shims accept any attribute without the protocol.
     if (
         getattr(agent, "_persist_disabled", False)
-        or not _durable_session_exists(db, session_id)
+        or not _durable_session_exists(db, session_id, agent)
         or not callable(getattr(type(db), "acquire_session_turn_lease", None))
     ):
         return admission

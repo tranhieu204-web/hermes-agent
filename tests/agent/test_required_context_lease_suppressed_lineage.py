@@ -315,6 +315,58 @@ def test_unparseable_model_config_still_fails_closed(db, cfg, monkeypatch):
         lease.release()
 
 
+def test_unreadable_pinned_lineage_value_still_fails_closed(db, cfg, monkeypatch):
+    """The column decodes but the PIN under the key does not, so the store hands back a non-Mapping
+    for a row that is present. That is corruption, not a race: the create path has always refused it
+    and the merge path must too, rather than run the turn against a pin it cannot read."""
+    agent, _pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    corrupt = _row_config(db)
+    corrupt[LINEAGE] = "generation-one"  # a bare string where the lineage mapping belongs
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(corrupt), KEY)))
+
+    lease = _admit(agent, monkeypatch)
+    try:
+        with pytest.raises(RequiredContextError, match="unreadable pinned lineage"):
+            _turn_start_row_write(agent)
+        assert _row_config(db)[LINEAGE] == "generation-one"  # never replaced
+        with pytest.raises(RequiredContextError, match="unreadable pinned lineage"):
+            _turn_start_row_write(agent)  # no latch on a failed merge
+    finally:
+        lease.release()
+
+
+def test_row_deleted_then_recreated_lineage_less_is_repinned_not_latched(db, cfg, monkeypatch):
+    """FAILS ON BASE (and on the latch without its invalidator): a mid-life delete followed by a
+    lineage-less recreate under the same id must not be covered by the confirmed-merge latch.
+
+    The desktop sidebar can delete a session while another window still holds the agent; the next
+    ``prompt.submit`` recreates the id through INSERT-OR-IGNORE with no metadata. A still-armed latch
+    would persist this agent's block-carrying prompt onto that row with no pin — the incident shape.
+    """
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    lease = _admit(agent, monkeypatch)
+    try:
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+    assert _row_config(db)[LINEAGE] == pinned  # turn 1 merged and latched
+
+    assert db.delete_session(KEY) is True
+    assert db.get_session(KEY) is None
+    _desktop_row(db, monkeypatch)  # recreated under the same id, lineage-less
+    assert LINEAGE not in _row_config(db)
+
+    lease = _admit(agent, monkeypatch)  # the lease's own row read clears the stale latch
+    try:
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+    assert _row_config(db)[LINEAGE] == pinned  # re-pinned, so the next agent can restore
+
+
 def test_no_store_call_when_the_agent_pinned_nothing(db, monkeypatch):
     """required_context disabled: the suppressed path must stay free of DB work."""
     disabled = {"required_context": {"enabled": False}}

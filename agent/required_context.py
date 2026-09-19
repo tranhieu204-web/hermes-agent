@@ -509,11 +509,38 @@ def persist_agent_lineage(agent: Any) -> None:
 
 
 def _lineage_identity(metadata: Any) -> str:
-    """A hashable identity for pinned metadata; any decode trouble yields a value that never matches."""
+    """A stable identity string for pinned metadata, used only to key the per-turn persist latch.
+
+    The fallback is ``repr``, which is deterministic for the same object and so still arms the latch
+    after an encode failure — that is fine here: the latch's job is to skip a *confirmed* merge, and
+    the merge that confirmed it already compared the row's own fields."""
     try:
         return json.dumps(metadata, sort_keys=True, default=repr)
     except (TypeError, ValueError):
         return repr(metadata)
+
+
+def invalidate_persisted_lineage_latch(agent: Any, row: Any) -> None:
+    """Drop the persist latch unless ``row`` still proves it holds this agent's pinned lineage.
+
+    :func:`persist_agent_lineage` latches one confirmed merge per ``(session_id, lineage)``, so turns
+    2..N cost no store call. The latch is memory-only, and the row underneath it can lose the lineage:
+    a mid-life delete (desktop sidebar, while another window holds the agent) followed by
+    ``tui_gateway/session_workdir.py::_ensure_session_db_row`` — INSERT-OR-IGNORE, lineage-less for any
+    non-seeded session — recreates the id with no metadata. A still-armed latch would then persist a
+    block-carrying prompt onto a row with no pin: exactly the incident this module exists to prevent.
+
+    The turn lease already reads the row every turn (``turn_facade_lease.py::_durable_session_exists``),
+    so re-checking the key from those same bytes costs nothing. Clearing is always the safe direction:
+    it only re-arms the merge, which re-pins an absent key and raises on a genuinely divergent one."""
+    latch = getattr(agent, "_required_context_lineage_persisted", None)
+    if latch is None:
+        return
+    if isinstance(row, Mapping):
+        pinned = _model_config(row).get(_METADATA_KEY)
+        if pinned is not None and latch == (agent.session_id, _lineage_identity(pinned)):
+            return
+    agent._required_context_lineage_persisted = None
 
 
 def _no_mapping_reason(session_db: Any, session_id: str) -> Exception:
@@ -541,6 +568,13 @@ def _no_mapping_reason(session_db: Any, session_id: str) -> Exception:
     raw = row.get("model_config")
     if not _model_config(row) and not isinstance(raw, Mapping) and raw not in (None, "", "{}"):
         return _fail("session row model_config is unreadable; start a new lineage")
+    # A decodable column can still hold an undecodable PIN: the store returns config[key] whatever
+    # its type (``hermes_state_sessions.py:743-744``), so ``null`` / ``"x"`` / ``[...]`` under the key
+    # lands here with the column parsing fine. That is a corrupt row, not a race — the create path
+    # has always refused it, so the merge path must too rather than run the turn against a bad pin.
+    pinned = _model_config(row).get(_METADATA_KEY)
+    if pinned is not None and not isinstance(pinned, Mapping):
+        return _fail("session row holds an unreadable pinned lineage; start a new lineage")
     # The row exists and parses: it appeared (or was re-pinned) after the merge read a missing row.
     return RequiredContextRowUnavailable(f"session row {session_id} changed during the merge")
 
@@ -726,9 +760,11 @@ LINEAGE_METADATA_KEY = _METADATA_KEY
 
 __all__ = [
     "LINEAGE_METADATA_KEY", "REQUIRED_CONTEXT_BEGIN", "REQUIRED_CONTEXT_END", "RequiredContextCapacityError",
-    "RequiredContextError", "RequiredContextFile", "RequiredContextSnapshot",
+    "RequiredContextError", "RequiredContextFile", "RequiredContextRowUnavailable",
+    "RequiredContextSnapshot",
     "adopt_current_generation", "append_required_context", "branch_lineage_metadata",
     "config_for_profile_home", "declared_block_generation", "extract_required_context_block",
+    "invalidate_persisted_lineage_latch",
     "lineage_metadata_from_row", "new_lineage_metadata",
     "initialize_required_context_lineage", "load_generation_snapshot",
     "load_required_context_snapshot", "persist_agent_lineage",
