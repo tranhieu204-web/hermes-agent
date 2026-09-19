@@ -13,9 +13,15 @@ persisted prompt, no ``_required_context_lineage`` in ``model_config``, so the n
 Everything here drives the real functions (``admit_durable_turn_lease``,
 ``turn_context._ensure_session_row`` → ``AIAgent._ensure_db_session``) against a real
 ``SessionDB``.
+
+The suppressed branch runs on every turn, so its failure paths are pinned here too: the row the
+flag promised may not exist (a fail-closed durability probe, a mid-life delete) and that must not
+abort the turn, while a row whose ``model_config`` cannot be decoded must; and the confirmed merge
+latches per ``(session_id, lineage)`` so a steady-state turn costs no write transaction.
 """
 
 import json
+import sqlite3
 import threading
 from types import SimpleNamespace
 
@@ -210,8 +216,9 @@ def test_foreign_lineage_on_the_row_still_aborts_the_turn(db, cfg, monkeypatch, 
         lease.release()
 
 
-def test_same_lineage_is_a_no_op_and_writes_nothing(db, cfg, monkeypatch):
-    """A row that already holds the SAME lineage takes no UPDATE, on this turn or the next."""
+def test_same_lineage_writes_once_then_latches_until_the_session_id_changes(db, cfg, monkeypatch):
+    """One confirmed merge per (session, lineage): later turns of the same session cost no write
+    transaction, and a rotation/adoption/resume-id switch re-arms the check."""
     agent, pinned = _init_before_the_row_exists(db, cfg)
     _desktop_row(db, monkeypatch)
     lease = _admit(agent, monkeypatch)
@@ -222,16 +229,90 @@ def test_same_lineage_is_a_no_op_and_writes_nothing(db, cfg, monkeypatch):
         original = type(db).set_session_model_config_key_if_absent
         monkeypatch.setattr(
             type(db), "set_session_model_config_key_if_absent",
-            lambda self, sid, key, value: (writes.append(key), original(self, sid, key, value))[1],
+            lambda self, sid, key, value: (writes.append(sid), original(self, sid, key, value))[1],
         )
         _turn_start_row_write(agent)
+        _turn_start_row_write(agent)
+        assert writes == []  # latched: no store call at all on the steady-state turns
+        assert db.get_session(KEY)["model_config"] == after_first  # byte-identical row
+
+        # The lease's post-wait resume-id switch / compression rotation repoints agent.session_id.
+        rotated = f"{KEY}:rotated"
+        db.create_session(session_id=rotated, source="desktop", model="grok-4.6")
+        agent.session_id = rotated
         _turn_start_row_write(agent)
     finally:
         lease.release()
 
-    assert writes == [LINEAGE, LINEAGE]  # idempotent set-if-absent stays the only write path
-    assert db.get_session(KEY)["model_config"] == after_first  # byte-identical row
+    assert writes == [rotated]  # the new session row is checked and pinned, exactly once
+    assert json.loads(db.get_session(rotated)["model_config"])[LINEAGE] == pinned
     assert _row_config(db)[LINEAGE] == pinned
+
+
+# --- The failure paths the suppressed branch newly makes reachable. ---
+
+
+def test_absent_row_does_not_abort_the_turn_and_the_next_turn_recovers(db, cfg):
+    """``_session_db_created`` True with the row ABSENT — what a failed durability probe or a
+    mid-life row delete leaves behind. It must not be reported as a lineage conflict."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    agent._session_db_created = True  # the row was promised, but it is not there
+    assert db.get_session(KEY) is None
+
+    _turn_start_row_write(agent)  # must NOT raise: absent is not a conflict
+    assert db.get_session(KEY) is None  # and nothing was resurrected
+
+    # The row then appears (desktop prompt.submit, or the create path retrying) — the next turn pins.
+    db.create_session(session_id=KEY, source="desktop", model="grok-4.6")
+    _turn_start_row_write(agent)
+    assert _row_config(db)[LINEAGE] == pinned
+
+
+def test_failed_durability_probe_leaves_a_turn_that_still_runs(db, cfg, monkeypatch):
+    """The reachable route into the state above: ``_durable_session_exists`` fails closed on a
+    raised probe and suppresses the create for a row that does not exist."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    original = type(db).get_session
+
+    def _ioerr(self, *args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(type(db), "get_session", _ioerr)
+    admission = admit_durable_turn_lease(
+        agent, session_id=KEY, relay_turn_id=f"{KEY}:t:abcd",
+        task_context={"session_id": KEY, "task_id": "t", "platform": "desktop"},
+        conversation_history=None,
+    )
+    try:
+        assert agent._session_db_created is True  # fail-closed probe suppressed the create
+        _turn_start_row_write(agent)  # must NOT raise, with the store still failing
+    finally:
+        if admission.lease is not None:
+            admission.lease.release()
+        monkeypatch.setattr(type(db), "get_session", original)
+
+    db.create_session(session_id=KEY, source="desktop", model="grok-4.6")
+    _turn_start_row_write(agent)
+    assert _row_config(db)[LINEAGE] == pinned
+
+
+def test_unparseable_model_config_still_fails_closed(db, cfg, monkeypatch):
+    """The other state the store reports as None: a row whose model_config cannot be decoded is
+    never written over, and must still abort the turn."""
+    agent, _pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET model_config = ? WHERE id = ?", ("{not json", KEY)))
+
+    lease = _admit(agent, monkeypatch)
+    try:
+        with pytest.raises(RequiredContextError, match="model_config is unreadable"):
+            _turn_start_row_write(agent)
+        assert db.get_session(KEY)["model_config"] == "{not json"  # never replaced
+        with pytest.raises(RequiredContextError, match="model_config is unreadable"):
+            _turn_start_row_write(agent)  # no latch on a failed merge
+    finally:
+        lease.release()
 
 
 def test_no_store_call_when_the_agent_pinned_nothing(db, monkeypatch):

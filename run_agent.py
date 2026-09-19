@@ -347,7 +347,10 @@ class AIAgent(
             # _session_init_model_config, and the block it already put in the prompt would then
             # have no metadata to restore from on the next turn (#observed 20260918_191006_5cd313).
             # set_session_model_config_key_if_absent stays the only write: a matching lineage takes
-            # no UPDATE, and a different one still raises before any provider call.
+            # no UPDATE (and latches, so this costs nothing on later turns), and a different one
+            # still raises before any provider call. A row the flag promised but that is not there
+            # — a failed durability probe, a mid-life delete — raises RequiredContextRowUnavailable
+            # instead and lands in the warn-and-retry arm below: absent is not a conflict.
             try:
                 persist_agent_lineage(self)
             except RequiredContextError:

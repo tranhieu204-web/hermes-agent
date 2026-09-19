@@ -35,6 +35,14 @@ class RequiredContextCapacityError(RequiredContextError):
     pass
 
 
+class RequiredContextRowUnavailable(RuntimeError):
+    """The session row was not there to merge the lineage into, so nothing could be persisted.
+
+    Deliberately NOT a :class:`RequiredContextError`: callers re-raise that one to abort the turn
+    before any provider call, and an absent row is not a lineage conflict. It is the same class of
+    transient miss as a locked store — warn, and retry on the next turn."""
+
+
 @dataclass(frozen=True)
 class RequiredContextFile:
     path: str
@@ -477,14 +485,64 @@ def persist_agent_lineage(agent: Any) -> None:
     metadata = init_config.get(_METADATA_KEY) if isinstance(init_config, Mapping) else None
     if metadata is None:
         return
-    merge = getattr(getattr(agent, "_session_db", None), "set_session_model_config_key_if_absent", None)
+    session_db = getattr(agent, "_session_db", None)
+    merge = getattr(session_db, "set_session_model_config_key_if_absent", None)
     if not callable(merge):
         return
+    # One confirmed merge per (session, lineage) is exactly what the create path has always done —
+    # it checks once, at create, and never again for the life of the agent. Turn start calls this
+    # twice per turn (_ensure_session_row and _persist_turn_start), so without the latch every
+    # session pays two write transactions per turn forever. Rotation, adoption and the lease's
+    # post-wait resume-id switch all change agent.session_id, and a re-pin changes the metadata, so
+    # either re-arms the check. A failed merge never latches.
+    latch = (agent.session_id, _lineage_identity(metadata))
+    if getattr(agent, "_required_context_lineage_persisted", None) == latch:
+        return
     stored = merge(agent.session_id, _METADATA_KEY, metadata)
-    if not isinstance(stored, Mapping) or not isinstance(metadata, Mapping) or any(
+    if not isinstance(stored, Mapping):
+        raise _no_mapping_reason(session_db, agent.session_id)
+    if not isinstance(metadata, Mapping) or any(
         stored.get(field) != metadata.get(field) for field in ("generation", "prompt_sha256")
     ):
         raise _fail("session row holds a different pinned lineage; start a new lineage")
+    agent._required_context_lineage_persisted = latch
+
+
+def _lineage_identity(metadata: Any) -> str:
+    """A hashable identity for pinned metadata; any decode trouble yields a value that never matches."""
+    try:
+        return json.dumps(metadata, sort_keys=True, default=repr)
+    except (TypeError, ValueError):
+        return repr(metadata)
+
+
+def _no_mapping_reason(session_db: Any, session_id: str) -> Exception:
+    """Why ``set_session_model_config_key_if_absent`` returned no Mapping.
+
+    The store collapses two unrelated states into ``None`` (``hermes_state_sessions.py:740-746``):
+    the row is MISSING, and the row's non-empty ``model_config`` is UNPARSEABLE (never replaced).
+    Only the second is a corrupt row worth aborting the turn for. A missing row is what the turn
+    lease's deliberately fail-closed durability probe leaves behind (``turn_facade_lease.py:216-230``
+    returns True on a raised probe, then sets ``_session_db_created``) and what a mid-life row delete
+    produces; reporting either as a lineage conflict would abort the turn with a false diagnosis.
+
+    Read the row back to tell them apart, deciding from the row's own bytes rather than a second
+    merge, so a row created between the merge and this read is diagnosed as a race (retry next turn),
+    never as corruption. An unreadable store is "unavailable", not corrupt: a locked or IOERR-ing
+    read is exactly the contention that must not kill a turn."""
+    try:
+        row = session_db.get_session(session_id) if session_db is not None else None
+    except Exception as exc:
+        return RequiredContextRowUnavailable(f"session row {session_id} could not be read: {exc}")
+    if row is None:
+        return RequiredContextRowUnavailable(f"session row {session_id} does not exist")
+    if not isinstance(row, Mapping):
+        return RequiredContextRowUnavailable(f"session row {session_id} is not readable as a mapping")
+    raw = row.get("model_config")
+    if not _model_config(row) and not isinstance(raw, Mapping) and raw not in (None, "", "{}"):
+        return _fail("session row model_config is unreadable; start a new lineage")
+    # The row exists and parses: it appeared (or was re-pinned) after the merge read a missing row.
+    return RequiredContextRowUnavailable(f"session row {session_id} changed during the merge")
 
 
 def lineage_metadata_from_row(
