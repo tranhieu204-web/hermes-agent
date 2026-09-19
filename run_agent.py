@@ -336,10 +336,26 @@ class AIAgent(
 
     def _ensure_db_session(self) -> None:
         """Create the session DB row on first use; a transient failure leaves it to retry next turn."""
-        if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
+        if getattr(self, "_persist_disabled", False) or not self._session_db:
+            return
+        from agent.required_context import RequiredContextError, persist_agent_lineage
+        if self._session_db_created:
+            # The row exists, but this agent may never have written it: the turn lease
+            # (agent/turn_facade_lease.py) sets the flag for a row someone else created, so the
+            # create below — the only other caller of persist_agent_lineage — never runs. An agent
+            # initialized before its row existed holds the lineage only in
+            # _session_init_model_config, and the block it already put in the prompt would then
+            # have no metadata to restore from on the next turn (#observed 20260918_191006_5cd313).
+            # set_session_model_config_key_if_absent stays the only write: a matching lineage takes
+            # no UPDATE, and a different one still raises before any provider call.
+            try:
+                persist_agent_lineage(self)
+            except RequiredContextError:
+                raise
+            except Exception as e:
+                logger.warning("Session lineage persistence failed (will retry next turn): %s", e)
             return
         source = _session_source_for_agent(self.platform)
-        from agent.required_context import RequiredContextError, persist_agent_lineage
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.

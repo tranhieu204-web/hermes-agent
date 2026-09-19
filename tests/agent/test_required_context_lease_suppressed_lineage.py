@@ -1,0 +1,257 @@
+"""Lineage must survive the turn lease suppressing the agent's row create.
+
+``admit_durable_turn_lease`` sets ``agent._session_db_created = True`` once it has proven the
+durable row exists ("suppress the redundant create attempt"). ``AIAgent._ensure_db_session``
+returns immediately on that flag, and ``persist_agent_lineage`` used to be reachable ONLY from
+inside that create. So an agent that initialized while the row did not yet exist — it holds the
+lineage only in ``_session_init_model_config`` — and whose row then appeared before the turn ran
+(desktop ``prompt.submit`` / ``_ensure_session_db_row``) wrote its prompt block but never its
+lineage. Observed live on session ``20260918_191006_5cd313``: required-context block in the
+persisted prompt, no ``_required_context_lineage`` in ``model_config``, so the next turn's
+``_restore_existing_lineage`` would hard-fail.
+
+Everything here drives the real functions (``admit_durable_turn_lease``,
+``turn_context._ensure_session_row`` → ``AIAgent._ensure_db_session``) against a real
+``SessionDB``.
+"""
+
+import json
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+import agent.required_context as required_context
+from agent import turn_context
+from agent.required_context import (
+    RequiredContextError,
+    append_required_context,
+    initialize_required_context_lineage,
+)
+from agent.turn_facade_lease import admit_durable_turn_lease
+from hermes_state import SessionDB
+
+FILES = [
+    "sakaan-workflow.md",
+    "GRANTS.md",
+    "ROUTING.md",
+    "procedures/hardened-review.md",
+    "Sakaan-crew.md",
+]
+KEY = "agent:main:desktop:dm:lease-lineage"
+LINEAGE = required_context.LINEAGE_METADATA_KEY
+
+
+@pytest.fixture(autouse=True)
+def _canonical_trust_root(tmp_path, monkeypatch):
+    root = tmp_path / ".sakaan"
+    root.mkdir()
+    monkeypatch.setattr(required_context, "_CANONICAL_SAKAAN_ROOT", root)
+    monkeypatch.setattr(required_context, "_CANONICAL_POINTER", root / "current.txt")
+    monkeypatch.setattr(required_context, "_CANONICAL_GENERATIONS_ROOT", root / "generations")
+
+
+def _generation(tmp_path, name, marker):
+    generation = tmp_path / ".sakaan" / "generations" / name
+    for path in FILES:
+        target = generation / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(f"{marker}:{path}\n".encode("utf-8"))
+    return generation
+
+
+@pytest.fixture()
+def cfg(tmp_path):
+    generation = _generation(tmp_path, "generation-one", "one")
+    pointer = tmp_path / ".sakaan" / "current.txt"
+    pointer.write_text(str(generation), encoding="utf-8")
+    return {"required_context": {"enabled": True, "pointer": str(pointer), "files": FILES}}
+
+
+@pytest.fixture()
+def db(tmp_path):
+    store = SessionDB(db_path=tmp_path / "state.db")
+    yield store
+    store.close()
+
+
+def _desktop_row(db, monkeypatch):
+    """Create the row exactly as desktop ``prompt.submit`` does, through the real gateway helper."""
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+    assert server._ensure_session_db_row({
+        "session_key": KEY,
+        "source": "desktop",
+        "model_override": {"model": "grok-4.6", "provider": "xai"},
+    }) is True
+    row = db.get_session(KEY)
+    assert row is not None and not row.get("system_prompt") and row["message_count"] == 0
+    assert LINEAGE not in json.loads(row["model_config"])
+
+
+def _agent(db):
+    """An agent whose row write is the real ``AIAgent._ensure_db_session``, able to take a lease."""
+    from run_agent import AIAgent
+
+    agent = SimpleNamespace(
+        session_id=KEY, _session_db=db, _session_init_model_config={"max_tokens": None},
+        platform="desktop", model="grok-4.6", _cached_system_prompt=None, _parent_session_id=None,
+        _session_db_created=False, _persist_disabled=False, _pending_cli_user_message=None,
+        _interrupt_requested=False, _interrupt_message=None, _execution_thread_id=None,
+        _session_turn_lease_refresh_interval=60.0, _session_persist_lock=None, statuses=[],
+    )
+    agent._emit_status = agent.statuses.append
+    agent._emit_warning = agent.statuses.append
+    agent._touch_activity = lambda *a, **k: None
+    agent._liveness_activity_lock = lambda: threading.Lock()
+    agent._session_row_model_config = lambda: AIAgent._session_row_model_config(agent)
+    agent._ensure_db_session = lambda: AIAgent._ensure_db_session(agent)
+    return agent
+
+
+def _admit(agent, monkeypatch):
+    """The real turn-lease admission, exactly as ``turn_facade`` calls it."""
+    monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0))
+    admission = admit_durable_turn_lease(
+        agent, session_id=KEY, relay_turn_id=f"{KEY}:t:abcd",
+        task_context={"session_id": KEY, "task_id": "t", "platform": "desktop"},
+        conversation_history=None,
+    )
+    assert admission.early_result is None and admission.lease is not None
+    return admission.lease
+
+
+def _turn_start_row_write(agent):
+    """The real turn-start row write the first provider call waits on."""
+    turn_context._ensure_session_row(agent, None)
+
+
+def _row_config(db):
+    return json.loads(db.get_session(KEY)["model_config"])
+
+
+def _init_before_the_row_exists(db, cfg):
+    """Agent initialized while the row is absent: lineage lives only in memory."""
+    agent = _agent(db)
+    assert db.get_session(KEY) is None
+    initialize_required_context_lineage(agent, config=cfg)
+    pinned = agent._session_init_model_config[LINEAGE]
+    agent._cached_system_prompt = append_required_context(
+        "You are Hermes.\nModel: grok-4.6", agent._required_context_snapshot)
+    return agent, pinned
+
+
+# --- The defect: BASE leaves the row without the lineage the agent is actually using. ---
+
+
+def test_lease_suppressed_create_still_persists_the_pinned_lineage(db, cfg, monkeypatch):
+    """FAILS ON BASE: the lease suppressed the create, so the row never got the lineage."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)  # the row appears between agent init and the turn
+
+    lease = _admit(agent, monkeypatch)
+    try:
+        assert agent._session_db_created is True  # the suppression under test
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+
+    persisted = _row_config(db)
+    assert persisted[LINEAGE] == pinned  # byte-identical to what the agent pinned
+    assert json.dumps(persisted[LINEAGE], sort_keys=True) == json.dumps(pinned, sort_keys=True)
+    assert persisted["model"] == "grok-4.6"  # the desktop row's own keys survive
+
+
+def test_next_turn_restores_the_lineage_the_lease_turn_persisted(db, cfg, monkeypatch):
+    """FAILS ON BASE: without the row write the next agent hits the no-pinned-snapshot guard.
+
+    This is the live symptom: a row with messages and no metadata hard-fails its next turn.
+    """
+    agent, _pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    lease = _admit(agent, monkeypatch)
+    try:
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+    db.append_message(KEY, role="user", content="hello")
+    db.append_message(KEY, role="assistant", content="hi")
+
+    successor = _agent(db)
+    initialize_required_context_lineage(successor, config=cfg)
+    assert (successor._required_context_snapshot.prompt_block
+            == agent._required_context_snapshot.prompt_block)
+
+
+# --- The guards the fix must not weaken. ---
+
+
+def test_foreign_lineage_on_the_row_still_aborts_the_turn(db, cfg, monkeypatch, tmp_path):
+    """A row already holding a DIFFERENT lineage must raise before any provider call."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    # Another agent pins generation two onto the row first.
+    generation_two = _generation(tmp_path, "generation-two", "two")
+    (tmp_path / ".sakaan" / "current.txt").write_text(str(generation_two), encoding="utf-8")
+    initialize_required_context_lineage(_agent(db), config=cfg)
+    foreign = _row_config(db)[LINEAGE]
+    assert foreign["generation"] != pinned["generation"]
+
+    lease = _admit(agent, monkeypatch)
+    try:
+        with pytest.raises(RequiredContextError, match="different pinned lineage"):
+            _turn_start_row_write(agent)
+        assert _row_config(db)[LINEAGE] == foreign  # never overwritten
+        with pytest.raises(RequiredContextError, match="different pinned lineage"):
+            _turn_start_row_write(agent)  # every retry keeps refusing
+    finally:
+        lease.release()
+
+
+def test_same_lineage_is_a_no_op_and_writes_nothing(db, cfg, monkeypatch):
+    """A row that already holds the SAME lineage takes no UPDATE, on this turn or the next."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    lease = _admit(agent, monkeypatch)
+    try:
+        _turn_start_row_write(agent)
+        after_first = db.get_session(KEY)["model_config"]
+        writes = []
+        original = type(db).set_session_model_config_key_if_absent
+        monkeypatch.setattr(
+            type(db), "set_session_model_config_key_if_absent",
+            lambda self, sid, key, value: (writes.append(key), original(self, sid, key, value))[1],
+        )
+        _turn_start_row_write(agent)
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+
+    assert writes == [LINEAGE, LINEAGE]  # idempotent set-if-absent stays the only write path
+    assert db.get_session(KEY)["model_config"] == after_first  # byte-identical row
+    assert _row_config(db)[LINEAGE] == pinned
+
+
+def test_no_store_call_when_the_agent_pinned_nothing(db, monkeypatch):
+    """required_context disabled: the suppressed path must stay free of DB work."""
+    disabled = {"required_context": {"enabled": False}}
+    agent = _agent(db)
+    initialize_required_context_lineage(agent, config=disabled)
+    assert agent._required_context_snapshot is None
+    assert LINEAGE not in agent._session_init_model_config
+    _desktop_row(db, monkeypatch)
+
+    lease = _admit(agent, monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        type(db), "set_session_model_config_key_if_absent",
+        lambda self, sid, key, value: calls.append(key),
+    )
+    try:
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+    assert calls == []
+    assert LINEAGE not in _row_config(db)
