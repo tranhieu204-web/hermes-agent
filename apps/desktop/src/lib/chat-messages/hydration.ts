@@ -121,8 +121,31 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
+// Display compatibility copy of agent/prompt_builder.py::STEER_MARKER_OPEN / STEER_MARKER_CLOSE.
+// The backend is canonical; keep these boundaries synchronized when its marker changes.
+const STEER_MARKER_OPEN =
+  '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]'
+
+const STEER_MARKER_CLOSE = '[/OUT-OF-BAND USER MESSAGE]'
+
+function steerDisplayContent(content: string): string {
+  const trimmed = content.trim()
+  const openingLine = `${STEER_MARKER_OPEN}\n`
+  const closingLine = `\n${STEER_MARKER_CLOSE}`
+
+  if (!trimmed.startsWith(openingLine) || !trimmed.endsWith(closingLine)) {
+    return content
+  }
+
+  return trimmed.slice(openingLine.length, -closingLine.length).trim()
+}
+
 function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
-  return displayKind === 'hidden' ? null : content
+  if (displayKind === 'hidden') {
+    return null
+  }
+
+  return displayKind === 'steer' ? steerDisplayContent(content) : content
 }
 
 // A remote backend older than this app serves display_metadata as raw JSON text,
@@ -309,10 +332,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         ? message.display_content
         : message.content || message.text || message.context || message.name
 
-    const rawDisplayContent = transcriptContent(
-      message.display_kind,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
-    )
+    const transcriptSource = transcriptContent(message.display_kind, textFromUnknown(content))
+
+    const rawDisplayContent =
+      transcriptSource === null
+        ? null
+        : timelineDisplayContent(message, displayContentForMessage(message.role, transcriptSource))
 
     const displayRole =
       message.display_kind === 'model_switch' ||

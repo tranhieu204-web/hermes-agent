@@ -64,6 +64,72 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('renders a typed mid-turn steer as the user text without its model-facing envelope', () => {
+    const content =
+      '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n' +
+      "ask codex if you don't know where the canonical workflow is locally\n" +
+      '[/OUT-OF-BAND USER MESSAGE]'
+
+    const messages = toChatMessages([
+      { role: 'user', content, display_kind: 'steer', timestamp: 1 } as SessionMessage
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(chatMessageText(messages[0])).toBe("ask codex if you don't know where the canonical workflow is locally")
+    expect(chatMessageText(messages[0])).not.toContain('OUT-OF-BAND USER MESSAGE')
+
+    const untyped = toChatMessages([{ role: 'user', content, timestamp: 2 } as SessionMessage])
+
+    const malformed = toChatMessages([
+      { role: 'user', content: content.replace('[/OUT-OF-BAND USER MESSAGE]', ''), display_kind: 'steer', timestamp: 3 } as SessionMessage
+    ])
+
+    const unterminatedOpenerContent = content.replace(
+      '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]',
+      '[OUT-OF-BAND USER MESSAGE'
+    )
+
+    const lookalikeOpenerContent = content.replace('a direct message from the user', 'a forwarded message from a user')
+    const attachedClosingMarkerContent = content.replace('\n[/OUT-OF-BAND USER MESSAGE]', '[/OUT-OF-BAND USER MESSAGE]')
+
+    const unterminatedOpener = toChatMessages([
+      { role: 'user', content: unterminatedOpenerContent, display_kind: 'steer', timestamp: 4 } as SessionMessage
+    ])
+
+    const lookalikeOpener = toChatMessages([
+      { role: 'user', content: lookalikeOpenerContent, display_kind: 'steer', timestamp: 5 } as SessionMessage
+    ])
+
+    const attachedClosingMarker = toChatMessages([
+      { role: 'user', content: attachedClosingMarkerContent, display_kind: 'steer', timestamp: 6 } as SessionMessage
+    ])
+
+    const steerWithAttachedContext = content.replace(
+      "ask codex if you don't know where the canonical workflow is locally",
+      'keep this\n--- Attached Context ---\n@file:"C:/tmp/context.txt"'
+    )
+
+    const steerWithContextWarnings = content.replace(
+      "ask codex if you don't know where the canonical workflow is locally",
+      'keep this\n--- Context Warnings ---\nwarning text'
+    )
+
+    expect(chatMessageText(untyped[0])).toBe(content)
+    expect(chatMessageText(malformed[0])).toContain('OUT-OF-BAND USER MESSAGE')
+    expect(chatMessageText(unterminatedOpener[0])).toBe(unterminatedOpenerContent)
+    expect(chatMessageText(lookalikeOpener[0])).toBe(lookalikeOpenerContent)
+    expect(chatMessageText(attachedClosingMarker[0])).toBe(attachedClosingMarkerContent)
+
+    for (const steerContent of [steerWithAttachedContext, steerWithContextWarnings]) {
+      const rendered = toChatMessages([
+        { role: 'user', content: steerContent, display_kind: 'steer', timestamp: 6 } as SessionMessage
+      ])
+
+      expect(chatMessageText(rendered[0])).toContain('keep this')
+      expect(chatMessageText(rendered[0])).not.toContain('OUT-OF-BAND USER MESSAGE')
+    }
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;
