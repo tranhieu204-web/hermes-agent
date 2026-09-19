@@ -232,14 +232,25 @@ def _durable_session_exists(db, session_id: str, agent=None) -> bool:
             "will acquire rather than run without serialization",
             exc_info=True,
         )
+        # A failed observation is not proof the pin survived, so the latch cannot be honoured on the
+        # strength of it either: a row deleted and recreated lineage-less would keep an armed latch
+        # skipping the merge — including the write-transaction merge that can still succeed when the
+        # read pool cannot. Clearing only costs one merge, and that merge re-pins or raises.
+        _invalidate_lineage_latch(agent, None)
         return True
-    if agent is not None:
-        # These bytes are the only row read a steady-state turn makes, so the required-context persist
-        # latch re-checks its pin from them rather than paying a read of its own. A row deleted and
-        # recreated lineage-less under the same id would otherwise keep that latch armed.
-        from agent.required_context import invalidate_persisted_lineage_latch
-        invalidate_persisted_lineage_latch(agent, row)
+    # These bytes are the only row read a steady-state turn makes, so the required-context persist
+    # latch re-checks its pin from them rather than paying a read of its own. A row deleted and
+    # recreated lineage-less under the same id would otherwise keep that latch armed.
+    _invalidate_lineage_latch(agent, row)
     return row is not None
+
+
+def _invalidate_lineage_latch(agent, row) -> None:
+    if agent is None:
+        return
+    from agent.required_context import invalidate_persisted_lineage_latch
+
+    invalidate_persisted_lineage_latch(agent, row)
 
 
 def admit_durable_turn_lease(

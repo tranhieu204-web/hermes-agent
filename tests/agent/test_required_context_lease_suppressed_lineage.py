@@ -315,14 +315,19 @@ def test_unparseable_model_config_still_fails_closed(db, cfg, monkeypatch):
         lease.release()
 
 
-def test_unreadable_pinned_lineage_value_still_fails_closed(db, cfg, monkeypatch):
+@pytest.mark.parametrize("bad_pin", [None, ["generation-one"], "generation-one"], ids=["null", "list", "string"])
+def test_unreadable_pinned_lineage_value_still_fails_closed(db, cfg, monkeypatch, bad_pin):
     """The column decodes but the PIN under the key does not, so the store hands back a non-Mapping
     for a row that is present. That is corruption, not a race: the create path has always refused it
-    and the merge path must too, rather than run the turn against a pin it cannot read."""
+    and the merge path must too, rather than run the turn against a pin it cannot read.
+
+    ``null`` is the case a truthiness check cannot see: it decodes to Python ``None``, which is also
+    what an ABSENT key reads as, so only presence tells them apart. Set-if-absent never overwrites a
+    present key, so a null pin would otherwise stay fail-open for the life of the row."""
     agent, _pinned = _init_before_the_row_exists(db, cfg)
     _desktop_row(db, monkeypatch)
     corrupt = _row_config(db)
-    corrupt[LINEAGE] = "generation-one"  # a bare string where the lineage mapping belongs
+    corrupt[LINEAGE] = bad_pin  # something other than the lineage mapping
     db._execute_write(lambda conn: conn.execute(
         "UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(corrupt), KEY)))
 
@@ -330,7 +335,7 @@ def test_unreadable_pinned_lineage_value_still_fails_closed(db, cfg, monkeypatch
     try:
         with pytest.raises(RequiredContextError, match="unreadable pinned lineage"):
             _turn_start_row_write(agent)
-        assert _row_config(db)[LINEAGE] == "generation-one"  # never replaced
+        assert _row_config(db)[LINEAGE] == bad_pin  # never replaced
         with pytest.raises(RequiredContextError, match="unreadable pinned lineage"):
             _turn_start_row_write(agent)  # no latch on a failed merge
     finally:
@@ -365,6 +370,46 @@ def test_row_deleted_then_recreated_lineage_less_is_repinned_not_latched(db, cfg
     finally:
         lease.release()
     assert _row_config(db)[LINEAGE] == pinned  # re-pinned, so the next agent can restore
+
+
+def test_raised_probe_after_a_delete_and_recreate_does_not_honour_the_latch(db, cfg, monkeypatch):
+    """FAILS ON BASE: a probe that RAISED observed nothing, so it cannot leave the latch armed.
+
+    Same delete-then-recreate as above, but the lease's row read hits the IOERR/lock the host already
+    treats as first-class (``hermes_state.py`` #84234). The read pool failing is not proof the pin
+    survived, and the merge runs in its own WRITE transaction which can still succeed — so honouring
+    the latch here skips the re-pin while ``_persist_turn_start`` still writes the block-carrying
+    prompt onto a lineage-less row. That is the incident shape, inside a single turn."""
+    agent, pinned = _init_before_the_row_exists(db, cfg)
+    _desktop_row(db, monkeypatch)
+    lease = _admit(agent, monkeypatch)
+    try:
+        _turn_start_row_write(agent)
+    finally:
+        lease.release()
+    assert _row_config(db)[LINEAGE] == pinned  # turn 1 merged and latched
+
+    assert db.delete_session(KEY) is True
+    _desktop_row(db, monkeypatch)  # recreated under the same id, lineage-less
+    assert LINEAGE not in _row_config(db)
+
+    original = type(db).get_session
+
+    def _ioerr(self, *args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(type(db), "get_session", _ioerr)  # reads fail; writes still work
+    try:
+        lease = _admit(agent, monkeypatch)
+        try:
+            assert agent._session_db_created is True  # fail-closed probe suppressed the create
+            _turn_start_row_write(agent)
+        finally:
+            lease.release()
+    finally:
+        monkeypatch.setattr(type(db), "get_session", original)
+
+    assert _row_config(db)[LINEAGE] == pinned  # re-pinned despite the unreadable probe
 
 
 def test_no_store_call_when_the_agent_pinned_nothing(db, monkeypatch):

@@ -572,8 +572,11 @@ def _no_mapping_reason(session_db: Any, session_id: str) -> Exception:
     # its type (``hermes_state_sessions.py:743-744``), so ``null`` / ``"x"`` / ``[...]`` under the key
     # lands here with the column parsing fine. That is a corrupt row, not a race — the create path
     # has always refused it, so the merge path must too rather than run the turn against a bad pin.
-    pinned = _model_config(row).get(_METADATA_KEY)
-    if pinned is not None and not isinstance(pinned, Mapping):
+    # Presence, not truthiness: JSON ``null`` decodes to Python ``None``, so ``.get()`` cannot tell a
+    # row pinned to null from a row with no pin at all — and the store's set-if-absent never
+    # overwrites a present key, so a null pin is sticky for the life of the row.
+    config = _model_config(row)
+    if _METADATA_KEY in config and not isinstance(config[_METADATA_KEY], Mapping):
         return _fail("session row holds an unreadable pinned lineage; start a new lineage")
     # The row exists and parses: it appeared (or was re-pinned) after the merge read a missing row.
     return RequiredContextRowUnavailable(f"session row {session_id} changed during the merge")
