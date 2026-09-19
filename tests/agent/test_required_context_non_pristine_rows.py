@@ -507,6 +507,72 @@ def _block_for(tmp_path, cfg, name):
 
 
 # ── B3 class 2: a row whose prompt already declares a generation is pinned to THAT generation ────
+def test_runtime_class2_self_heals_from_its_own_canonical_block(db, cfg, tmp_path):
+    prompt, other = _block_for(tmp_path, cfg, "generation-two")
+    _prompted_row(db, "prompted", prompt)
+
+    agent = _agent(db, "prompted")
+    initialize_required_context_lineage(agent, config=cfg)
+
+    lineage = _lineage(db, "prompted")
+    assert lineage["version"] == 1 and "system_prompt_sha256" not in lineage
+    assert lineage["generation"] == other.generation != load_required_context_snapshot(cfg).generation
+    assert agent._required_context_snapshot.prompt_block == other.prompt_block
+
+
+def test_runtime_class2_post_pin_reversed_prompt_race_is_typed_fail_closed(
+    db, cfg, tmp_path, monkeypatch,
+):
+    from agent.required_context import REQUIRED_CONTEXT_BEGIN, REQUIRED_CONTEXT_END
+
+    prompt, _other = _block_for(tmp_path, cfg, "generation-raced")
+    _prompted_row(db, "prompted", prompt)
+    original_get_session = db.get_session
+    reads = 0
+
+    def racing_get_session(session_id):
+        nonlocal reads
+        row = original_get_session(session_id)
+        reads += 1
+        if reads == 2:
+            return {
+                **row,
+                "system_prompt": f"{REQUIRED_CONTEXT_END}\nraced content\n{REQUIRED_CONTEXT_BEGIN}",
+            }
+        return row
+
+    monkeypatch.setattr(db, "get_session", racing_get_session)
+    provider_calls = []
+
+    with pytest.raises(RequiredContextError, match="WORKFLOW_SOURCE_UNAVAILABLE"):
+        initialize_required_context_lineage(
+            _agent(db, "prompted"), config=cfg, before_provider=lambda: provider_calls.append(1),
+        )
+
+    assert provider_calls == []
+
+
+@pytest.mark.parametrize("shape", ["generation_bytes_changed", "legacy_header", "end_before_begin"])
+def test_runtime_class2_invalid_proof_stays_typed_fail_closed(db, cfg, tmp_path, shape):
+    if shape == "generation_bytes_changed":
+        prompt, other = _block_for(tmp_path, cfg, "generation-edited")
+        (Path(other.generation) / "GRANTS.md").write_bytes(b"edited after the prompt was persisted\r\n")
+    elif shape == "legacy_header":
+        prompt, _other = _legacy_block_prompt(tmp_path, cfg)
+    else:
+        from agent.required_context import REQUIRED_CONTEXT_BEGIN, REQUIRED_CONTEXT_END
+
+        prompt = f"{REQUIRED_CONTEXT_END}\nlegacy content\n{REQUIRED_CONTEXT_BEGIN}"
+    _prompted_row(db, "prompted", prompt)
+    before = db.get_session("prompted")["model_config"]
+
+    with pytest.raises(RequiredContextError, match="WORKFLOW_SOURCE_UNAVAILABLE"):
+        initialize_required_context_lineage(_agent(db, "prompted"), config=cfg)
+
+    assert db.get_session("prompted")["model_config"] == before
+    assert _lineage(db, "prompted") is None
+
+
 def test_s4_class2_pins_the_generation_its_own_block_declares(db, cfg, tmp_path, monkeypatch, capsys):
     """Not today's pointer: the conversation really saw generation-two, so that is the truthful pin —
     and pinning generation-one instead would leave prompt and metadata disagreeing, which is exactly

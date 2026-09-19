@@ -265,9 +265,10 @@ def extract_required_context_block(prompt: str) -> Optional[str]:
     if begins != 1 or ends != 1:
         raise _fail("duplicate or malformed required-context block")
     start = prompt.index(REQUIRED_CONTEXT_BEGIN)
-    end = prompt.index(REQUIRED_CONTEXT_END, start) + len(REQUIRED_CONTEXT_END)
-    if end <= start:
+    end_start = prompt.index(REQUIRED_CONTEXT_END)
+    if end_start <= start:
         raise _fail("duplicate or malformed required-context block")
+    end = end_start + len(REQUIRED_CONTEXT_END)
     return prompt[start:end]
 
 
@@ -336,13 +337,53 @@ def _without_prompt_digest(metadata: Mapping[str, Any]) -> dict[str, Any]:
     return stripped
 
 
+def _recover_verified_prompt_lineage(
+    agent: Any, session_db: Any, row: Mapping[str, Any], cfg: Mapping[str, Any],
+) -> Optional[Mapping[str, Any]]:
+    """Atomically pin a legacy row only when its persisted canonical block proves the lineage.
+
+    This is the runtime form of the offline backfill's Class 2 case.  It never clears or rebuilds a
+    prompt and never substitutes today's generation: the block names the generation, that generation
+    must rebuild to the exact same bytes, and the store must confirm the prompt is unchanged while it
+    adds v1 metadata.  Every ambiguous shape returns ``None`` so the caller keeps failing closed.
+    A concurrent ``already_pinned`` result is never trusted here: the caller re-reads the row and
+    verifies the persisted metadata and prompt from scratch on the next bounded restore attempt.
+    """
+    prompt = row.get("system_prompt") or ""
+    if not prompt:
+        return None
+    try:
+        block = extract_required_context_block(prompt)
+        declared = declared_block_generation(block) if block is not None else None
+        if block is None or declared is None:
+            return None
+        snapshot = load_generation_snapshot(declared, config=cfg)
+    except (RequiredContextError, OSError, ValueError):
+        return None
+    if snapshot.prompt_block != block:
+        return None
+    pin = getattr(session_db, "pin_session_model_config_key_if_prompt_unchanged", None)
+    if not callable(pin):
+        return None
+    status = pin(
+        agent.session_id, _METADATA_KEY, snapshot_to_metadata(snapshot), expected_prompt=prompt,
+    )
+    if status not in {"pinned", "already_pinned"}:
+        return None
+    return session_db.get_session(agent.session_id)
+
+
 def _restore_existing_lineage(
     agent: Any, session_db: Any, row: Mapping[str, Any], cfg: Mapping[str, Any],
 ) -> RequiredContextSnapshot:
     for _attempt in range(2):
         metadata = _model_config(row).get(_METADATA_KEY)
         if metadata is None:
-            raise _fail("existing session has no pinned snapshot; start a new lineage")
+            recovered = _recover_verified_prompt_lineage(agent, session_db, row, cfg)
+            if recovered is None:
+                raise _fail("existing session has no pinned snapshot; start a new lineage")
+            row = recovered
+            continue
         snapshot = restore_required_context_lineage(metadata, config=cfg)
         prompt = row.get("system_prompt") or ""
         if not prompt:
@@ -361,11 +402,11 @@ def _restore_existing_lineage(
             if row is None:
                 raise _fail("existing session disappeared during restore; start a new lineage")
             continue
-        if prompt.count(REQUIRED_CONTEXT_BEGIN) != 1 or prompt.count(REQUIRED_CONTEXT_END) != 1:
-            raise _fail("persisted prompt integrity is invalid; start a new lineage")
-        start = prompt.index(REQUIRED_CONTEXT_BEGIN)
-        end = prompt.index(REQUIRED_CONTEXT_END, start) + len(REQUIRED_CONTEXT_END)
-        if prompt[start:end] != snapshot.prompt_block:
+        try:
+            block = extract_required_context_block(prompt)
+        except RequiredContextError as exc:
+            raise _fail("persisted prompt integrity is invalid; start a new lineage") from exc
+        if block is None or block != snapshot.prompt_block:
             raise _fail("persisted prompt integrity is invalid; start a new lineage")
         full_prompt_sha256 = metadata.get("system_prompt_sha256")
         if full_prompt_sha256 is not None and (
