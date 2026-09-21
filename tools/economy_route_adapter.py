@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 import time
@@ -130,6 +131,26 @@ def _records(text):
         return result
 
 
+def _diagnostic_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value if isinstance(value, str) else ""
+
+
+def _redact_diagnostic(text):
+    """Keep launch diagnostics useful without persisting credential material."""
+    sensitive = (r"api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+                 r"secret|password|authorization|cookie|bearer|token")
+    safe_lines = []
+    for line in text.splitlines():
+        if re.search(r"(?i)\b(?:" + sensitive + r")\b", line):
+            safe_lines.append("[REDACTED DIAGNOSTIC LINE]")
+            continue
+        line = re.sub(r"(?i)(--(?:api-key|token|password)\s+)[^\s]+", r"\1[REDACTED]", line)
+        safe_lines.append(line)
+    return "\n".join(safe_lines)[:4096]
+
+
 def _codex_telemetry(records):
     """Parse only Codex CLI JSONL event envelopes, never agent-message text."""
     completed = next((value for value in records if isinstance(value, dict)
@@ -234,8 +255,11 @@ def _build(envelope, prompt):
                         "--strict-mcp-config", "--permission-mode", "dontAsk", "--output-format", "json",
                         "--no-session-persistence"], prompt)
     if adapter == "hermes-agent":
+        runtime_provider = {"OpenAI": "openai-codex", "llamacpp": "llamacpp"}.get(route["provider"])
+        if runtime_provider is None:
+            raise ValueError("unsupported Hermes runtime provider for verified route")
         args = [sys.executable, "-m", "hermes_cli.main", "-z", prompt,
-                "--model", route["model"], "--provider", route["provider"], "--no-fallback"]
+                "--model", route["model"], "--provider", runtime_provider, "--no-fallback"]
         if effort != "fixed":
             args += ["--reasoning", effort]
         args += ["--toolsets", ",".join(envelope["allowed_tools"]),
@@ -279,12 +303,30 @@ def execute(envelope, token, *, artifact_dir, runner=subprocess.run, notice_emit
         completed = runner(args, **runner_kwargs)
         returncode = completed.returncode
         raw_stdout = completed.stdout
+        raw_stderr = completed.stderr
+        timed_out = False
     except subprocess.TimeoutExpired as expired:
         returncode = None
         raw_stdout = expired.stdout
+        raw_stderr = expired.stderr
+        timed_out = True
     elapsed = (time.perf_counter() - started) * 1000
-    stdout = raw_stdout if isinstance(raw_stdout, str) else ""
+    stdout = _diagnostic_text(raw_stdout)
+    stderr = _diagnostic_text(raw_stderr)
     output_path.write_text(stdout, encoding="utf-8")
+    diagnostics = {
+        "schema_version": 1,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "stdout_bytes": len(stdout.encode("utf-8")),
+        "stderr_bytes": len(stderr.encode("utf-8")),
+        "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+        "stderr_excerpt": _redact_diagnostic(stderr),
+    }
+    (run_artifacts / "diagnostics.json").write_text(
+        json.dumps(diagnostics, sort_keys=True), encoding="utf-8"
+    )
     stdout_records = _records(stdout)
     # Tools share the runtime process. No child-authored byte authenticates
     # telemetry. Wrapper stdout is usable only when shell execution is absent;
