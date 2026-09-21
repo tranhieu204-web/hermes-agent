@@ -1,9 +1,11 @@
 """Tests for hermes -z --usage-file (per-run JSON usage report)."""
 
 import json
+import inspect
 
 import pytest
 
+import hermes_cli.oneshot as oneshot
 from hermes_cli.oneshot import _write_usage_file
 
 
@@ -55,6 +57,17 @@ class TestWriteUsageFile:
         assert report["failure"] == "boom"
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
+
+    def test_no_fallback_reaches_agent_builder(self, monkeypatch, capsys):
+        assert "no_fallback" in inspect.signature(oneshot._run_agent).parameters
+        seen = {}
+        def fake_run_agent(prompt, **kwargs):
+            seen.update(kwargs)
+            return "done", {"failed": False}
+        monkeypatch.setattr(oneshot, "_run_agent", fake_run_agent)
+        assert oneshot.run_oneshot("fixture", no_fallback=True) == 0
+        assert seen["no_fallback"] is True
+        assert capsys.readouterr().out == "done\n"
 
 
 

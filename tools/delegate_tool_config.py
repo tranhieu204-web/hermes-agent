@@ -580,6 +580,14 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # A trusted per-call route owns its effort as well as model/transport. Do
+    # not mutate parent or global config, and never silently inherit a bad pin.
+    if routing_cfg is not None and routing_cfg.get("reasoning_effort") not in (None, ""):
+        from hermes_constants import parse_reasoning_effort
+        child_reasoning = parse_reasoning_effort(routing_cfg["reasoning_effort"])
+        if child_reasoning is None:
+            raise ValueError("Unknown per-call reasoning_effort; refusing child route")
+
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
