@@ -130,6 +130,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "(estimated cost, token counts, model, api_calls) to PATH. "
         "The report is written even when the run fails, so pipelines "
         "can always account for spend. No effect outside -z/--oneshot."))
+    add("--no-fallback", action="store_true", help=(
+        "One-shot mode only: disable configured model/provider fallback for this invocation."))
     # --model / --provider are accepted at the top level so they can pair with -z without the
     # `chat` subcommand; if neither -z nor a subcommand consumes them, they fall through as None.
     inherited(parser, "-m", "--model", default=None, help=(
