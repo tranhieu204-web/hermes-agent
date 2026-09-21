@@ -123,7 +123,9 @@ def _api_server_base_url() -> str:
     return f"http://{host}:{port}"
 
 
-def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Optional[str]:
+def _forward_relay_fronted_run(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None, *, skip_next: bool = False,
+) -> Optional[str]:
     """Forward a manual run to the gateway when it targets a relay-fronted platform: such delivery
     has no standalone sender — the gateway's live relay adapter is the only path, reached via
     ``POST /api/jobs/{id}/run`` (marks the job due; ``extra_prompt`` rides in the body). Returns a
@@ -134,9 +136,14 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
     key = get_secret("API_SERVER_KEY", "") or ""
     try:
         import httpx
+        payload = {}
+        if extra_prompt:
+            payload["prompt"] = extra_prompt
+        if skip_next:
+            payload["skip_next"] = True
         resp = httpx.post(
             f"{_api_server_base_url()}/api/jobs/{job['id']}/run", headers={"Authorization": f"Bearer {key}"},
-            json=({"prompt": extra_prompt} if extra_prompt else {}), timeout=10.0)
+            json=payload, timeout=10.0)
     except Exception:
         resp = None
     if resp is not None and resp.status_code < 300:
@@ -183,12 +190,15 @@ _ALREADY_RUNNING_ERROR = (
     "manual run is executing it); not started again.")
 
 
-def _claim_for_manual_run(job_id: str, log_label: str):
+def _claim_for_manual_run(job_id: str, log_label: str, *, skip_next: bool = False):
     """At-most-once claim shared by the sync and background run paths: ``(claimed_job, None)`` or
     ``(None, error_dict)`` in the ``_execute_job_now`` shape. A lost claim is labelled precisely —
     claim_job_for_fire also returns False for paused/disabled/missing jobs, not just in-flight ones."""
     try:
-        claimed_job = claim_job_for_fire(job_id, manual=True, return_job=True)
+        claim_kwargs = {"manual": True, "return_job": True}
+        if skip_next:
+            claim_kwargs["consume_next"] = True
+        claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
         if isinstance(claimed_job, dict):
             return claimed_job, None
         refreshed = get_job(job_id)
@@ -206,11 +216,14 @@ def _claim_for_manual_run(job_id: str, log_label: str):
         return None, {"claimed": True, "success": False, "error": str(e)}
 
 
-def _execute_job_now(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
+def _execute_job_now(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None, *, skip_next: bool = False,
+) -> Dict[str, Any]:
     """Run a job now, outside the scheduler tick: claim via ``claim_job_for_fire`` (the ticker's
     CAS, so a concurrent tick cannot double-fire and next_run_at advances), then fire through
     the shared ``run_one_job`` body. Returns {"claimed", "success", "error"}."""
-    claimed_job, err = _claim_for_manual_run(job["id"], "immediate run")
+    claimed_job, err = _claim_for_manual_run(
+        job["id"], "immediate run", skip_next=skip_next)
     return err if err is not None else _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
 
 
@@ -448,6 +461,7 @@ def _manual_run_completion(
 
 def _try_dispatch_background_run(
     job: Dict[str, Any], session_id: Optional[str] = None, extra_prompt: Optional[str] = None,
+    *, skip_next: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Claim ``job`` now (SYNCHRONOUSLY, so unrunnable jobs report immediately), then fire it
     on the async-delegation executor like ``delegate_task``'s background mode: the tool returns
@@ -486,7 +500,8 @@ def _try_dispatch_background_run(
     except Exception:
         pass
 
-    claimed_job, err = _claim_for_manual_run(job_id, "background run")
+    claimed_job, err = _claim_for_manual_run(
+        job_id, "background run", skip_next=skip_next)
     if err is not None:
         if err["claimed"]:
             err["dispatched"] = False
@@ -675,7 +690,9 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
             return tool_error(scan_error, success=False)
     # A manual run must actually run even with no ticker active. Preferred: background
     # dispatch (handle now, outcome as a completion event); inline fallback otherwise.
-    bg = _try_dispatch_background_run(job, session_id=a["session_id"], extra_prompt=extra_prompt)
+    skip_next = bool(a["skip_next"])
+    bg = _try_dispatch_background_run(
+        job, session_id=a["session_id"], extra_prompt=extra_prompt, skip_next=skip_next)
     if bg is not None and bg.get("dispatched"):
         _notify_provider_jobs_changed_safe()
         result = _refreshed_job_view(job_id)
@@ -695,10 +712,12 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         exec_result = bg  # terminal result: claim lost or inline fallback
     else:
         # Relay-fronted manual run: no live adapter here — forward to the running gateway.
-        forwarded = _forward_relay_fronted_run(job, extra_prompt=extra_prompt)
+        forwarded = _forward_relay_fronted_run(
+            job, extra_prompt=extra_prompt, skip_next=skip_next)
         if forwarded is not None:
             return forwarded
-        exec_result = _execute_job_now(job, extra_prompt=extra_prompt)
+        exec_result = _execute_job_now(
+            job, extra_prompt=extra_prompt, skip_next=skip_next)
     # A claimed direct run advances next_run_at and may race an external provider's
     # one-shot for the same occurrence; a lost consumed fire cannot re-arm itself, so
     # reconcile after the run has persisted its final state.
@@ -959,7 +978,8 @@ def cronjob(
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    skip_next: bool = False) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1025,6 +1045,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "prompt": {
                 "type": "string",
                 "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
+            },
+            "skip_next": {
+                "type": "boolean",
+                "default": False,
+                "description": "Only for action='run'. When true, this manual attempt replaces the nearest pending occurrence, so that scheduled occurrence will not run again. Valid only for recurring jobs."
             },
             "schedule": {
                 "type": "string",

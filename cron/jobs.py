@@ -2183,7 +2183,9 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     })
 
 
-def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def trigger_job(
+    job_id: str, extra_prompt: Optional[str] = None, *, skip_next: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Schedule a job for the next tick (ID or name). ``extra_prompt`` is stamped as
     ``manual_run_prompt`` for that single fire only; ``mark_job_run`` clears it."""
     job = resolve_job_ref(job_id)
@@ -2196,7 +2198,7 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
             f"Create a new occurrence with 'hermes cron resume {name} "
             "--run-now' or '--at <ISO-8601>'.")
     manual_run_at = _hermes_now().isoformat()
-    return update_job(job["id"], {
+    updates = {
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -2205,7 +2207,14 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
         # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state.
         "manual_run_at": manual_run_at,
         "manual_run_prompt": (extra_prompt or None),
-    })
+    }
+    if skip_next:
+        if job.get("schedule", {}).get("kind") not in {"cron", "interval"}:
+            raise ValueError("--skip-next is only valid for recurring jobs.")
+        if not job.get("next_run_at"):
+            raise ValueError("Cannot skip the next occurrence: the job has no next run.")
+        updates["manual_skip_next_at"] = job["next_run_at"]
+    return update_job(job["id"], updates)
 
 
 def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
@@ -2414,7 +2423,8 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             _complete_job_record(job)
             return
 
-    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    skip_next_at = job.pop("manual_skip_next_at", None)
+    job["next_run_at"] = compute_next_run(job["schedule"], skip_next_at or now)
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"
@@ -2703,7 +2713,7 @@ def _machine_id() -> str:
 
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
-    manual: bool = False, return_job: bool = False,
+    manual: bool = False, consume_next: bool = False, return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2729,8 +2739,16 @@ def claim_job_for_fire(
         # ``manual`` (an off-tick run-now) must NOT stamp an occurrence identity: outside a
         # scheduler tick ``next_run_at`` is the NEXT occurrence, not the one being run, so
         # stamping it would make completed_occurrence() skip that slot when it arrives.
+        if consume_next:
+            if job.get("schedule", {}).get("kind") not in {"cron", "interval"}:
+                raise ValueError("skip-next is only valid for recurring jobs")
+            if not job.get("next_run_at"):
+                raise ValueError("cannot consume a missing next occurrence")
+            job["manual_skip_next_at"] = job["next_run_at"]
+        skip_next_at = job.get("manual_skip_next_at")
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
-        instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        instant = scheduled_instant(skip_next_at) if skip_next_at else (
+            None if manual_fire else scheduled_instant(job.get("next_run_at")))
         # A scheduled tick only ever fires when now >= next_run_at
         # (_evaluate_due_job returns False while the stored occurrence is still
         # in the future), so a claim arriving BEFORE the stored next occurrence
@@ -2743,7 +2761,7 @@ def claim_job_for_fire(
         # A claim within FIRE_CLAIM_SKEW_SECONDS of the slot is the fire for that slot
         # (provider clock skew); dropping its identity would leave the slot unrecorded, so
         # mark_job_run recomputes the same cron slot and the misfire backstop runs it twice.
-        if (instant is not None
+        if (instant is not None and not skip_next_at
                 and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
             instant = None
         if instant and completed_occurrence(job, instant):

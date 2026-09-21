@@ -669,7 +669,7 @@ def cron_edit(args):
     return 0
 
 
-def _job_action(action: str, job_id: str, success_verb: str) -> int:
+def _job_action(action: str, job_id: str, success_verb: str, **kwargs) -> int:
     _stateless_token = None
     if action == "run":
         # One-shot CLI: a background-dispatched run (daemon thread, triggered when the CLI
@@ -684,7 +684,7 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
             from gateway.session_context import _SESSION_ASYNC_DELIVERY
             _stateless_token = _SESSION_ASYNC_DELIVERY.set(False)
     try:
-        result = _cron_api(action=action, job_id=job_id)
+        result = _cron_api(action=action, job_id=job_id, **kwargs)
     finally:
         if _stateless_token is not None:
             _SESSION_ASYNC_DELIVERY.reset(_stateless_token)
@@ -797,7 +797,8 @@ _CRON_SUBCOMMANDS = {
     "edit": lambda a: cron_edit(a),
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
-    "run": lambda a: _job_action("run", a.job_id, "Triggered"),
+    "run": lambda a: _job_action(
+        "run", a.job_id, "Triggered", skip_next=getattr(a, "skip_next", False)),
     "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
     "resnap": lambda a: _cron_resnap(a)}
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
