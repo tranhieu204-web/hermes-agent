@@ -72,6 +72,7 @@ class TestWriteUsageFile:
 
 
 
+
 class TestAuxiliaryLedger:
     """#112848: auxiliary LLM spend (title generation, vision, ...) recorded in session_model_usage
     belongs in the pipeline ledger, additively — the main-loop keys stay main-loop-only."""
