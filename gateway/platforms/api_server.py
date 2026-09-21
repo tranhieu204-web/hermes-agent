@@ -3727,6 +3727,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Optional transient per-run context (standalone `hermes cron run` /
         # cronjob(action='run', prompt=...)) — same cap + scan as a stored prompt.
         extra_prompt = body = None
+        skip_next = False
         with suppress(Exception):
             body = await request.json()
         if isinstance(body, dict):
@@ -3737,8 +3738,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 if prompt_err:
                     return prompt_err
                 extra_prompt = extra_prompt or None
-        return self._job_response(
-            lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt), job_id, notify=False)
+            skip_next = body.get("skip_next") is True
+        trigger = (
+            (lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt, skip_next=True))
+            if skip_next else
+            (lambda jid: _cron_trigger(jid, extra_prompt=extra_prompt))
+        )
+        return self._job_response(trigger, job_id, notify=False)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos fire webhook (NAS -> agent), authenticated by a

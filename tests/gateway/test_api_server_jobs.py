@@ -360,6 +360,20 @@ class TestRunJob:
                 )
 
     @pytest.mark.asyncio
+    async def test_run_job_forwards_explicit_skip_next(self, adapter):
+        app = _create_app(adapter)
+        mock_trigger = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_trigger", mock_trigger
+            ):
+                resp = await cli.post(
+                    f"/api/jobs/{VALID_JOB_ID}/run", json={"skip_next": True})
+                assert resp.status == 200
+                mock_trigger.assert_called_once_with(
+                    VALID_JOB_ID, extra_prompt=None, skip_next=True)
+
+    @pytest.mark.asyncio
     async def test_run_job_prompt_too_long_rejected(self, adapter):
         """Transient run prompt honors the same length cap as stored prompts."""
         app = _create_app(adapter)
@@ -556,4 +570,3 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
-

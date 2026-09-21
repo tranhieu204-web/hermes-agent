@@ -284,6 +284,28 @@ def test_manual_claim_does_not_stamp_a_future_occurrence(temp_home):
         f"manual fire stamped the future occurrence {pending}")
 
 
+def test_manual_claim_can_explicitly_consume_the_next_occurrence(temp_home):
+    """The opt-in replacement run owns exactly the pending slot and advances beyond it."""
+    from datetime import datetime
+
+    from cron.jobs import claim_job_for_fire, create_job, get_job, mark_job_run
+    from cron.occurrences import scheduled_instant
+
+    job = create_job(prompt="x", schedule="every 5m", name="replacement")
+    pending = get_job(job["id"])["next_run_at"]
+
+    claimed = claim_job_for_fire(
+        job["id"], manual=True, consume_next=True, return_job=True)
+
+    assert isinstance(claimed, dict)
+    assert claimed["_scheduled_instant"] == scheduled_instant(pending)
+    assert claimed["manual_skip_next_at"] == pending
+    assert mark_job_run(job["id"], True) is True
+    stored = get_job(job["id"])
+    assert datetime.fromisoformat(stored["next_run_at"]) > datetime.fromisoformat(pending)
+    assert "manual_skip_next_at" not in stored
+
+
 def test_unclassified_off_tick_claim_does_not_stamp_a_future_occurrence(temp_home, monkeypatch):
     from datetime import datetime, timedelta
 
