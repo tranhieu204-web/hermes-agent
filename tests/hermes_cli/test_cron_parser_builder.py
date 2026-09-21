@@ -48,3 +48,22 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns.accept_hooks is True
     ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
     assert ns2.accept_hooks is True
+
+
+def test_cron_create_can_pin_toolsets_and_explicitly_disable_attachment():
+    parser = _build()
+    ns = parser.parse_args([
+        "cron", "create", "0 7 * * *", "work",
+        "--enabled-toolset", "browser", "--enabled-toolset", "file",
+        "--no-attach-to-session",
+    ])
+    assert ns.enabled_toolsets == ["browser", "file"]
+    assert ns.attach_to_session is False
+
+
+def test_cron_edit_attachment_is_tristate_and_toolsets_can_clear():
+    parser = _build()
+    assert parser.parse_args(["cron", "edit", "j"]).attach_to_session is None
+    assert parser.parse_args(["cron", "edit", "j", "--attach-to-session"]).attach_to_session is True
+    assert parser.parse_args(["cron", "edit", "j", "--no-attach-to-session"]).attach_to_session is False
+    assert parser.parse_args(["cron", "edit", "j", "--clear-enabled-toolsets"]).enabled_toolsets == []

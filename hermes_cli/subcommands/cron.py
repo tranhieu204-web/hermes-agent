@@ -83,6 +83,15 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "into its prompt, so it can dedupe against what was already "
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
+    cron_create.add_argument(
+        "--enabled-toolset", dest="enabled_toolsets", action="append",
+        help="Restrict the job to this toolset. Repeat to add multiple toolsets.")
+    cron_create.add_argument(
+        "--attach-to-session", dest="attach_to_session", action="store_const", const=True,
+        default=None, help="Make delivery continuable in the job's eligible conversation.")
+    cron_create.add_argument(
+        "--no-attach-to-session", dest="attach_to_session", action="store_const", const=False,
+        help="Explicitly keep the job fire-and-forget and store attach_to_session=false.")
 
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
@@ -121,6 +130,18 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "previous output (dedupe, continue where it left off).")
     cron_edit.add_argument("--no-continuity", dest="continuity", action="store_const", const=False,
         help=("Turn off run-to-run continuity (other context_from job refs are preserved)."))
+    cron_edit.add_argument(
+        "--enabled-toolset", dest="enabled_toolsets", action="append",
+        help="Replace the job's enabled toolsets. Repeat to add multiple toolsets.")
+    cron_edit.add_argument(
+        "--clear-enabled-toolsets", dest="enabled_toolsets", action="store_const", const=[],
+        help="Clear the per-job toolset restriction and use configured defaults.")
+    cron_edit.add_argument(
+        "--attach-to-session", dest="attach_to_session", action="store_const", const=True,
+        default=None, help="Make delivery continuable in the job's eligible conversation.")
+    cron_edit.add_argument(
+        "--no-attach-to-session", dest="attach_to_session", action="store_const", const=False,
+        help="Explicitly keep the job fire-and-forget.")
     cron_edit.add_argument("--monitor-script", dest="monitor_script",
         help="Set/replace the monitor source script (see `hermes cron create "
             "--monitor-script`). Pass empty string to clear.")
