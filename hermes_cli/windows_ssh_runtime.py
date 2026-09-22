@@ -287,6 +287,94 @@ def remove_artifact(path: Path) -> bool:
     return True
 
 
+def _lock_identity_matches(lock: Any, ownership_id: str, pid: int,
+                           creation_time_ns: int, spawn_nonce: str) -> bool:
+    return bool(
+        isinstance(lock, dict)
+        and lock.get("ownershipId") == ownership_id
+        and lock.get("pid") == pid
+        and str(lock.get("creationTimeNs", "")) == str(creation_time_ns)
+        and lock.get("spawnNonce") == spawn_nonce
+    )
+
+
+def remove_lock_if_matches(ownership_id: str, pid: int, creation_time_ns: int,
+                           spawn_nonce: str) -> dict[str, Any]:
+    """Atomically delete only the exact ownership record the caller observed.
+
+    The no-share handle prevents ``write_lock`` from replacing the path between
+    comparison and disposition. This fences a delayed reconnect cleanup from
+    unlinking a newer backend owner's record.
+    """
+    ownership_id = _ownership(ownership_id)
+    spawn_nonce = _nonce(spawn_nonce)
+    w = _win32()
+    win32con, win32file = w.win32con, w.win32file
+    handle = _open_existing(
+        _lock_path(ownership_id),
+        win32con.GENERIC_READ | win32con.DELETE | win32con.READ_CONTROL,
+        share=0,
+    )
+    if handle is None:
+        return {"removed": False, "reason": "missing"}
+    try:
+        data = win32file.ReadFile(handle, _MAX_JSON + 1)[1]
+        if len(data) > _MAX_JSON:
+            return {"removed": False, "reason": "invalid"}
+        try:
+            lock = json.loads(data)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"removed": False, "reason": "invalid"}
+        if not _lock_identity_matches(lock, ownership_id, pid, creation_time_ns, spawn_nonce):
+            return {"removed": False, "reason": "replaced"}
+        win32file.SetFileInformationByHandle(handle, win32file.FileDispositionInfo, True)
+        return {"removed": True}
+    finally:
+        win32file.CloseHandle(handle)
+
+
+def update_lock_if_matches(ownership_id: str, pid: int, creation_time_ns: int,
+                           spawn_nonce: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Atomically replace the contents of the exact ownership record observed.
+
+    Holding a no-share read/write handle across the comparison and write keeps a
+    delayed readiness path from overwriting a replacement backend owner's lock.
+    """
+    ownership_id = _ownership(ownership_id)
+    spawn_nonce = _nonce(spawn_nonce)
+    if not _lock_identity_matches(payload, ownership_id, pid, creation_time_ns, spawn_nonce):
+        raise ValueError("replacement lock payload does not match the expected owner")
+    data = json.dumps(payload, separators=(",", ":")).encode()
+    if len(data) > _MAX_JSON:
+        raise ValueError("lock payload is too large")
+    w = _win32()
+    win32con, win32file = w.win32con, w.win32file
+    handle = _open_existing(
+        _lock_path(ownership_id),
+        win32con.GENERIC_READ | win32con.GENERIC_WRITE | win32con.READ_CONTROL,
+        share=0,
+    )
+    if handle is None:
+        return {"updated": False, "reason": "missing"}
+    try:
+        current = win32file.ReadFile(handle, _MAX_JSON + 1)[1]
+        if len(current) > _MAX_JSON:
+            return {"updated": False, "reason": "invalid"}
+        try:
+            lock = json.loads(current)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"updated": False, "reason": "invalid"}
+        if not _lock_identity_matches(lock, ownership_id, pid, creation_time_ns, spawn_nonce):
+            return {"updated": False, "reason": "replaced"}
+        win32file.SetFilePointer(handle, 0, win32file.FILE_BEGIN)
+        win32file.SetEndOfFile(handle)
+        win32file.WriteFile(handle, data)
+        win32file.FlushFileBuffers(handle)
+        return {"updated": True}
+    finally:
+        win32file.CloseHandle(handle)
+
+
 def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce: str) -> dict[str, Any]:
     import psutil
     _nonce(spawn_nonce)
@@ -294,6 +382,7 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
         process = psutil.Process(pid)
         actual_creation = int(process.create_time() * 1_000_000_000)
         argv = process.cmdline()
+        status = process.status()
     except psutil.NoSuchProcess as exc:
         return {"alive": False, "owned": False, "indeterminate": False, "reason": type(exc).__name__}
     except psutil.AccessDenied as exc:
@@ -319,7 +408,16 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
         owned = executable_match and "--isolated" in argv[serve + 1:] and argv[owner + 1] == spawn_nonce
     except (ValueError, IndexError):
         owned = False
+    # psutil currently reports a suspended Windows process as STATUS_STOPPED;
+    # some versions expose STATUS_SUSPENDED instead. This module is Windows-only,
+    # so either representation means the backend cannot service its event loop.
+    suspended_statuses = {
+        getattr(psutil, "STATUS_STOPPED", "stopped"),
+        getattr(psutil, "STATUS_SUSPENDED", "suspended"),
+    }
+    suspended = status in suspended_statuses
     return {"alive": process.is_running(), "owned": owned, "indeterminate": False,
+            "status": status, "suspended": suspended,
             "creationTimeNs": str(actual_creation), "reason": "owned" if owned else "argv",
             "argv": argv[:20], "expectedExecutable": expected}
 
@@ -448,6 +546,13 @@ def _write_lock_op(ownership_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _update_lock_if_matches_op(ownership_id: str, pid: str, creation_time_ns: str,
+                               spawn_nonce: str) -> dict[str, Any]:
+    return update_lock_if_matches(
+        ownership_id, int(pid), int(creation_time_ns), spawn_nonce, _read_json_stdin()
+    )
+
+
 # operation -> (argument count or None for "any", handler(*args)).
 _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "probe": (None, _probe),
@@ -455,6 +560,8 @@ _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "read-lock": (1, read_lock),
     "write-lock": (1, _write_lock_op),
     "remove-lock": (1, lambda o: {"removed": remove_artifact(_lock_path(o))}),
+    "remove-lock-if-matches": (4, lambda o, p, c, n: remove_lock_if_matches(o, int(p), int(c), n)),
+    "update-lock-if-matches": (4, _update_lock_if_matches_op),
     "remove-token": (2, lambda o, n: {"removed": remove_artifact(_token_path(o, n))}),
     "read-log": (2, _read_log),
     "remove-log": (2, lambda o, n: {"removed": remove_artifact(_log_path(o, n))}),

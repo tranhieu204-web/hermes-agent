@@ -444,6 +444,9 @@ from cron.executions import (
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
+_EMPTY_RESPONSE_ERROR = (
+    "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+)
 
 
 def _is_cron_silence_response(text: str) -> bool:
@@ -459,6 +462,34 @@ def _is_cron_silence_response(text: str) -> bool:
     from gateway.response_filters import is_autonomous_silence_response
 
     return is_autonomous_silence_response(text)
+
+
+def _cron_always_report_enabled() -> bool:
+    """Whether this profile requires an explicit outcome for every cron run."""
+    try:
+        config = load_config_readonly() or {}
+        cron_config = config.get("cron", {}) if isinstance(config, dict) else {}
+        return isinstance(cron_config, dict) and cron_config.get("always_report") is True
+    except Exception:
+        return False
+
+
+def _apply_cron_reporting_policy(
+    job: dict, content: str, *, success: bool, always_report: Optional[bool] = None,
+) -> str:
+    """Convert successful silent outcomes into explicit reports when configured.
+
+    ``cron.always_report`` is profile-scoped and opt-in so existing installations retain the
+    established ``[SILENT]`` behavior. Failures keep their normal diagnostic path.
+    """
+    enabled = _cron_always_report_enabled() if always_report is None else always_report
+    if not enabled or not success:
+        return content
+    if not content.strip() or not _is_cron_silence_response(content):
+        return content
+
+    job_label = str(job.get("name") or job.get("id") or "scheduled job")
+    return f"Cron task '{job_label}' ran successfully. Nothing new to report."
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
@@ -2550,6 +2581,7 @@ def _classify_delivery_outcome(
 
 def _compose_run_delivery(
     job: dict, *, success: bool, error, final_response: str, output_file,
+    always_report: bool = False,
 ) -> tuple[str, bool, bool, bool, Optional[str]]:
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
@@ -2574,7 +2606,7 @@ def _compose_run_delivery(
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
             job, error or "", output_file=output_file
         )
-        if incident_acked:
+        if incident_acked and not always_report:
             deliver_content = ""
         else:
             deliver_content = (
@@ -2627,6 +2659,7 @@ class _RunDelivery:
     job: dict
     success: bool
     error: Optional[str]
+    always_report: bool = False
     delivery_attempted: bool = False
     delivery_error: Optional[str] = None
     should_deliver: bool = False
@@ -2667,10 +2700,19 @@ def _save_compose_deliver(
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
-        output_file=output_file)
+        output_file=output_file, always_report=d.always_report)
+    deliver_content = _apply_cron_reporting_policy(
+        job, deliver_content, success=d.success, always_report=d.always_report)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
-    d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
-    if d.should_deliver and not d.success and job.get("_model_unreachable"):
+    d.should_deliver = bool(deliver_content.strip()) and not (
+        _silent_alert and not d.always_report
+    )
+    if (
+        d.should_deliver
+        and not d.always_report
+        and not d.success
+        and job.get("_model_unreachable")
+    ):
         # The model was never reached and a bounded automatic re-run will be scheduled
         # (cron/unreachable_retry.py): hold the failure notice — the re-run either
         # delivers the real result or, once the ladder is exhausted, the next failure
@@ -2928,7 +2970,15 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error)
+        d = _RunDelivery(
+            job=job, success=success, error=error,
+            always_report=_cron_always_report_enabled())
+        if d.success and not final_response.strip() and d.always_report:
+            # A truly empty model response is an execution failure, not "nothing new". In
+            # always-report mode classify it before composing delivery so the user receives the
+            # failure outcome instead of a contradictory success message followed by failed state.
+            d.success = False
+            d.error = _EMPTY_RESPONSE_ERROR
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
@@ -2947,7 +2997,7 @@ def _run_one_job_body(
         # Empty final_response is a soft failure so last_status is not "ok".
         if d.success and not final_response.strip():
             d.success = False
-            d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+            d.error = _EMPTY_RESPONSE_ERROR
 
         if _consume_interrupted_flag(job["id"], execution_token):
             _finish_interrupted_run(job, execution_id, delivery_error)

@@ -11,6 +11,22 @@ import pytest
 import hermes_cli.browser_connect as bc
 
 
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+
+def test_windows_browser_debug_launch_is_background_only(monkeypatch):
+    expected = _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
+    monkeypatch.setattr(
+        bc, "windows_detach_flags_without_breakaway", lambda: expected, raising=False,
+    )
+
+    flags = bc._detach_kwargs("Windows")["creationflags"]
+
+    assert flags == expected
+    assert not flags & 0x00000008  # DETACHED_PROCESS makes CREATE_NO_WINDOW ineffective.
+
+
 def _ls_dump(*entries: str) -> str:
     return "(\n" + ",\n".join(entries) + "\n)\n"
 
