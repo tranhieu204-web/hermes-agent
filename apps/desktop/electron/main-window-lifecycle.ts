@@ -11,7 +11,6 @@ type FocusedWindowRevealTarget = MainWindowRevealTarget & {
   focus: () => void
 }
 
-
 type EnsureMainWindowOptions<T extends MainWindowLike> = {
   isReady: boolean
   createWindow: () => unknown
