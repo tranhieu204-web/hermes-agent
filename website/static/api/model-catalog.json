@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-10T16:09:08Z",
+  "updated_at": "2026-09-22T06:29:56Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -93,18 +93,6 @@
           "description": ""
         },
         {
-          "id": "openai/gpt-5.5",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-5.5-pro",
-          "description": ""
-        },
-        {
-          "id": "openai/gpt-5.4-mini",
-          "description": ""
-        },
-        {
           "id": "google/gemini-3.1-pro-preview",
           "description": ""
         },
@@ -114,6 +102,10 @@
         },
         {
           "id": "google/gemini-3.7-flash",
+          "description": ""
+        },
+        {
+          "id": "x-ai/grok-4.7",
           "description": ""
         },
         {
@@ -308,15 +300,6 @@
           "id": "openai/gpt-5.6-luna-pro"
         },
         {
-          "id": "openai/gpt-5.5"
-        },
-        {
-          "id": "openai/gpt-5.5-pro"
-        },
-        {
-          "id": "openai/gpt-5.4-mini"
-        },
-        {
           "id": "google/gemini-3.1-pro-preview"
         },
         {
@@ -324,6 +307,9 @@
         },
         {
           "id": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "x-ai/grok-4.7"
         },
         {
           "id": "x-ai/grok-4.6"

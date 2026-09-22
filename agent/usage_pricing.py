@@ -160,9 +160,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-5.6-sol": ("5.00", "30.00", "0.50", "6.25"), "gpt-5.6-terra": ("2.50", "15.00", "0.25", "3.125"),
         "gpt-5.6-luna": ("1.00", "6.00", "0.10", "1.25"),
     }),
-    # Claude 4.5/4.6/4.7/4.8 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
+    # Claude 4.5/4.6/4.7/4.8/5 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
+    # Opus 5 (GA July 24, 2026) launched at the same rate as Opus 4.8.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-05", {
-        ("claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-7-20250507", "claude-opus-4-6",
+        ("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-7-20250507", "claude-opus-4-6",
          "claude-opus-4-6-20250414", "claude-opus-4-5"): _OPUS,
         ("claude-sonnet-4-6", "claude-sonnet-4-6-20250414", "claude-sonnet-4-5", "claude-sonnet-4-20250514",
          "claude-3-5-sonnet-20241022"): _SONNET,
@@ -171,14 +172,19 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00"),
         "claude-3-haiku-20240307": ("0.25", "1.25", "0.03", "0.30"),
     }),
-    # Fast mode is a separate model id at a 2x premium.
+    # Fast mode is a separate model id at a 2x premium (Opus 5 and Opus 4.8; not on 4.6/4.7).
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
-        "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
+        ("claude-opus-5-fast", "claude-opus-4-8-fast"): ("10.00", "50.00", "1.00", "12.50"),
     }),
     # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
     # (matching Sonnet 4.6). Update this entry when the intro window closes.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
         "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
+    }),
+    # Claude Fable 5 / Fable 5.1 / Mythos 5 (GA June 9, 2026): flagship tier, 2x Opus 5's
+    # rate. Cache write shown is the 5-min rate ($12.50); the 1hr rate is $20.00.
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06", {
+        ("claude-fable-5", "claude-fable-5-1", "claude-fable-5.1", "claude-mythos-5"): ("10.00", "50.00", "1.00", "12.50"),
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),

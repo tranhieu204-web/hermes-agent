@@ -16,14 +16,19 @@ logger = logging.getLogger(__name__)
 # gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there ("not supported
 # when using Codex with a ChatGPT account"), so listing them leaked dead picker choices. If
 # OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them up automatically.
+# Only the latest two generations per line are kept (5.6 Sol/Terra/Luna is current; 5.5 is the
+# previous generation) — GPT-5.4/5.3-codex retired from Codex on 2026-08-31 for ChatGPT sign-in
+# (API-key auth keeps its own longer deprecation schedule and is unaffected, but this curated
+# list serves the ChatGPT-OAuth picker). ``gpt-6-astra`` is DELIBERATELY EXCLUDED here even
+# though it is the current flagship: this list feeds ``_codex_curated_models()`` /
+# ``_PROVIDER_MODELS["openai-codex"]`` directly with NO ``_drop_undiscovered_astra`` gate, so an
+# entry here would leak to every install regardless of account entitlement. Astra only ever
+# reaches a user through live/cached discovery in ``get_codex_model_ids`` (which does gate it).
 DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-    "gpt-5.3-codex",
     # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
     # not in the public API, so it stays out of the "openai" catalog in hermes_cli/models.py.
     # The backend reports ``supported_in_api: false`` for it; that flag describes API
@@ -39,14 +44,13 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
-    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
-    ("gpt-5.4-mini", ("gpt-5.3-codex",)),
-    ("gpt-5.4", ("gpt-5.3-codex",)),
+    ("gpt-5.6-sol", ("gpt-5.5",)),
+    ("gpt-5.6-terra", ("gpt-5.5",)),
+    ("gpt-5.6-luna", ("gpt-5.5",)),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
-    # gates real availability by ChatGPT Pro entitlement.
+    # gates real availability by ChatGPT Pro entitlement. Matched against "gpt-5.3-codex" for a
+    # LIVE discovery catalog that still lists it (API-key auth keeps a longer deprecation
+    # schedule); it's already unconditionally in DEFAULT_CODEX_MODELS for the offline path.
     ("gpt-5.3-codex-spark", ("gpt-5.3-codex",))]
 
 
