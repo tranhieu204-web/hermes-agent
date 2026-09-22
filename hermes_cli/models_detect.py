@@ -46,7 +46,7 @@ def current_provider_catalog_match(model_name: str, current_provider: str) -> Op
 
 def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool:
     """True when *model_name* belongs to the vendor a single-vendor first-party provider natively
-    serves (``gpt-6-astra`` on ``openai-codex``, ``grok-4.6`` on ``xai-oauth``).
+    serves (``gpt-6-astra`` on ``openai-codex``, ``grok-4.7`` on ``xai-oauth``).
 
     A first-party session plus that vendor's own id is a selection, not a guess: when the live
     catalog could not confirm the id (fetch failed, static fallback lags an early-access rollout)

@@ -94,7 +94,7 @@ The `◆ Auth Providers` section will show the current state of every provider, 
 ```bash
 hermes model
 # → Select "xAI Grok OAuth (SuperGrok / X Premium+)"
-# → Pick from the model list (grok-4.6 is pinned to the top)
+# → Pick from the model list (grok-4.7 is pinned to the top)
 ```
 
 Or set the model directly:
@@ -154,7 +154,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 
 | Tool | Model | Notes |
 |------|-------|-------|
-| Chat | `grok-4.6` | Default; pinned to the top of the OAuth picker |
+| Chat | `grok-4.7` | Default; pinned to the top of the OAuth picker |
 | Chat | `grok-build-0.1` | Coding-oriented Grok Build model |
 | Chat | `grok-4.3` | Previous generation |
 | Chat | `grok-4.20-0309-reasoning` | Reasoning variant |
@@ -167,7 +167,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |
 | TTS | (default voice) | xAI `/v1/tts` endpoint |
 
-The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.6` is always pinned to the top of the list.
+The chat catalog is derived live from the on-disk `models.dev` cache; new xAI releases appear automatically once that cache refreshes. `grok-4.7` is always pinned to the top of the list.
 
 ## Environment Variables
 

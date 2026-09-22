@@ -56,7 +56,7 @@ After running `hermes model`, your `~/.hermes/config.yaml` will contain:
 
 ```yaml
 model:
-  default: us.anthropic.claude-sonnet-4-6
+  default: us.anthropic.claude-sonnet-5
   provider: bedrock
   base_url: https://bedrock-runtime.us-east-2.amazonaws.com
 
@@ -119,8 +119,8 @@ Bedrock models use **inference profile IDs** for on-demand invocation. The `herm
 
 | Model | ID | Notes |
 |-------|-----|-------|
-| Claude Sonnet 4.6 | `us.anthropic.claude-sonnet-4-6` | Recommended — best balance of speed and capability |
-| Claude Opus 4.6 | `us.anthropic.claude-opus-4-6-v1` | Most capable |
+| Claude Sonnet 5 | `us.anthropic.claude-sonnet-5` | Recommended — best balance of speed and capability |
+| Claude Opus 5 | `us.anthropic.claude-opus-5` | Most capable |
 | Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Fastest Claude |
 | OpenAI GPT-5.6 Sol | `openai.gpt-5.6-sol` | OpenAI frontier model (via Bedrock Mantle) |
 | OpenAI GPT-5.6 Terra | `openai.gpt-5.6-terra` | Balanced (via Bedrock Mantle) |
@@ -142,7 +142,7 @@ Use the `/model` command during a conversation:
 ```
 /model us.amazon.nova-pro-v1:0
 /model deepseek.v3.2
-/model us.anthropic.claude-opus-4-6-v1
+/model us.anthropic.claude-opus-5
 ```
 
 ## Diagnostics

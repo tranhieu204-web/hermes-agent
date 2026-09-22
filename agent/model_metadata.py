@@ -382,7 +382,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
-    "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
+    "grok-4.7": 500000, "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
@@ -408,8 +408,8 @@ DEFAULT_CONTEXT_LENGTHS = {
 # xAI Grok models that ACCEPT `reasoning.effort` (verified live against
 # /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
-# grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+# grok-4.5/4.6/4.7 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
+_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:
@@ -434,9 +434,14 @@ def openai_model_rejects_reasoning(model: str) -> bool:
 
 
 def is_grok_46_family(model: str) -> bool:
-    """Whether *model* is a Grok 4.6 family identifier."""
+    """Whether *model* is a Grok 4.6+ family identifier (xhigh effort + Priority Processing support).
+
+    Covers 4.6 and 4.7 (docs.x.ai/developers/models/grok-4.7 confirms the same xhigh-capable,
+    priority-tier contract as 4.6); update this when a newer Grok family ships with the same
+    capability set.
+    """
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
-    return name == "grok-4.6" or name.startswith("grok-4.6-")
+    return name in ("grok-4.6", "grok-4.7") or name.startswith(("grok-4.6-", "grok-4.7-"))
 
 
 _CONTEXT_LENGTH_KEYS = (
@@ -515,7 +520,7 @@ def _strip_openrouter_routing_variant(
     routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
     only the base id, and a variant shares the base model's context window.
     Without this, every lookup below misses and the resolver falls through to
-    a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
+    a generic family default (``x-ai/grok-4.7:nitro`` → the 131K ``grok``
     catch-all instead of its real 2M window).
 
     Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
