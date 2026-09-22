@@ -748,7 +748,7 @@ def test_real_pruned_head_count_inside_the_archived_middle_keeps_the_head_pair(d
 
 def _twice_compacted_real_parent(db) -> tuple:
     first = _pruned_head_parent(db, "vision")
-    db.append_messages_batch(PARENT, _filler(12, 12, 5100.0, size=1000))  # past the tail budget: summarizes tail 1
+    db.append_messages_batch(PARENT, _filler(12, 12, 5100.0, size=800))  # past the tail budget: summarizes tail 1
     _real_compact(db)
     parent_model, display = db.get_resume_conversations(PARENT)
     assert sum(SUMMARY_PREFIX in str(m.get("content")) for m in display) == 2
