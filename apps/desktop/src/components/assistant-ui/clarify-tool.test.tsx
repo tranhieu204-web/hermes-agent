@@ -1242,5 +1242,3 @@ describe('ClarifyTool sealed-message persistence', () => {
     expect(document.querySelector('[data-slot="tool-block"]')).toBeTruthy()
   })
 })
-  })
-})
