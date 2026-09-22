@@ -1621,7 +1621,12 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
         model = str(getattr(agent, "model", "") or "").strip()
-        if hasattr(db, "update_session_meta"):
+        if hasattr(db, "update_session_meta_preserving_keys"):
+            # The read above is stale by the write: the pinned lineage is re-read inside the write transaction.
+            from agent.required_context import LINEAGE_METADATA_KEY
+            db.update_session_meta_preserving_keys(
+                session_key, model_config, model or None, preserve_keys=(LINEAGE_METADATA_KEY,))
+        elif hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
             db.update_session_model(session_key, model)

@@ -75,6 +75,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True, argument_mode="options"),
     CommandDef("branch", "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)",
                "Session", aliases=("fork",), args_hint="[--here] [name]"),
+    CommandDef("adopt-generation", "Start a child session using the current Sakaan generation", "Session",
+               aliases=("adopt-sakaan",), args_hint="[--copy-history]"),
     CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",
                cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
                subcommands=("new", "list", "prune")),

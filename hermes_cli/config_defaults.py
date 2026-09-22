@@ -20,6 +20,8 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    "subscription_only": False,
+    "required_context": {"enabled": False, "pointer": "", "files": []},
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

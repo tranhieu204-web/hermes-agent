@@ -339,6 +339,7 @@ class AIAgent(
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
+        from agent.required_context import RequiredContextError, persist_agent_lineage
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
@@ -364,7 +365,11 @@ class AIAgent(
                 origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
+            # A pre-existing row (desktop prompt.submit) keeps its model_config, so the lineage lands separately.
+            persist_agent_lineage(self)
             self._session_db_created = True
+        except RequiredContextError:
+            raise
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
             logger.warning("Session DB creation failed (will retry next turn): %s", e)

@@ -418,6 +418,10 @@ def resolve_xai_oauth_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
+    from hermes_cli.subscription_policy import validate_route_intent
+    decision = validate_route_intent("xai-oauth", model="configured-xai-model")
+    if decision.enabled:
+        decision.require_live_permit()
     from hermes_cli.auth import _auth_store_lock, _is_terminal_xai_oauth_refresh_error, _refresh_xai_oauth_tokens, _xai_oauth_discovery
 
     def _should_refresh(data: Dict[str, Any]) -> bool:

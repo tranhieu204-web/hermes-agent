@@ -1087,6 +1087,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        from hermes_cli.subscription_policy import assert_request_permit
+        assert_request_permit(agent, active_client)
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:

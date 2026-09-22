@@ -470,6 +470,7 @@ def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: A
     failures, then drop staged CLI input — unless it is an unmarked handoff kept for a
     close retry (once ``_db_persisted`` the close path must not treat it as pre-worker
     UI input). Eager clearing keeps a preflight crash from leaking stale input."""
+    from agent.required_context import RequiredContextError
     try:
         lock = getattr(agent, "_session_persist_lock", None)
         if lock is None:
@@ -477,6 +478,8 @@ def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: A
         else:
             with lock:
                 fn()
+    except RequiredContextError:
+        raise  # a foreign lineage on the row must abort the turn before any provider call
     except Exception:
         logger.warning(failure_msg, agent.session_id or "none", exc_info=True)
     finally:

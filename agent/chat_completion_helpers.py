@@ -740,12 +740,16 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
+        from hermes_cli.subscription_policy import assert_request_permit
+        assert_request_permit(agent, agent.client)
         return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+    from hermes_cli.subscription_policy import assert_request_permit
+    assert_request_permit(agent, request_client)
     return request_client.chat.completions.create(**api_kwargs)
 
 
@@ -2006,6 +2010,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from hermes_cli.subscription_policy import subscription_only_enabled
+    if subscription_only_enabled():
+        raise RuntimeError("SUBSCRIPTION_ONLY_ROUTE: fallback is forbidden")
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False

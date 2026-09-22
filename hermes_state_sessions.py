@@ -733,6 +733,91 @@ class SessionSessionsMixin:
             return
         self._write_model_config_patch(session_id, patch)
 
+    def pin_pristine_session_model_config_key(self, session_id: str, key: str, value: Any) -> bool:
+        """Set model_config[key] only on a pristine row — no message rows, no persisted system prompt,
+        key absent — merging with the row's other keys, in one write transaction. True only when this
+        call wrote; an existing key is never overwritten and an unparseable model_config is never replaced."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT model_config, system_prompt, system_prompt_hash, message_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or row[1] or row[2] is not None or row[3]:
+                return False
+            if conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone():
+                return False
+            config = _parse_model_config(row[0])
+            if key in config or (not config and row[0] not in (None, "", "{}")):
+                return False
+            config[key] = value
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
+            return True
+        return bool(session_id and key) and bool(self._execute_write(_do))
+
+    def set_session_model_config_key_if_absent(self, session_id: str, key: str, value: Any) -> Any:
+        """Merge model_config[key] = value only when the key is absent, in one write transaction, and return
+        the value the row holds afterwards (the existing one when present). None when the row is missing or
+        its non-empty model_config is unparseable (never replaced)."""
+        def _do(conn):
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            config = _parse_model_config(row[0])
+            if key in config:
+                return config[key]
+            if not config and row[0] not in (None, "", "{}"):
+                return None
+            config[key] = value
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
+            return value
+        return self._execute_write(_do) if session_id and key else None
+
+    def update_session_meta_preserving_keys(
+        self, session_id: str, model_config: Dict[str, Any], model: Optional[str] = None,
+        preserve_keys: Tuple[str, ...] = (),
+    ) -> None:
+        """``update_session_meta`` from a read-modify-write caller: each ``preserve_keys`` entry keeps the row's
+        CURRENT value (or stays absent), re-read inside the write transaction, so a stale read can never drop
+        or overwrite a key another writer set in between."""
+        self.flush_token_counts()  # barrier against queued token deltas — see update_session_model
+        def _do(conn):
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return
+            current = _parse_model_config(row[0])
+            config = dict(model_config)
+            for key in preserve_keys:
+                if key in current:
+                    config[key] = current[key]
+                else:
+                    config.pop(key, None)
+            conn.execute(
+                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
+                (json.dumps(config), model, session_id),
+            )
+        self._execute_write(_do)
+
+    def replace_session_model_config_key_if_prompt_absent(
+        self, session_id: str, key: str, expected: Any, value: Any,
+    ) -> bool:
+        """Swap model_config[key] from ``expected`` to ``value`` only while the row's resolved system
+        prompt is still empty, in one write transaction. True only when this call wrote."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT s.model_config, COALESCE(sp.prompt, s.system_prompt) FROM sessions s "
+                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash WHERE s.id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or row[1]:
+                return False
+            config = _parse_model_config(row[0])
+            if key not in config or config[key] != expected:
+                return False
+            config[key] = value
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
+            return True
+        return bool(session_id and key) and bool(self._execute_write(_do))
+
     def get_session_model_config_value(self, session_id: str, key: str, default: Any = None) -> Any:
         """Read one key out of a session's model_config JSON (tolerant parse)."""
         session = self.get_session(session_id) or {}
