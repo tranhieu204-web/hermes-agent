@@ -32,6 +32,7 @@ def cli(tmp_path):
     cli.session_id = "20260917_120000_parent"
     cli.model, cli.max_turns, cli.reasoning_config = "claude-opus-5", 90, {"enabled": True}
     cli.session_start, cli._pending_title, cli._resumed, cli.agent = datetime.now(), None, False, None
+    cli._agent_running = False  # MagicMock auto-attrs are truthy; /branch's busy-guard would else always fire
     cli.conversation_history = [
         {"role": "user", "content": IMAGE_PARTS},
         {"role": "assistant", "content": "", "tool_calls": [_call("call_one")], "reasoning_content": "look first"},
