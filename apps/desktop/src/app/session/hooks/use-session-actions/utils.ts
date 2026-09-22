@@ -62,7 +62,7 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 import type { ClientSessionState } from '../../../types'
 
 export function restorePendingClarifyRequest(
-  pending: SessionResumeResponse['pending_clarify'],
+  pending: SessionResumeResult['pending_clarify'],
   sessionId: string | null
 ): ClarifyRequest | null {
   if (!pending || typeof pending.request_id !== 'string') {

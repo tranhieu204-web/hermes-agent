@@ -92,7 +92,7 @@ describe('ensurePendingClarifyToolRow', () => {
         { choices: ['Red', 'Blue'], multi_select: true, qid: 'q1', question: 'Choose colors' }
       ],
       request_id: 'clarify-batch-1'
-    } as SessionResumeResponse['pending_clarify']
+    } as SessionResumeResult['pending_clarify']
 
     const request = restorePendingClarifyRequest(batchPending, 'runtime-1')
     const restored = ensurePendingClarifyToolRow([], batchPending)
