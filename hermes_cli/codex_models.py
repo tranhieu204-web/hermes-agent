@@ -47,10 +47,10 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.6-terra", ("gpt-5.5",)),
     ("gpt-5.6-luna", ("gpt-5.5",)),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
-    # gates real availability by ChatGPT Pro entitlement. Matched against "gpt-5.3-codex" for a
-    # LIVE discovery catalog that still lists it (API-key auth keeps a longer deprecation
-    # schedule); it's already unconditionally in DEFAULT_CODEX_MODELS for the offline path.
-    ("gpt-5.3-codex-spark", ("gpt-5.3-codex",))]
+    # gates real availability by ChatGPT Pro entitlement. "gpt-5.3-codex" itself is retired
+    # (#52492) and must never appear here again; matched against the current gpt-5.4/gpt-5.5
+    # generation instead so Spark keeps surfacing for Pro users on live discovery.
+    ("gpt-5.3-codex-spark", ("gpt-5.4", "gpt-5.5"))]
 
 
 def _dedupe(model_ids) -> List[str]:
