@@ -514,19 +514,29 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
     thread.join(timeout=5)
     assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
 
-    # Deadline: locked answers survive, timed_out flagged, one request.cancel.
-    original_timeout = server._clarify_timeout_seconds
-    try:
-        thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
-        locked = server.handle_request({"id": "b1", "method": "clarify.lock",
-                                        "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
-        assert locked["result"]["status"] == "ok"
-        thread.join(timeout=5)
-    finally:
-        server._clarify_timeout_seconds = original_timeout
-    assert json.loads(box["answer"]) == {"answers": {"q0": "kept"}, "timed_out": True}
+    # Deadline: locked answers survive, timed_out flagged, one request.cancel. Desktop/TUI's
+    # _clarify_block itself never times out (#ddb31d5f14); this exercises the underlying
+    # server_requests.send deadline machinery a finite-timeout caller (a messaging adapter) still
+    # relies on, driven directly rather than through _clarify_block.
+    from tui_gateway import server_requests
+
+    box2: dict = {}
+
+    def run_send():
+        box2["result"] = server_requests.send(
+            "clarify", "s1", {"questions": [{"qid": "q0"}, {"qid": "q1"}]},
+            timeout=1.5, qids=["q0", "q1"])
+
+    thread2 = threading.Thread(target=run_send, daemon=True)
+    thread2.start()
+    req2 = _wait_open(server_requests, buf)
+    locked = server.handle_request({"id": "b1", "method": "clarify.lock",
+                                    "params": {"request_id": req2.id, "question_id": "q0", "answer": "kept"}})
+    assert locked["result"]["status"] == "ok"
+    thread2.join(timeout=5)
+    assert box2["result"] == {"answers": {"q0": "kept"}, "timed_out": True}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
-    assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
+    assert [c["params"]["payload"]["id"] for c in cancels] == [req2.id]
 
 
 def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
