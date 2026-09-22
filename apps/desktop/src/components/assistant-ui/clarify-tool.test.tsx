@@ -171,7 +171,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 
     // tool.complete is what swaps in the settled card; the turn can already
     // read as not-running in that gap.
-    messageRunning = false
+    clarifyAuiState.messageRunning = false
     rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
@@ -182,7 +182,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
 
-    messageRunning = false
+    clarifyAuiState.messageRunning = false
     act(() => clearClarifyRequest('request-1', 'session-1'))
 
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
