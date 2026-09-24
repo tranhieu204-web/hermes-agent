@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.proxy_bypass import is_loopback_host
+from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -851,8 +852,7 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
 def _detach_kwargs(system: str) -> dict:
     if system != "Windows":
         return {"start_new_session": True}
-    flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
-             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    flags = windows_detach_flags_without_breakaway()
     return {"creationflags": flags} if flags else {}
 
 

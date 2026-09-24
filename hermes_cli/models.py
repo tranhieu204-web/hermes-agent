@@ -1406,7 +1406,14 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
         return curated
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
-    return live if cfg_base_url else _merge_unique(curated, live)
+    # Dedup key folds "." and "-" together: Anthropic's native model IDs are ALWAYS
+    # dash-separated (claude-opus-5-5, never claude-opus-5.5 — that dotted form is the
+    # OpenRouter/aggregator slug convention for the SAME model, used in a different curated
+    # table). A curated entry accidentally typed with a dot previously survived review because
+    # the picker only case-folded before dedup, so the dotted typo and the real dashed id from
+    # /v1/models both passed through as distinct rows (#claude-opus-5.5 dup, 2026-09-23). Folding
+    # separators here makes that whole bug class structurally impossible for this provider.
+    return live if cfg_base_url else _merge_unique(curated, live, key=lambda m: str(m).lower().replace(".", "-"))
 
 
 def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:

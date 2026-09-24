@@ -1797,6 +1797,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
+        # Deliver an explicit successful "nothing new to report" outcome instead of suppressing
+        # [SILENT] responses; empty model responses remain failures but are reported. Opt-in to
+        # preserve existing installations.
+        "always_report": False,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =

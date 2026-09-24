@@ -29,10 +29,11 @@ _OPENROUTER_DESCRIPTIONS = {
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
     for mid in (
-        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5",
-        "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8", "anthropic/claude-opus-4.8-fast",
+        "anthropic/claude-fable-5.1", "anthropic/claude-fable-5", "anthropic/claude-opus-5.5",
+        "anthropic/claude-opus-5", "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-6-astra", "openai/gpt-6-astra-fast",
         "openai/gpt-6-astra-flex", "openai/gpt-6-astra-pro", "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
+        "openai/gpt-6-sol", "openai/gpt-6-luna",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-sol-pro",
         "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-pro", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna-pro",
         "google/gemini-3.1-pro-preview",
@@ -168,6 +169,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "openai": list(_OPENAI_CHAT_MODELS),
     "openai-api": [
         "gpt-6-astra", "gpt-6-astra-fast", "gpt-6-astra-flex", "gpt-6-astra-pro", "gpt-6-astra-pro-fast", "gpt-6-astra-pro-flex",
+        "gpt-6-sol", "gpt-6-luna",
         "gpt-5.6-sol", "gpt-5.6-sol-pro", "gpt-5.6-terra", "gpt-5.6-terra-pro", "gpt-5.6-luna", "gpt-5.6-luna-pro",
     ],
     "openai-codex": _codex_curated_models(),
@@ -208,7 +210,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "minimax-oauth": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     "minimax-cn": list(_MINIMAX_MODELS),
     "anthropic": [
-        "claude-fable-5.1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+        "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5",
         "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
     ],
     "deepseek": ["deepseek-flash", "deepseek-v4-pro"],

@@ -627,6 +627,20 @@ _BUILTIN_MODEL_METADATA: Dict[Tuple[str, str], Dict[str, Any]] = {
         "reasoning": True,
         "family": "gpt-6",
     },
+    ("openai", "gpt-6-sol"): {
+        "limit": {"context": 1_050_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True,
+        "reasoning": True,
+        "family": "gpt-6",
+    },
+    ("openai", "gpt-6-luna"): {
+        "limit": {"context": 1_050_000, "output": 128_000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": True,
+        "reasoning": True,
+        "family": "gpt-6",
+    },
     # Native DeepSeek V4.1-Flash is multimodal (https://api-docs.deepseek.com/guides/vision).
     # models.dev lagged the 2026-09-10 rename; without this, a cold/empty cache treats
     # ``deepseek-flash`` as unknown → image_input_mode falls through to lossy text.

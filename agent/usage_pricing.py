@@ -160,7 +160,12 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "gpt-5.6-sol": ("5.00", "30.00", "0.50", "6.25"), "gpt-5.6-terra": ("2.50", "15.00", "0.25", "3.125"),
         "gpt-5.6-luna": ("1.00", "6.00", "0.10", "1.25"),
     }),
-    # Claude 4.5/4.6/4.7/4.8/5 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
+    # OpenAI GPT-6 Sol/Luna (GA September 22, 2026): 50% cheaper than GPT-5.6 promotional rates.
+    # Terra is NOT part of this generation (no GPT-6 Terra released).
+    ("openai", "https://openai.com/index/introducing-gpt-6-sol-and-luna/", "openai-gpt-6-2026-09", {
+        "gpt-6-sol": ("2.00", "10.00", "0.20", "2.50"), "gpt-6-luna": ("0.10", "0.50", "0.01", "0.125"),
+    }),
+    # Claude 4.5/4.6/4.7/4.8/5/5.5 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
     # Opus 5 (GA July 24, 2026) launched at the same rate as Opus 4.8.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-05", {
         ("claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-7-20250507", "claude-opus-4-6",
@@ -171,6 +176,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("claude-opus-4-20250514", "claude-3-opus-20240229"): ("15.00", "75.00", "1.50", "18.75"),
         "claude-3-5-haiku-20241022": ("0.80", "4.00", "0.08", "1.00"),
         "claude-3-haiku-20240307": ("0.25", "1.25", "0.03", "0.30"),
+    }),
+    # Claude Opus 5.5 (GA September 22, 2026): 20% cheaper than Opus 5, cache reads 60% cheaper.
+    ("anthropic", "https://www.anthropic.com/claude-opus-5-5", "anthropic-pricing-2026-09", {
+        ("claude-opus-5-5", "claude-opus-5.5"): ("4.00", "20.00", "0.20", "5.00"),
     }),
     # Fast mode is a separate model id at a 2x premium (Opus 5 and Opus 4.8; not on 4.6/4.7).
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
